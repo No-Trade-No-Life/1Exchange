@@ -10,6 +10,8 @@ axum = "0.7"
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 dirs = "5"
+ethers-core = "2"
+ethers-signers = "2"
 hex = "0.4"
 hmac = "0.12"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
@@ -19,4 +21,5 @@ sha2 = "0.10"
 sqlx = { version = "0.7", features = ["runtime-tokio", "sqlite"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
 tower-http = { version = "0.5", features = ["fs"] }
+urlencoding = "2"
 uuid = { version = "1", features = ["v4"] }
