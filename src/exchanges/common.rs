@@ -16,6 +16,7 @@ pub fn exchange_info(
     }
 }
 
+#[allow(dead_code)]
 pub fn not_implemented(exchange: &str, resource: &str) -> anyhow::Error {
     anyhow::anyhow!("{exchange} {resource} adapter is not implemented")
 }

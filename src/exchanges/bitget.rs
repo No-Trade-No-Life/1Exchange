@@ -1,14 +1,21 @@
 use async_trait::async_trait;
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64_STANDARD};
+use hmac::{Hmac, Mac};
 use serde_json::Value;
+use sha2::Sha256;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
     exchanges::{ExchangeAdapter, ExchangeInfo, common},
-    models::{AccountInfo, Order, Position, Product},
+    models::{AccountInfo, Order, Position, PositionDirection, Product},
 };
 
 pub const ID: &str = "BITGET";
 pub const REQUIRED_FIELDS: &[&str] = &["access_key", "secret_key", "passphrase"];
+const BASE_URL: &str = "https://api.bitget.com";
+const ACCOUNT_ASSETS_PATH: &str = "/api/v3/account/assets";
 const INSTRUMENTS_URL: &str = "https://api.bitget.com/api/v3/market/instruments";
+const CURRENT_POSITION_PATH: &str = "/api/v3/position/current-position";
 
 pub struct Adapter;
 
@@ -41,17 +48,200 @@ impl ExchangeAdapter for Adapter {
         Ok(products)
     }
 
-    async fn get_account(&self, _credential: &Value) -> anyhow::Result<AccountInfo> {
-        Err(common::not_implemented(ID, "account"))
+    async fn get_account(&self, credential: &Value) -> anyhow::Result<AccountInfo> {
+        let positions = self.list_positions(credential).await?;
+
+        Ok(AccountInfo {
+            account_id: format!("{ID}/{}", common::str_value(credential, "access_key")),
+            positions,
+            orders: Vec::new(),
+            timestamp_in_us: common::now_timestamp_in_us(),
+        })
     }
 
-    async fn list_positions(&self, _credential: &Value) -> anyhow::Result<Vec<Position>> {
-        Err(common::not_implemented(ID, "position"))
+    async fn list_positions(&self, credential: &Value) -> anyhow::Result<Vec<Position>> {
+        let assets = bitget_get(credential, ACCOUNT_ASSETS_PATH, &[]).await?;
+        let usdt_futures = bitget_get(
+            credential,
+            CURRENT_POSITION_PATH,
+            &[("category", "USDT-FUTURES")],
+        )
+        .await?;
+        let coin_futures = bitget_get(
+            credential,
+            CURRENT_POSITION_PATH,
+            &[("category", "COIN-FUTURES")],
+        )
+        .await?;
+        let asset_rows = assets
+            .get("data")
+            .and_then(|data| data.get("assets"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let usdt_rows = position_rows(&usdt_futures);
+        let coin_rows = position_rows(&coin_futures);
+
+        Ok(asset_rows
+            .into_iter()
+            .filter_map(map_asset_position)
+            .chain(
+                usdt_rows
+                    .into_iter()
+                    .map(|row| map_derivative_position("USDT-FUTURES", row))
+                    .chain(
+                        coin_rows
+                            .into_iter()
+                            .map(|row| map_derivative_position("COIN-FUTURES", row)),
+                    )
+                    .flatten(),
+            )
+            .collect())
     }
 
     async fn list_orders(&self, _credential: &Value) -> anyhow::Result<Vec<Order>> {
         Err(common::not_implemented(ID, "order"))
     }
+}
+
+async fn bitget_get(
+    credential: &Value,
+    path: &str,
+    query: &[(&str, &str)],
+) -> anyhow::Result<Value> {
+    let query_string = encode_query(query);
+    let url = if query_string.is_empty() {
+        format!("{BASE_URL}{path}")
+    } else {
+        format!("{BASE_URL}{path}?{query_string}")
+    };
+    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
+    let signature = bitget_signature(
+        &common::str_value(credential, "secret_key"),
+        timestamp,
+        "GET",
+        path,
+        &query_string,
+        "",
+    )?;
+    let response = common::http_client()?
+        .get(url)
+        .header("ACCESS-KEY", common::str_value(credential, "access_key"))
+        .header("ACCESS-SIGN", signature)
+        .header("ACCESS-TIMESTAMP", timestamp.to_string())
+        .header(
+            "ACCESS-PASSPHRASE",
+            common::str_value(credential, "passphrase"),
+        )
+        .header("content-type", "application/json")
+        .send()
+        .await?;
+    let status = response.status();
+    let body = response.text().await?;
+    if !status.is_success() {
+        anyhow::bail!("Bitget request failed: {status} {body}");
+    }
+    let value: Value = serde_json::from_str(&body)?;
+    if common::str_value(&value, "msg") != "success" {
+        anyhow::bail!("Bitget request failed: {value}");
+    }
+
+    Ok(value)
+}
+
+fn bitget_signature(
+    secret_key: &str,
+    timestamp: u128,
+    method: &str,
+    path: &str,
+    query: &str,
+    body: &str,
+) -> anyhow::Result<String> {
+    let request_path = if query.is_empty() {
+        path.to_string()
+    } else {
+        format!("{path}?{query}")
+    };
+    let payload = format!("{timestamp}{method}{request_path}{body}");
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret_key.as_bytes())?;
+    mac.update(payload.as_bytes());
+
+    Ok(BASE64_STANDARD.encode(mac.finalize().into_bytes()))
+}
+
+fn encode_query(query: &[(&str, &str)]) -> String {
+    query
+        .iter()
+        .map(|(key, value)| {
+            format!(
+                "{}={}",
+                urlencoding::encode(key),
+                urlencoding::encode(value)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+fn position_rows(response: &Value) -> Vec<Value> {
+    response
+        .get("data")
+        .and_then(|data| data.get("list"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn map_asset_position(row: Value) -> Option<Position> {
+    let coin = common::str_value(&row, "coin");
+    let volume = common::f64_value(&row, "balance");
+    if coin.is_empty() || volume <= 0.0 {
+        return None;
+    }
+
+    Some(Position {
+        position_id: format!("UTA-ASSET/{coin}"),
+        product_id: if coin == "USDT" {
+            format!("{ID}/SPOT/USDT")
+        } else {
+            format!("{ID}/SPOT/{coin}USDT")
+        },
+        direction: None,
+        volume,
+        free_volume: common::f64_value(&row, "available"),
+        position_price: 0.0,
+        closable_price: if matches!(coin.as_str(), "USDT" | "USDC" | "USDD") {
+            1.0
+        } else {
+            0.0
+        },
+        floating_profit: 0.0,
+        comment: None,
+    })
+}
+
+fn map_derivative_position(category: &str, row: Value) -> Option<Position> {
+    let symbol = common::str_value(&row, "symbol");
+    let total = common::f64_value(&row, "total");
+    if symbol.is_empty() || total == 0.0 {
+        return None;
+    }
+
+    Some(Position {
+        position_id: format!("{}-{}", symbol, common::str_value(&row, "posSide")),
+        product_id: format!("{ID}/{category}/{symbol}"),
+        direction: Some(if common::str_value(&row, "posSide") == "long" {
+            PositionDirection::Long
+        } else {
+            PositionDirection::Short
+        }),
+        volume: total.abs(),
+        free_volume: common::f64_value(&row, "available").abs(),
+        position_price: common::f64_value(&row, "avgPrice"),
+        closable_price: common::f64_value(&row, "markPrice"),
+        floating_profit: common::f64_value(&row, "unrealisedPnl"),
+        comment: None,
+    })
 }
 
 fn map_product(category: &str, row: &Value) -> Product {
