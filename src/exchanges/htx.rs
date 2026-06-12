@@ -21,6 +21,8 @@ const SWAP_CONTRACT_INFO_URL: &str = "https://api.hbdm.com/linear-swap-api/v1/sw
 const SWAP_HOST: &str = "api.hbdm.com";
 const SWAP_ACCOUNT_TYPE_PATH: &str = "/linear-swap-api/v3/swap_unified_account_type";
 const SWAP_POSITION_INFO_PATH: &str = "/linear-swap-api/v1/swap_position_info";
+const UNION_ACCOUNT_BALANCE_PATH: &str = "/v5/account/balance";
+const UNION_POSITION_OPENS_PATH: &str = "/v5/trade/position/opens";
 const SWAP_BASE_URL: &str = "https://api.hbdm.com";
 const SPOT_SYMBOLS_URL: &str = "https://api.huobi.pro/v2/settings/common/symbols";
 
@@ -89,16 +91,9 @@ impl ExchangeAdapter for Adapter {
         let spot_account_id = spot_account_id(&accounts)?;
         let balance_path = format!("{SPOT_BALANCE_PATH_PREFIX}{spot_account_id}/balance");
         let balance = htx_get(credential, SPOT_BASE_URL, SPOT_HOST, &balance_path).await?;
-        let account_type =
-            htx_get(credential, SWAP_BASE_URL, SWAP_HOST, SWAP_ACCOUNT_TYPE_PATH).await?;
-        let swap = htx_post(
-            credential,
-            SWAP_BASE_URL,
-            SWAP_HOST,
-            swap_position_path(&account_type)?,
-            r#"{"contract_type":"swap"}"#,
-        )
-        .await?;
+        let account_type = swap_account_type(credential).await?;
+        let swap_balance = swap_balance(credential, account_type).await?;
+        let swap = swap_positions(credential, account_type).await?;
         let balance_rows = balance
             .get("data")
             .and_then(|row| row.get("list"))
@@ -114,6 +109,7 @@ impl ExchangeAdapter for Adapter {
         Ok(balance_rows
             .into_iter()
             .filter_map(map_spot_position)
+            .chain(swap_balance.into_iter())
             .chain(swap_rows.into_iter().filter_map(map_swap_position))
             .collect())
     }
@@ -168,16 +164,57 @@ async fn decode_htx_response(response: reqwest::Response) -> anyhow::Result<Valu
     Ok(value)
 }
 
-fn swap_position_path(account_type: &Value) -> anyhow::Result<&'static str> {
-    let account_type = account_type
+async fn swap_account_type(credential: &Value) -> anyhow::Result<f64> {
+    let response = htx_get(credential, SWAP_BASE_URL, SWAP_HOST, SWAP_ACCOUNT_TYPE_PATH).await?;
+    Ok(response
         .get("data")
         .map(|data| common::f64_value(data, "account_type"))
-        .unwrap_or_default();
+        .unwrap_or_default())
+}
+
+async fn swap_balance(credential: &Value, account_type: f64) -> anyhow::Result<Vec<Position>> {
     if account_type == 2.0 {
-        anyhow::bail!("HTX unified contract account is not implemented")
+        let response = htx_get(
+            credential,
+            SWAP_BASE_URL,
+            SWAP_HOST,
+            UNION_ACCOUNT_BALANCE_PATH,
+        )
+        .await?;
+        let rows = response
+            .get("data")
+            .and_then(|data| data.get("details"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+
+        return Ok(rows.into_iter().filter_map(map_union_swap_asset).collect());
     }
 
-    Ok(SWAP_POSITION_INFO_PATH)
+    Ok(Vec::new())
+}
+
+async fn swap_positions(credential: &Value, account_type: f64) -> anyhow::Result<Value> {
+    if account_type == 2.0 {
+        return htx_get(
+            credential,
+            SWAP_BASE_URL,
+            SWAP_HOST,
+            UNION_POSITION_OPENS_PATH,
+        )
+        .await;
+    }
+
+    let path = SWAP_POSITION_INFO_PATH;
+
+    htx_post(
+        credential,
+        SWAP_BASE_URL,
+        SWAP_HOST,
+        path,
+        r#"{"contract_type":"swap"}"#,
+    )
+    .await
 }
 
 fn htx_signed_query(
@@ -275,6 +312,30 @@ fn map_spot_position(row: Value) -> Option<Position> {
     })
 }
 
+fn map_union_swap_asset(row: Value) -> Option<Position> {
+    let currency = common::str_value(&row, "currency");
+    let volume = common::f64_value(&row, "available");
+    if currency.is_empty() || volume == 0.0 {
+        return None;
+    }
+
+    Some(Position {
+        position_id: format!("SWAP-ASSET/{currency}"),
+        product_id: format!("{ID}/SWAP-ASSET/{currency}"),
+        direction: None,
+        volume,
+        free_volume: common::f64_value(&row, "withdraw_available"),
+        position_price: 0.0,
+        closable_price: if matches!(currency.as_str(), "USDT" | "USDC" | "USDD") {
+            1.0
+        } else {
+            0.0
+        },
+        floating_profit: common::f64_value(&row, "profit_unreal"),
+        comment: None,
+    })
+}
+
 fn map_swap_position(row: Value) -> Option<Position> {
     let contract_code = common::str_value(&row, "contract_code");
     let volume = common::f64_value(&row, "volume");
@@ -292,8 +353,10 @@ fn map_swap_position(row: Value) -> Option<Position> {
         }),
         volume,
         free_volume: common::f64_value(&row, "available"),
-        position_price: common::f64_value(&row, "cost_open"),
-        closable_price: common::f64_value(&row, "last_price"),
+        position_price: common::f64_value(&row, "cost_open")
+            .max(common::f64_value(&row, "open_avg_price")),
+        closable_price: common::f64_value(&row, "last_price")
+            .max(common::f64_value(&row, "mark_price")),
         floating_profit: common::f64_value(&row, "profit_unreal"),
         comment: None,
     })
