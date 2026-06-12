@@ -34,6 +34,11 @@ struct ProductsQuery {
     exchange: Option<String>,
 }
 
+#[derive(serde::Deserialize)]
+struct CredentialQuery {
+    credential_id: String,
+}
+
 #[derive(Debug)]
 pub struct AppError {
     status: StatusCode,
@@ -147,12 +152,28 @@ async fn list_exchanges() -> Json<Vec<exchanges::ExchangeInfo>> {
     Json(exchanges::list_exchanges())
 }
 
-async fn list_accounts() -> Json<Vec<AccountInfo>> {
-    Json(Vec::new())
+async fn list_accounts(
+    State(state): State<AppState>,
+    Query(query): Query<CredentialQuery>,
+) -> Result<Json<Vec<AccountInfo>>, AppError> {
+    let credential = credentials::get_stored_credential(&state.db, &query.credential_id).await?;
+    let adapter = exchanges::adapter(&credential.exchange).ok_or_else(|| {
+        AppError::bad_request(format!("unsupported exchange: {}", credential.exchange))
+    })?;
+
+    Ok(Json(vec![adapter.get_account(&credential.payload).await?]))
 }
 
-async fn list_positions() -> Json<Vec<Position>> {
-    Json(Vec::new())
+async fn list_positions(
+    State(state): State<AppState>,
+    Query(query): Query<CredentialQuery>,
+) -> Result<Json<Vec<Position>>, AppError> {
+    let credential = credentials::get_stored_credential(&state.db, &query.credential_id).await?;
+    let adapter = exchanges::adapter(&credential.exchange).ok_or_else(|| {
+        AppError::bad_request(format!("unsupported exchange: {}", credential.exchange))
+    })?;
+
+    Ok(Json(adapter.list_positions(&credential.payload).await?))
 }
 
 async fn list_products(Query(query): Query<ProductsQuery>) -> Result<Json<Vec<Product>>, AppError> {

@@ -46,7 +46,7 @@ impl ExchangeAdapter for Adapter {
     }
 
     async fn list_products(&self) -> anyhow::Result<Vec<Product>> {
-        let client = reqwest::Client::new();
+        let client = common::http_client()?;
         let spot = fetch_products(&client, SPOT_EXCHANGE_INFO_URL, "SPOT", false).await?;
         let futures = fetch_products(
             &client,

@@ -26,6 +26,11 @@ pub struct CredentialMeta {
     pub updated_at: String,
 }
 
+pub struct StoredCredential {
+    pub exchange: String,
+    pub payload: Value,
+}
+
 #[derive(Debug, FromRow)]
 struct CredentialRow {
     id: String,
@@ -80,6 +85,27 @@ pub async fn create_credential(
 
     let credential = get_credential_meta(&state.db, &id).await?;
     Ok((StatusCode::CREATED, Json(credential)))
+}
+
+pub async fn get_stored_credential(
+    db: &SqlitePool,
+    id: &str,
+) -> Result<StoredCredential, AppError> {
+    let row = sqlx::query_as::<_, CredentialRow>(
+        r#"
+        SELECT id, exchange, name, payload, created_at, updated_at
+        FROM credentials
+        WHERE id = ?1
+        "#,
+    )
+    .bind(id)
+    .fetch_one(db)
+    .await?;
+
+    Ok(StoredCredential {
+        exchange: row.exchange,
+        payload: serde_json::from_str(&row.payload)?,
+    })
 }
 
 fn validate_payload(exchange: &str, payload: &Value) -> Result<(), AppError> {
