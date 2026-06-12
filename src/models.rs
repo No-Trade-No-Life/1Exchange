@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AccountInfo {
     pub account_id: String,
+    /// Positions are the account's atomic assets. Product specifications are resolved by product_id.
     pub positions: Vec<Position>,
     pub orders: Vec<Order>,
     pub timestamp_in_us: i64,
@@ -11,6 +12,7 @@ pub struct AccountInfo {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Position {
     pub position_id: String,
+    /// Keeps the exchange-native product id. The matching Product describes its contract or asset specs.
     pub product_id: String,
     pub direction: Option<PositionDirection>,
     pub volume: f64,
@@ -56,6 +58,7 @@ pub enum OrderStatus {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Product {
     pub datasource_id: String,
+    /// Exchange-native product id. Do not normalize it before adapter-specific handling.
     pub product_id: String,
     pub name: Option<String>,
     pub quote_currency: Option<String>,
