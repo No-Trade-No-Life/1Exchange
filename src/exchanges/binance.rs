@@ -6,13 +6,15 @@ use sha2::Sha256;
 
 use crate::{
     exchanges::{ExchangeAdapter, ExchangeInfo, common},
-    models::{AccountInfo, Order, Position, Product},
+    models::{AccountInfo, Order, Position, PositionDirection, Product},
 };
 
 const SPOT_EXCHANGE_INFO_URL: &str = "https://api.binance.com/api/v3/exchangeInfo";
 const SPOT_ACCOUNT_URL: &str = "https://api.binance.com/api/v3/account";
 const SPOT_TIME_URL: &str = "https://api.binance.com/api/v3/time";
 const USD_M_FUTURES_EXCHANGE_INFO_URL: &str = "https://fapi.binance.com/fapi/v1/exchangeInfo";
+const USD_M_FUTURES_ACCOUNT_URL: &str = "https://fapi.binance.com/fapi/v2/account";
+const USD_M_FUTURES_TIME_URL: &str = "https://fapi.binance.com/fapi/v1/time";
 
 pub const ID: &str = "BINANCE";
 pub const REQUIRED_FIELDS: &[&str] = &["access_key", "secret_key"];
@@ -58,6 +60,31 @@ struct SpotBalance {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct FuturesAccountResponse {
+    assets: Vec<FuturesAsset>,
+    positions: Vec<FuturesPosition>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FuturesAsset {
+    asset: String,
+    wallet_balance: String,
+    available_balance: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FuturesPosition {
+    symbol: String,
+    position_amt: String,
+    entry_price: String,
+    unrealized_profit: String,
+    position_side: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct BinanceTimeResponse {
     server_time: u128,
 }
@@ -94,12 +121,27 @@ impl ExchangeAdapter for Adapter {
     }
 
     async fn list_positions(&self, credential: &Value) -> anyhow::Result<Vec<Position>> {
-        let account = fetch_spot_account(credential).await?;
+        let spot_account = fetch_spot_account(credential).await?;
+        let futures_account = fetch_futures_account(credential).await?;
 
-        Ok(account
+        let spot_positions = spot_account
             .balances
             .into_iter()
             .filter_map(map_spot_balance)
+            .collect::<Vec<_>>();
+        let futures_assets = futures_account
+            .assets
+            .into_iter()
+            .filter_map(map_futures_asset);
+        let futures_positions = futures_account
+            .positions
+            .into_iter()
+            .filter_map(map_futures_position);
+
+        Ok(spot_positions
+            .into_iter()
+            .chain(futures_assets)
+            .chain(futures_positions)
             .collect())
     }
 
@@ -109,25 +151,41 @@ impl ExchangeAdapter for Adapter {
 }
 
 async fn fetch_spot_account(credential: &Value) -> anyhow::Result<SpotAccountResponse> {
+    fetch_signed(credential, SPOT_ACCOUNT_URL, SPOT_TIME_URL).await
+}
+
+async fn fetch_futures_account(credential: &Value) -> anyhow::Result<FuturesAccountResponse> {
+    fetch_signed(
+        credential,
+        USD_M_FUTURES_ACCOUNT_URL,
+        USD_M_FUTURES_TIME_URL,
+    )
+    .await
+}
+
+async fn fetch_signed<T>(credential: &Value, url: &str, time_url: &str) -> anyhow::Result<T>
+where
+    T: for<'de> Deserialize<'de>,
+{
     let access_key = common::str_value(credential, "access_key");
     let secret_key = common::str_value(credential, "secret_key");
     let client = common::http_client()?;
-    let timestamp = fetch_server_timestamp(&client).await?;
+    let timestamp = fetch_server_timestamp(&client, time_url).await?;
     let query = signed_query(&secret_key, timestamp)?;
 
     Ok(client
-        .get(format!("{SPOT_ACCOUNT_URL}?{query}"))
+        .get(format!("{url}?{query}"))
         .header("X-MBX-APIKEY", access_key)
         .send()
         .await?
         .error_for_status()?
-        .json::<SpotAccountResponse>()
+        .json::<T>()
         .await?)
 }
 
-async fn fetch_server_timestamp(client: &reqwest::Client) -> anyhow::Result<u128> {
+async fn fetch_server_timestamp(client: &reqwest::Client, time_url: &str) -> anyhow::Result<u128> {
     Ok(client
-        .get(SPOT_TIME_URL)
+        .get(time_url)
         .send()
         .await?
         .error_for_status()?
@@ -171,6 +229,57 @@ fn spot_asset_product_id(asset: &str) -> String {
         format!("{ID}/SPOT/USDT")
     } else {
         format!("{ID}/SPOT/{asset}USDT")
+    }
+}
+
+fn map_futures_asset(asset: FuturesAsset) -> Option<Position> {
+    let volume = asset.wallet_balance.parse::<f64>().ok()?;
+    if volume <= 0.0 {
+        return None;
+    }
+
+    Some(Position {
+        position_id: format!("USDT-FUTURES/{}", asset.asset),
+        product_id: format!("{ID}/USDT-FUTURES/{}", asset.asset),
+        direction: None,
+        volume,
+        free_volume: asset.available_balance.parse().ok()?,
+        position_price: 0.0,
+        closable_price: if asset.asset == "USDT" { 1.0 } else { 0.0 },
+        floating_profit: 0.0,
+        comment: None,
+    })
+}
+
+fn map_futures_position(position: FuturesPosition) -> Option<Position> {
+    let signed_volume = position.position_amt.parse::<f64>().ok()?;
+    if signed_volume == 0.0 {
+        return None;
+    }
+    let entry_price = position.entry_price.parse::<f64>().ok()?;
+    let floating_profit = position.unrealized_profit.parse::<f64>().ok()?;
+
+    Some(Position {
+        position_id: format!(
+            "USDT-FUTURES/{}/{}",
+            position.symbol, position.position_side
+        ),
+        product_id: format!("{ID}/USDT-FUTURES/{}", position.symbol),
+        direction: Some(futures_direction(signed_volume, &position.position_side)),
+        volume: signed_volume.abs(),
+        free_volume: signed_volume.abs(),
+        position_price: entry_price,
+        closable_price: entry_price + floating_profit / signed_volume,
+        floating_profit,
+        comment: None,
+    })
+}
+
+fn futures_direction(signed_volume: f64, position_side: &str) -> PositionDirection {
+    if position_side == "SHORT" || signed_volume < 0.0 {
+        PositionDirection::Short
+    } else {
+        PositionDirection::Long
     }
 }
 

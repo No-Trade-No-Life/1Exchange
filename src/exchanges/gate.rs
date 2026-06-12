@@ -16,6 +16,8 @@ const FUTURES_CONTRACTS_URL: &str = "https://api.gateio.ws/api/v4/futures/usdt/c
 const FUTURES_POSITIONS_PATH: &str = "/api/v4/futures/usdt/positions";
 const SPOT_ACCOUNTS_PATH: &str = "/api/v4/spot/accounts";
 const SPOT_PAIRS_URL: &str = "https://api.gateio.ws/api/v4/spot/currency_pairs";
+const UNIFIED_ACCOUNTS_PATH: &str = "/api/v4/unified/accounts";
+const EARN_BALANCE_PATH: &str = "/api/v4/earn/uni/lends";
 
 pub struct Adapter;
 
@@ -63,13 +65,19 @@ impl ExchangeAdapter for Adapter {
     async fn list_positions(&self, credential: &Value) -> anyhow::Result<Vec<Position>> {
         let spot = gate_get(credential, SPOT_ACCOUNTS_PATH, "").await?;
         let futures = gate_get(credential, FUTURES_POSITIONS_PATH, "").await?;
+        let unified = gate_get(credential, UNIFIED_ACCOUNTS_PATH, "").await?;
+        let earn = gate_get(credential, EARN_BALANCE_PATH, "").await?;
         let spot_rows = spot.as_array().cloned().unwrap_or_default();
         let futures_rows = futures.as_array().cloned().unwrap_or_default();
+        let unified_rows = unified_balance_rows(&unified);
+        let earn_rows = earn.as_array().cloned().unwrap_or_default();
 
         Ok(spot_rows
             .into_iter()
             .filter_map(map_spot_position)
             .chain(futures_rows.into_iter().filter_map(map_future_position))
+            .chain(unified_rows.into_iter().filter_map(map_unified_position))
+            .chain(earn_rows.into_iter().filter_map(map_earn_position))
             .collect())
     }
 
@@ -125,6 +133,23 @@ fn gate_signature(
     Ok(hex::encode(mac.finalize().into_bytes()))
 }
 
+fn unified_balance_rows(response: &Value) -> Vec<Value> {
+    response
+        .get("balances")
+        .and_then(Value::as_object)
+        .map(|balances| {
+            balances
+                .iter()
+                .map(|(currency, balance)| {
+                    let mut row = balance.clone();
+                    row["currency"] = Value::String(currency.clone());
+                    row
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn map_spot_position(row: Value) -> Option<Position> {
     let currency = common::str_value(&row, "currency");
     let available = common::f64_value(&row, "available");
@@ -149,6 +174,55 @@ fn map_spot_position(row: Value) -> Option<Position> {
         floating_profit: 0.0,
         comment: None,
     })
+}
+
+fn map_unified_position(row: Value) -> Option<Position> {
+    let currency = common::str_value(&row, "currency");
+    let volume = common::f64_value(&row, "available");
+    if currency.is_empty() || volume == 0.0 {
+        return None;
+    }
+
+    Some(Position {
+        position_id: format!("UNIFIED/{currency}"),
+        product_id: spot_product_id(&currency),
+        direction: None,
+        volume,
+        free_volume: volume,
+        position_price: 0.0,
+        closable_price: if currency == "USDT" { 1.0 } else { 0.0 },
+        floating_profit: 0.0,
+        comment: None,
+    })
+}
+
+fn map_earn_position(row: Value) -> Option<Position> {
+    let currency = common::str_value(&row, "currency");
+    let volume = common::f64_value(&row, "amount");
+    if currency.is_empty() || volume <= 0.0 {
+        return None;
+    }
+    let frozen = common::f64_value(&row, "frozen_amount");
+
+    Some(Position {
+        position_id: format!("EARNING/{currency}"),
+        product_id: format!("{ID}/EARNING/{currency}"),
+        direction: None,
+        volume,
+        free_volume: (volume - frozen).max(0.0),
+        position_price: 0.0,
+        closable_price: if currency == "USDT" { 1.0 } else { 0.0 },
+        floating_profit: 0.0,
+        comment: None,
+    })
+}
+
+fn spot_product_id(currency: &str) -> String {
+    if currency == "USDT" {
+        format!("{ID}/SPOT/USDT")
+    } else {
+        format!("{ID}/SPOT/{currency}_USDT")
+    }
 }
 
 fn map_future_position(row: Value) -> Option<Position> {

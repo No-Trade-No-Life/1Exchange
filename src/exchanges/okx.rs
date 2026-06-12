@@ -7,7 +7,7 @@ use sha2::Sha256;
 
 use crate::{
     exchanges::{ExchangeAdapter, ExchangeInfo, common},
-    models::{AccountInfo, Order, Position, Product},
+    models::{AccountInfo, Order, Position, PositionDirection, Product},
 };
 
 pub const ID: &str = "OKX";
@@ -16,6 +16,9 @@ const BASE_URL: &str = "https://www.okx.com";
 const INSTRUMENTS_URL: &str = "https://www.okx.com/api/v5/public/instruments";
 const BALANCE_PATH: &str = "/api/v5/account/balance";
 const POSITIONS_PATH: &str = "/api/v5/account/positions";
+const FUNDING_BALANCES_PATH: &str = "/api/v5/asset/balances";
+const SAVINGS_BALANCE_PATH: &str = "/api/v5/finance/savings/balance";
+const FLEXIBLE_LOAN_PATH: &str = "/api/v5/finance/flexible-loan/loan-info";
 
 pub struct Adapter;
 
@@ -62,6 +65,9 @@ impl ExchangeAdapter for Adapter {
     async fn list_positions(&self, credential: &Value) -> anyhow::Result<Vec<Position>> {
         let balance = okx_get(credential, BALANCE_PATH).await?;
         let positions = okx_get(credential, POSITIONS_PATH).await?;
+        let funding_balances = okx_get(credential, FUNDING_BALANCES_PATH).await?;
+        let savings_balances = okx_get(credential, SAVINGS_BALANCE_PATH).await?;
+        let flexible_loan = okx_get(credential, FLEXIBLE_LOAN_PATH).await?;
         let balance_rows = balance
             .get("data")
             .and_then(Value::as_array)
@@ -75,6 +81,14 @@ impl ExchangeAdapter for Adapter {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
+        let funding_rows = data_rows(&funding_balances);
+        let savings_rows = data_rows(&savings_balances);
+        let loan_summary = flexible_loan
+            .get("data")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .cloned()
+            .unwrap_or_default();
 
         Ok(balance_rows
             .into_iter()
@@ -84,6 +98,10 @@ impl ExchangeAdapter for Adapter {
                     .into_iter()
                     .filter_map(map_derivative_position),
             )
+            .chain(funding_rows.into_iter().filter_map(map_funding_position))
+            .chain(savings_rows.into_iter().filter_map(map_savings_position))
+            .chain(loan_rows(&loan_summary, "loanData").filter_map(map_loan_position))
+            .chain(loan_rows(&loan_summary, "collateralData").filter_map(map_collateral_position))
             .collect())
     }
 
@@ -137,6 +155,23 @@ fn okx_signature(
     Ok(BASE64_STANDARD.encode(mac.finalize().into_bytes()))
 }
 
+fn data_rows(response: &Value) -> Vec<Value> {
+    response
+        .get("data")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn loan_rows(summary: &Value, field: &str) -> impl Iterator<Item = Value> {
+    summary
+        .get(field)
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+}
+
 fn map_balance_position(row: Value) -> Option<Position> {
     let currency = common::str_value(&row, "ccy");
     let volume = common::f64_value(&row, "cashBal");
@@ -159,6 +194,90 @@ fn map_balance_position(row: Value) -> Option<Position> {
         floating_profit: 0.0,
         comment: None,
     })
+}
+
+fn map_funding_position(row: Value) -> Option<Position> {
+    let currency = common::str_value(&row, "ccy");
+    let volume = common::f64_value(&row, "bal");
+    if currency.is_empty() || volume == 0.0 {
+        return None;
+    }
+
+    Some(asset_position(
+        format!("FUNDING-ASSET/{currency}"),
+        currency,
+        volume,
+        common::f64_value(&row, "availBal"),
+    ))
+}
+
+fn map_savings_position(row: Value) -> Option<Position> {
+    let currency = common::str_value(&row, "ccy");
+    let volume = common::f64_value(&row, "amt");
+    if currency.is_empty() || volume == 0.0 {
+        return None;
+    }
+
+    Some(asset_position(
+        format!("EARNING-ASSET/{currency}"),
+        currency,
+        volume,
+        volume,
+    ))
+}
+
+fn map_loan_position(row: Value) -> Option<Position> {
+    let currency = common::str_value(&row, "ccy");
+    let volume = common::f64_value(&row, "amt");
+    if currency.is_empty() || volume == 0.0 {
+        return None;
+    }
+
+    Some(Position {
+        position_id: format!("LOAN/{currency}"),
+        product_id: format!("{ID}/LOAN/{currency}"),
+        direction: Some(PositionDirection::Short),
+        volume: volume.abs(),
+        free_volume: volume.abs(),
+        position_price: 0.0,
+        closable_price: if currency == "USDT" { 1.0 } else { 0.0 },
+        floating_profit: 0.0,
+        comment: None,
+    })
+}
+
+fn map_collateral_position(row: Value) -> Option<Position> {
+    let currency = common::str_value(&row, "ccy");
+    let volume = common::f64_value(&row, "amt");
+    if currency.is_empty() || volume == 0.0 {
+        return None;
+    }
+
+    Some(asset_position(
+        format!("COLLATERAL/{currency}"),
+        currency,
+        volume,
+        volume,
+    ))
+}
+
+fn asset_position(
+    position_id: String,
+    currency: String,
+    volume: f64,
+    free_volume: f64,
+) -> Position {
+    Position {
+        product_id: format!("{ID}/{position_id}"),
+        position_id,
+        direction: None,
+        volume: volume.abs(),
+        free_volume: free_volume.abs(),
+        position_price: 0.0,
+        closable_price: if currency == "USDT" { 1.0 } else { 0.0 },
+        floating_profit: 0.0,
+        comment: None,
+    }
 }
 
 fn map_derivative_position(row: Value) -> Option<Position> {
