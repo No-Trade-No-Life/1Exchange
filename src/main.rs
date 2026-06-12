@@ -11,7 +11,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
-use models::{AccountInfo, AssetStat, Position, Product};
+use models::{AccountInfo, Position, Product};
 use serde::{Serialize, ser::SerializeStruct};
 use sqlx::{SqlitePool, sqlite::SqliteConnectOptions};
 use tokio::net::TcpListener;
@@ -54,7 +54,6 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/accounts", get(list_accounts))
         .route("/positions", get(list_positions))
-        .route("/assets", get(list_assets))
         .route("/products", get(list_products))
         .with_state(state);
     let app = Router::new()
@@ -148,10 +147,6 @@ async fn list_accounts() -> Json<Vec<AccountInfo>> {
 }
 
 async fn list_positions() -> Json<Vec<Position>> {
-    Json(Vec::new())
-}
-
-async fn list_assets() -> Json<Vec<AssetStat>> {
     Json(Vec::new())
 }
 

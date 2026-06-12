@@ -3,21 +3,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AccountInfo {
     pub account_id: String,
-    pub money: AccountMoney,
     pub positions: Vec<Position>,
     pub orders: Vec<Order>,
     pub timestamp_in_us: i64,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct AccountMoney {
-    pub currency: String,
-    pub equity: f64,
-    pub balance: f64,
-    pub profit: f64,
-    pub free: f64,
-    pub used: f64,
-    pub leverage: Option<f64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -84,14 +72,4 @@ pub struct Product {
     pub allow_long: Option<bool>,
     pub allow_short: Option<bool>,
     pub spread: Option<f64>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct AssetStat {
-    pub currency: String,
-    pub equity: f64,
-    pub balance: f64,
-    pub profit: f64,
-    pub free: f64,
-    pub used: f64,
 }
