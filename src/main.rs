@@ -6,7 +6,7 @@ use std::{net::SocketAddr, path::PathBuf, str::FromStr};
 
 use axum::{
     Json, Router,
-    extract::State,
+    extract::{Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::get,
@@ -27,6 +27,11 @@ pub struct AppState {
 struct HealthResponse {
     status: &'static str,
     database: String,
+}
+
+#[derive(serde::Deserialize)]
+struct ProductsQuery {
+    exchange: Option<String>,
 }
 
 #[derive(Debug)]
@@ -150,8 +155,14 @@ async fn list_positions() -> Json<Vec<Position>> {
     Json(Vec::new())
 }
 
-async fn list_products() -> Json<Vec<Product>> {
-    Json(Vec::new())
+async fn list_products(Query(query): Query<ProductsQuery>) -> Result<Json<Vec<Product>>, AppError> {
+    let exchange = query
+        .exchange
+        .ok_or_else(|| AppError::bad_request("missing exchange query"))?;
+    let adapter = exchanges::adapter(&exchange)
+        .ok_or_else(|| AppError::bad_request(format!("unsupported exchange: {exchange}")))?;
+
+    Ok(Json(adapter.list_products().await?))
 }
 
 impl AppError {
@@ -193,6 +204,15 @@ impl From<serde_json::Error> for AppError {
     fn from(error: serde_json::Error) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
+            message: error.to_string(),
+        }
+    }
+}
+
+impl From<anyhow::Error> for AppError {
+    fn from(error: anyhow::Error) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
             message: error.to_string(),
         }
     }

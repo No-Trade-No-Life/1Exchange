@@ -25,7 +25,7 @@ pub struct ExchangeInfo {
 #[allow(dead_code)]
 pub trait ExchangeAdapter: Send + Sync {
     fn info(&self) -> ExchangeInfo;
-    async fn list_products(&self, credential: &Value) -> anyhow::Result<Vec<Product>>;
+    async fn list_products(&self) -> anyhow::Result<Vec<Product>>;
     async fn get_account(&self, credential: &Value) -> anyhow::Result<AccountInfo>;
     async fn list_positions(&self, credential: &Value) -> anyhow::Result<Vec<Position>>;
     async fn list_orders(&self, credential: &Value) -> anyhow::Result<Vec<Order>>;
@@ -53,6 +53,12 @@ pub fn credential_required_fields(exchange: &str) -> Option<&'static [&'static s
         aster::ID => Some(aster::REQUIRED_FIELDS),
         _ => None,
     }
+}
+
+pub fn adapter(exchange: &str) -> Option<Box<dyn ExchangeAdapter>> {
+    registered_adapters()
+        .into_iter()
+        .find(|adapter| adapter.info().id == exchange)
 }
 
 fn registered_adapters() -> Vec<Box<dyn ExchangeAdapter>> {

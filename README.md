@@ -73,9 +73,21 @@ AccountInfo（账户） -> Position（持仓 / 资产） -> Product（规格）
 - `POST /api/credentials`：新增 Credential。
 - `GET /api/accounts`：列出账户快照。
 - `GET /api/positions`：列出账户持仓/资产投影。
-- `GET /api/products`：列出交易产品规格。
+- `GET /api/products?exchange=BINANCE`：列出指定交易所的交易产品规格。
 
 当前 `accounts`、`positions`、`products` 已固定标准响应模型，但真实数据拉取仍待交易所 Adapter 接入。
+
+当前实质接入状态：
+
+| 交易所 ID | Products | Account / Position |
+| --- | --- | --- |
+| `BINANCE` | 已接入公开现货和 U 本位合约产品 | 待实现 |
+| `OKX` | 待实现 | 待实现 |
+| `HTX` | 待实现 | 待实现 |
+| `GATE` | 待实现 | 待实现 |
+| `BITGET` | 待实现 | 待实现 |
+| `HYPERLIQUID` | 待实现 | 待实现 |
+| `ASTER` | 待实现 | 待实现 |
 
 当前交易所注册表覆盖：
 

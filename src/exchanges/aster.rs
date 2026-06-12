@@ -17,7 +17,7 @@ impl ExchangeAdapter for Adapter {
         common::exchange_info(ID, "Aster", REQUIRED_FIELDS)
     }
 
-    async fn list_products(&self, _credential: &Value) -> anyhow::Result<Vec<Product>> {
+    async fn list_products(&self) -> anyhow::Result<Vec<Product>> {
         Err(common::not_implemented(ID, "product"))
     }
 
