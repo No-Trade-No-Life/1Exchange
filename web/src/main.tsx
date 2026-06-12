@@ -49,10 +49,11 @@ type Product = {
   allow_short: boolean | null;
 };
 
-type Page = 'overview' | 'credentials' | 'positions' | 'products' | 'exchanges';
+type Page = 'overview' | 'trade' | 'credentials' | 'positions' | 'products' | 'exchanges';
 
 const pages: Array<{ id: Page; label: string; hint: string }> = [
   { id: 'overview', label: 'Overview', hint: 'Service and adapter status' },
+  { id: 'trade', label: 'Trade', hint: 'Trading board' },
   { id: 'credentials', label: 'Credentials', hint: 'Saved local metadata' },
   { id: 'positions', label: 'Positions', hint: 'Assets and open exposure' },
   { id: 'products', label: 'Products', hint: 'Exchange product specs' },
@@ -106,6 +107,7 @@ function App() {
   const credentials = useJson<Credential[]>('/api/credentials');
   const [selectedCredentialId, setSelectedCredentialId] = useState('');
   const [selectedExchangeId, setSelectedExchangeId] = useState('BINANCE');
+  const [selectedTradeProductId, setSelectedTradeProductId] = useState('');
 
   const selectedCredential = credentials.data?.find((item) => item.id === selectedCredentialId);
   const positionsPath = selectedCredentialId
@@ -121,6 +123,12 @@ function App() {
     }
   }, [credentials.data, selectedCredentialId]);
 
+  useEffect(() => {
+    if (products.data?.length && !products.data.some((item) => item.product_id === selectedTradeProductId)) {
+      setSelectedTradeProductId(products.data[0].product_id);
+    }
+  }, [products.data, selectedTradeProductId]);
+
   const exposure = useMemo(() => summarizePositions(positions.data ?? []), [positions.data]);
 
   const content = {
@@ -133,6 +141,22 @@ function App() {
         positionCount={positions.data?.length ?? 0}
         productCount={products.data?.length ?? 0}
         selectedCredential={selectedCredential}
+      />
+    ),
+    trade: (
+      <TradePage
+        credentials={credentials.data ?? []}
+        error={selectedCredentialId ? positions.error : null}
+        exchanges={exchanges.data ?? []}
+        loading={selectedCredentialId ? positions.loading || products.loading : products.loading}
+        positions={selectedCredentialId ? positions.data ?? [] : []}
+        products={products.data ?? []}
+        selectedCredentialId={selectedCredentialId}
+        selectedExchangeId={selectedExchangeId}
+        selectedProductId={selectedTradeProductId}
+        onSelectCredential={setSelectedCredentialId}
+        onSelectExchange={setSelectedExchangeId}
+        onSelectProduct={setSelectedTradeProductId}
       />
     ),
     credentials: <CredentialsPage credentials={credentials.data ?? []} exchanges={exchanges.data ?? []} />,
@@ -242,6 +266,213 @@ function OverviewPage(props: {
         </dl>
       </section>
     </div>
+  );
+}
+
+function TradePage(props: {
+  credentials: Credential[];
+  error: string | null;
+  exchanges: ExchangeInfo[];
+  loading: boolean;
+  positions: Position[];
+  products: Product[];
+  selectedCredentialId: string;
+  selectedExchangeId: string;
+  selectedProductId: string;
+  onSelectCredential: (value: string) => void;
+  onSelectExchange: (value: string) => void;
+  onSelectProduct: (value: string) => void;
+}) {
+  const selectedProduct = props.products.find((item) => item.product_id === props.selectedProductId);
+  const relatedPositions = props.positions.filter((item) => item.product_id === props.selectedProductId);
+  const quote = boardQuote(selectedProduct, relatedPositions);
+  const book = mockOrderBook(quote.mark);
+  const risk = summarizeTradeRisk(props.positions);
+
+  return (
+    <div className="trade-board">
+      <section className="trade-toolbar">
+        <label>
+          Credential
+          <select value={props.selectedCredentialId} onChange={(event) => props.onSelectCredential(event.target.value)}>
+            <option value="">Select credential</option>
+            {props.credentials.map((credential) => (
+              <option key={credential.id} value={credential.id}>
+                {credential.exchange} · {credential.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Exchange
+          <select value={props.selectedExchangeId} onChange={(event) => props.onSelectExchange(event.target.value)}>
+            {props.exchanges.map((exchange) => (
+              <option key={exchange.id} value={exchange.id}>
+                {exchange.id} · {exchange.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="wide-control">
+          Product
+          <select value={props.selectedProductId} onChange={(event) => props.onSelectProduct(event.target.value)}>
+            <option value="">Select product</option>
+            {props.products.slice(0, 500).map((product) => (
+              <option key={product.product_id} value={product.product_id}>
+                {product.product_id}
+              </option>
+            ))}
+          </select>
+        </label>
+      </section>
+
+      <InlineError message={props.error} />
+
+      <section className="chart-panel trade-panel">
+        <PanelTitle label="Chart" title={selectedProduct?.name ?? 'Select a product'} action={props.loading ? 'Loading' : 'Read only'} />
+        <div className="chart-shell">
+          <div className="chart-gridlines" />
+          <svg className="price-line" viewBox="0 0 640 220" preserveAspectRatio="none" aria-hidden="true">
+            <path d="M0 168 C60 120 96 132 144 102 S248 76 312 114 414 170 480 104 574 62 640 88" />
+          </svg>
+          <div className="chart-readout">
+            <span>{selectedProduct?.product_id ?? 'No product selected'}</span>
+            <strong>{formatNumber(quote.mark)}</strong>
+            <small>synthetic board price from current position/product context</small>
+          </div>
+        </div>
+      </section>
+
+      <section className="book-panel trade-panel">
+        <PanelTitle label="Order book" title="Depth" action="Placeholder" />
+        <OrderBookPreview asks={book.asks} bids={book.bids} />
+      </section>
+
+      <section className="account-panel trade-panel">
+        <PanelTitle label="Account" title="Positions" action={`${relatedPositions.length} related`} />
+        <DataTable
+          empty="No position matches the selected product."
+          headers={['Position', 'Side', 'Volume', 'Entry', 'Mark', 'P/L']}
+          rows={(relatedPositions.length ? relatedPositions : props.positions.slice(0, 8)).map((item) => [
+            item.position_id,
+            item.direction ? <Badge key="side">{item.direction}</Badge> : 'Asset',
+            formatNumber(item.volume),
+            formatNumber(item.position_price),
+            formatNumber(item.closable_price),
+            <Value key="pnl" value={item.floating_profit} />,
+          ])}
+        />
+      </section>
+
+      <section className="manual-panel trade-panel">
+        <PanelTitle label="Manual trade" title="Order draft" action="Disabled" />
+        <ManualTradeDraft product={selectedProduct} selectedCredentialId={props.selectedCredentialId} />
+      </section>
+
+      <section className="profit-panel trade-panel">
+        <PanelTitle label="Risk" title="Account summary" action="Positions" />
+        <dl className="risk-list">
+          <div>
+            <dt>Total rows</dt>
+            <dd>{risk.total}</dd>
+          </div>
+          <div>
+            <dt>Floating P/L</dt>
+            <dd><Value value={risk.pnl} /></dd>
+          </div>
+          <div>
+            <dt>Long positions</dt>
+            <dd>{risk.long}</dd>
+          </div>
+          <div>
+            <dt>Short positions</dt>
+            <dd>{risk.short}</dd>
+          </div>
+        </dl>
+      </section>
+    </div>
+  );
+}
+
+function PanelTitle(props: { action?: string; label: string; title: string }) {
+  return (
+    <div className="trade-panel-title">
+      <div>
+        <p className="section-label">{props.label}</p>
+        <h2>{props.title}</h2>
+      </div>
+      {props.action ? <span className="count-chip">{props.action}</span> : null}
+    </div>
+  );
+}
+
+function OrderBookPreview(props: { asks: Array<[number, number]>; bids: Array<[number, number]> }) {
+  return (
+    <div className="order-book-preview">
+      <div className="book-header"><span>Price</span><span>Size</span><span>Total</span></div>
+      <div className="book-side asks">
+        {props.asks.map(([price, size], index) => (
+          <BookRow key={`ask-${price}`} price={price} size={size} total={size * (index + 1)} side="ask" />
+        ))}
+      </div>
+      <div className="book-spread">Spread {formatNumber(Math.abs(props.asks.at(-1)![0] - props.bids[0][0]))}</div>
+      <div className="book-side bids">
+        {props.bids.map(([price, size], index) => (
+          <BookRow key={`bid-${price}`} price={price} size={size} total={size * (index + 1)} side="bid" />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function BookRow(props: { price: number; side: 'ask' | 'bid'; size: number; total: number }) {
+  return (
+    <div className="book-row" data-side={props.side}>
+      <span>{formatNumber(props.price)}</span>
+      <span>{formatNumber(props.size)}</span>
+      <span>{formatNumber(props.total)}</span>
+    </div>
+  );
+}
+
+function ManualTradeDraft(props: { product?: Product; selectedCredentialId: string }) {
+  const [intent, setIntent] = useState<'OPEN' | 'CLOSE'>('OPEN');
+  const [orderType, setOrderType] = useState<'LIMIT' | 'MARKET' | 'STOP'>('LIMIT');
+
+  return (
+    <form className="trade-form" onSubmit={(event) => event.preventDefault()}>
+      <div className="segmented-control" aria-label="Open or close">
+        {(['OPEN', 'CLOSE'] as const).map((value) => (
+          <button className={intent === value ? 'active' : ''} key={value} onClick={() => setIntent(value)} type="button">
+            {value === 'OPEN' ? 'Open' : 'Close'}
+          </button>
+        ))}
+      </div>
+      <div className="segmented-control" aria-label="Order type">
+        {(['LIMIT', 'MARKET', 'STOP'] as const).map((value) => (
+          <button className={orderType === value ? 'active' : ''} key={value} onClick={() => setOrderType(value)} type="button">
+            {value}
+          </button>
+        ))}
+      </div>
+      <label>
+        Price
+        <input disabled={orderType === 'MARKET'} inputMode="decimal" placeholder={orderType === 'MARKET' ? 'Market' : '0.00'} />
+      </label>
+      <label>
+        Volume
+        <input inputMode="decimal" placeholder={formatOptionalNumber(props.product?.volume_step ?? null)} />
+      </label>
+      <div className="trade-actions">
+        <button className="buy-action" disabled={!props.selectedCredentialId || !props.product} type="button">
+          {intent === 'OPEN' ? 'Open long' : 'Close short'}
+        </button>
+        <button className="sell-action" disabled={!props.selectedCredentialId || !props.product} type="button">
+          {intent === 'OPEN' ? 'Open short' : 'Close long'}
+        </button>
+      </div>
+      <p className="form-note">Order submission is not enabled in 1Exchange yet. This panel mirrors Yuan's manual trade workflow for layout and review.</p>
+    </form>
   );
 }
 
@@ -488,6 +719,33 @@ function summarizePositions(positions: Position[]) {
     }),
     { total: 0, assets: 0, long: 0, short: 0 },
   );
+}
+
+function summarizeTradeRisk(positions: Position[]) {
+  return positions.reduce(
+    (summary, item) => ({
+      total: summary.total + 1,
+      pnl: summary.pnl + item.floating_profit,
+      long: summary.long + (item.direction === 'LONG' ? 1 : 0),
+      short: summary.short + (item.direction === 'SHORT' ? 1 : 0),
+    }),
+    { total: 0, pnl: 0, long: 0, short: 0 },
+  );
+}
+
+function boardQuote(product: Product | undefined, positions: Position[]) {
+  const positionMark = positions.find((item) => item.closable_price > 0)?.closable_price;
+  const productStep = product?.price_step && product.price_step > 0 ? product.price_step * 10_000 : 1;
+  return { mark: positionMark ?? productStep };
+}
+
+function mockOrderBook(mark: number) {
+  const base = mark > 0 ? mark : 1;
+  const step = base >= 100 ? 0.5 : 0.01;
+  return {
+    asks: Array.from({ length: 8 }, (_, index) => [base + step * (8 - index), (index + 1) * 1.7] as [number, number]),
+    bids: Array.from({ length: 8 }, (_, index) => [base - step * (index + 1), (index + 1) * 1.5] as [number, number]),
+  };
 }
 
 function formatDate(value: string) {
