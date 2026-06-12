@@ -49,16 +49,25 @@ type Product = {
   allow_short: boolean | null;
 };
 
-type Page = 'overview' | 'trade' | 'credentials' | 'positions' | 'products' | 'exchanges';
+type PortfolioAccount = {
+  credential: Credential;
+  error: string | null;
+  positions: Position[];
+};
+
+type Page = 'overview' | 'portfolio' | 'trade' | 'credentials' | 'positions' | 'products' | 'exchanges';
 
 const pages: Array<{ id: Page; label: string; hint: string }> = [
   { id: 'overview', label: 'Overview', hint: 'Service and adapter status' },
+  { id: 'portfolio', label: 'Portfolio', hint: 'All credential assets' },
   { id: 'trade', label: 'Trade', hint: 'Trading board' },
   { id: 'credentials', label: 'Credentials', hint: 'Saved local metadata' },
   { id: 'positions', label: 'Positions', hint: 'Assets and open exposure' },
   { id: 'products', label: 'Products', hint: 'Exchange product specs' },
   { id: 'exchanges', label: 'Exchanges', hint: 'Schemas and capabilities' },
 ];
+
+const emptyCredentials: Credential[] = [];
 
 function useJson<T>(path: string) {
   const [data, setData] = useState<T | null>(null);
@@ -100,11 +109,53 @@ function useJson<T>(path: string) {
   return { data, error, loading };
 }
 
+function usePortfolio(credentials: Credential[]) {
+  const [accounts, setAccounts] = useState<PortfolioAccount[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(credentials.length > 0);
+    setAccounts([]);
+
+    Promise.all(
+      credentials.map(async (credential) => {
+        try {
+          const response = await fetch(`/api/positions?credential_id=${encodeURIComponent(credential.id)}`);
+          if (!response.ok) {
+            throw new Error(`${response.status} ${response.statusText}`);
+          }
+          return { credential, error: null, positions: (await response.json()) as Position[] };
+        } catch (caught) {
+          return { credential, error: (caught as Error).message, positions: [] };
+        }
+      }),
+    )
+      .then((nextAccounts) => {
+        if (alive) {
+          setAccounts(nextAccounts);
+        }
+      })
+      .finally(() => {
+        if (alive) {
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      alive = false;
+    };
+  }, [credentials]);
+
+  return { accounts, loading };
+}
+
 function App() {
   const [page, setPage] = useState<Page>('overview');
   const health = useJson<Health>('/api/health');
   const exchanges = useJson<ExchangeInfo[]>('/api/exchanges');
   const credentials = useJson<Credential[]>('/api/credentials');
+  const credentialList = credentials.data ?? emptyCredentials;
   const [selectedCredentialId, setSelectedCredentialId] = useState('');
   const [selectedExchangeId, setSelectedExchangeId] = useState('BINANCE');
   const [selectedTradeProductId, setSelectedTradeProductId] = useState('');
@@ -116,6 +167,7 @@ function App() {
   const productsPath = `/api/products?exchange=${encodeURIComponent(selectedExchangeId)}`;
   const positions = useJson<Position[]>(positionsPath);
   const products = useJson<Product[]>(productsPath);
+  const portfolio = usePortfolio(credentialList);
 
   useEffect(() => {
     if (!selectedCredentialId && credentials.data?.[0]) {
@@ -143,9 +195,10 @@ function App() {
         selectedCredential={selectedCredential}
       />
     ),
+    portfolio: <PortfolioPage accounts={portfolio.accounts} loading={portfolio.loading} />,
     trade: (
       <TradePage
-        credentials={credentials.data ?? []}
+        credentials={credentialList}
         error={selectedCredentialId ? positions.error : null}
         exchanges={exchanges.data ?? []}
         loading={selectedCredentialId ? positions.loading || products.loading : products.loading}
@@ -159,10 +212,10 @@ function App() {
         onSelectProduct={setSelectedTradeProductId}
       />
     ),
-    credentials: <CredentialsPage credentials={credentials.data ?? []} exchanges={exchanges.data ?? []} />,
+    credentials: <CredentialsPage credentials={credentialList} exchanges={exchanges.data ?? []} />,
     positions: (
       <PositionsPage
-        credentials={credentials.data ?? []}
+        credentials={credentialList}
         error={selectedCredentialId ? positions.error : null}
         exposure={exposure}
         loading={selectedCredentialId ? positions.loading : false}
@@ -264,6 +317,74 @@ function OverviewPage(props: {
             <dd>{props.productCount}</dd>
           </div>
         </dl>
+      </section>
+    </div>
+  );
+}
+
+function PortfolioPage(props: { accounts: PortfolioAccount[]; loading: boolean }) {
+  const summary = summarizePortfolio(props.accounts);
+  const assetRows = summarizePortfolioAssets(props.accounts);
+
+  return (
+    <div className="page-stack">
+      <section className="metrics-grid compact" aria-label="Portfolio summary">
+        <Metric label="Credentials" value={summary.credentials.toString()} />
+        <Metric label="Loaded positions" value={summary.positions.toString()} />
+        <Metric label="Priced value" value={formatNumber(summary.pricedValue)} />
+        <Metric label="Floating P/L" value={formatNumber(summary.pnl)} tone={summary.pnl < 0 ? 'warn' : 'good'} />
+        <Metric label="Read errors" value={summary.errors.toString()} tone={summary.errors > 0 ? 'warn' : 'neutral'} />
+      </section>
+
+      <section className="panel">
+        <div className="panel-heading">
+          <div>
+            <p className="section-label">By credential</p>
+            <h2>Account summary</h2>
+          </div>
+          <span className="count-chip">{props.loading ? 'Loading' : `${props.accounts.length} credentials`}</span>
+        </div>
+        <DataTable
+          empty="No credentials yet. Add credentials before loading a portfolio summary."
+          headers={['Credential', 'Exchange', 'Positions', 'Assets', 'Long', 'Short', 'Priced value', 'Floating P/L', 'Status']}
+          rows={props.accounts.map((account) => {
+            const accountSummary = summarizeAccountPositions(account.positions);
+            return [
+              account.credential.name,
+              <Badge key="exchange">{account.credential.exchange}</Badge>,
+              accountSummary.total.toString(),
+              accountSummary.assets.toString(),
+              accountSummary.long.toString(),
+              accountSummary.short.toString(),
+              formatNumber(accountSummary.pricedValue),
+              <Value key="pnl" value={accountSummary.pnl} />,
+              account.error ? <span className="status-text bad" key="status">{account.error}</span> : <span className="status-text good" key="status">Loaded</span>,
+            ];
+          })}
+        />
+      </section>
+
+      <section className="panel">
+        <div className="panel-heading">
+          <div>
+            <p className="section-label">By product</p>
+            <h2>Asset exposure</h2>
+          </div>
+          <span className="count-chip">{assetRows.length} products</span>
+        </div>
+        <DataTable
+          empty="No positions were loaded from saved credentials."
+          headers={['Product', 'Credentials', 'Rows', 'Volume', 'Free', 'Priced value', 'Floating P/L']}
+          rows={assetRows.map((row) => [
+            <code key="product">{row.productId}</code>,
+            row.credentials.toString(),
+            row.rows.toString(),
+            formatNumber(row.volume),
+            formatNumber(row.freeVolume),
+            formatNumber(row.pricedValue),
+            <Value key="pnl" value={row.pnl} />,
+          ])}
+        />
       </section>
     </div>
   );
@@ -719,6 +840,71 @@ function summarizePositions(positions: Position[]) {
     }),
     { total: 0, assets: 0, long: 0, short: 0 },
   );
+}
+
+function summarizePortfolio(accounts: PortfolioAccount[]) {
+  return accounts.reduce(
+    (summary, account) => {
+      const accountSummary = summarizeAccountPositions(account.positions);
+      return {
+        credentials: summary.credentials + 1,
+        errors: summary.errors + (account.error ? 1 : 0),
+        positions: summary.positions + accountSummary.total,
+        pricedValue: summary.pricedValue + accountSummary.pricedValue,
+        pnl: summary.pnl + accountSummary.pnl,
+      };
+    },
+    { credentials: 0, errors: 0, positions: 0, pricedValue: 0, pnl: 0 },
+  );
+}
+
+function summarizeAccountPositions(positions: Position[]) {
+  return positions.reduce(
+    (summary, item) => ({
+      total: summary.total + 1,
+      assets: summary.assets + (item.direction ? 0 : 1),
+      long: summary.long + (item.direction === 'LONG' ? 1 : 0),
+      short: summary.short + (item.direction === 'SHORT' ? 1 : 0),
+      pricedValue: summary.pricedValue + pricedValue(item),
+      pnl: summary.pnl + item.floating_profit,
+    }),
+    { total: 0, assets: 0, long: 0, short: 0, pricedValue: 0, pnl: 0 },
+  );
+}
+
+function summarizePortfolioAssets(accounts: PortfolioAccount[]) {
+  const rows = new Map<
+    string,
+    { credentialIds: Set<string>; freeVolume: number; pnl: number; pricedValue: number; productId: string; rows: number; volume: number }
+  >();
+  for (const account of accounts) {
+    for (const position of account.positions) {
+      const current = rows.get(position.product_id) ?? {
+        credentialIds: new Set<string>(),
+        freeVolume: 0,
+        pnl: 0,
+        pricedValue: 0,
+        productId: position.product_id,
+        rows: 0,
+        volume: 0,
+      };
+      current.credentialIds.add(account.credential.id);
+      current.rows += 1;
+      current.volume += position.volume;
+      current.freeVolume += position.free_volume;
+      current.pricedValue += pricedValue(position);
+      current.pnl += position.floating_profit;
+      rows.set(position.product_id, current);
+    }
+  }
+
+  return Array.from(rows.values())
+    .map((row) => ({ ...row, credentials: row.credentialIds.size }))
+    .sort((a, b) => Math.abs(b.pricedValue) - Math.abs(a.pricedValue));
+}
+
+function pricedValue(position: Position) {
+  return position.closable_price > 0 ? position.volume * position.closable_price : 0;
 }
 
 function summarizeTradeRisk(positions: Position[]) {

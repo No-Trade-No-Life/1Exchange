@@ -709,6 +709,18 @@ dd {
   color: var(--bad);
 }
 
+.status-text {
+  font-weight: 750;
+}
+
+.status-text.good {
+  color: var(--good);
+}
+
+.status-text.bad {
+  color: var(--bad);
+}
+
 .schema-grid {
   display: grid;
 }
