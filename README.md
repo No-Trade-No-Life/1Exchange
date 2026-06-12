@@ -98,7 +98,7 @@ AccountInfo（账户） -> Position（持仓 / 资产） -> Product（规格）
 | `HTX` | HTX | `access_key`, `secret_key` |
 | `GATE` | Gate.io | `access_key`, `secret_key` |
 | `BITGET` | Bitget | `access_key`, `secret_key`, `passphrase` |
-| `HYPERLIQUID` | HyperLiquid | `private_key`, `address` |
+| `HYPERLIQUID` | HyperLiquid | `address` |
 | `ASTER` | Aster | `address`, `secret_key`, `api_key` |
 
 `POST /api/credentials` 会校验对应交易所的必填字段必须存在且为非空字符串。

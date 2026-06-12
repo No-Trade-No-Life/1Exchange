@@ -7,7 +7,7 @@ use crate::{
 };
 
 pub const ID: &str = "HYPERLIQUID";
-pub const REQUIRED_FIELDS: &[&str] = &["private_key", "address"];
+pub const REQUIRED_FIELDS: &[&str] = &["address"];
 const INFO_URL: &str = "https://api.hyperliquid.xyz/info";
 
 pub struct Adapter;
