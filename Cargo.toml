@@ -3,6 +3,9 @@ name = "one-exchange"
 version = "0.1.0"
 edition = "2024"
 
+[lints.rust]
+unsafe_code = "forbid"
+
 [dependencies]
 anyhow = "1"
 async-trait = "0.1"
