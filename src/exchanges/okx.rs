@@ -1,5 +1,9 @@
 use async_trait::async_trait;
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64_STANDARD};
+use chrono::Utc;
+use hmac::{Hmac, Mac};
 use serde_json::Value;
+use sha2::Sha256;
 
 use crate::{
     exchanges::{ExchangeAdapter, ExchangeInfo, common},
@@ -8,7 +12,10 @@ use crate::{
 
 pub const ID: &str = "OKX";
 pub const REQUIRED_FIELDS: &[&str] = &["access_key", "secret_key", "passphrase"];
+const BASE_URL: &str = "https://www.okx.com";
 const INSTRUMENTS_URL: &str = "https://www.okx.com/api/v5/public/instruments";
+const BALANCE_PATH: &str = "/api/v5/account/balance";
+const POSITIONS_PATH: &str = "/api/v5/account/positions";
 
 pub struct Adapter;
 
@@ -41,17 +48,145 @@ impl ExchangeAdapter for Adapter {
         Ok(products)
     }
 
-    async fn get_account(&self, _credential: &Value) -> anyhow::Result<AccountInfo> {
-        Err(common::not_implemented(ID, "account"))
+    async fn get_account(&self, credential: &Value) -> anyhow::Result<AccountInfo> {
+        let positions = self.list_positions(credential).await?;
+
+        Ok(AccountInfo {
+            account_id: format!("{ID}/{}", common::str_value(credential, "access_key")),
+            positions,
+            orders: Vec::new(),
+            timestamp_in_us: common::now_timestamp_in_us(),
+        })
     }
 
-    async fn list_positions(&self, _credential: &Value) -> anyhow::Result<Vec<Position>> {
-        Err(common::not_implemented(ID, "position"))
+    async fn list_positions(&self, credential: &Value) -> anyhow::Result<Vec<Position>> {
+        let balance = okx_get(credential, BALANCE_PATH).await?;
+        let positions = okx_get(credential, POSITIONS_PATH).await?;
+        let balance_rows = balance
+            .get("data")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(|row| row.get("details"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let position_rows = positions
+            .get("data")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+
+        Ok(balance_rows
+            .into_iter()
+            .filter_map(map_balance_position)
+            .chain(
+                position_rows
+                    .into_iter()
+                    .filter_map(map_derivative_position),
+            )
+            .collect())
     }
 
     async fn list_orders(&self, _credential: &Value) -> anyhow::Result<Vec<Order>> {
         Err(common::not_implemented(ID, "order"))
     }
+}
+
+async fn okx_get(credential: &Value, path: &str) -> anyhow::Result<Value> {
+    let timestamp = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+    let signature = okx_signature(
+        &common::str_value(credential, "secret_key"),
+        &timestamp,
+        "GET",
+        path,
+        "",
+    )?;
+    let response = common::http_client()?
+        .get(format!("{BASE_URL}{path}"))
+        .header("OK-ACCESS-KEY", common::str_value(credential, "access_key"))
+        .header("OK-ACCESS-SIGN", signature)
+        .header("OK-ACCESS-TIMESTAMP", timestamp)
+        .header(
+            "OK-ACCESS-PASSPHRASE",
+            common::str_value(credential, "passphrase"),
+        )
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<Value>()
+        .await?;
+
+    let code = common::str_value(&response, "code");
+    if code != "0" {
+        anyhow::bail!("OKX request failed: {response}");
+    }
+
+    Ok(response)
+}
+
+fn okx_signature(
+    secret_key: &str,
+    timestamp: &str,
+    method: &str,
+    path: &str,
+    body: &str,
+) -> anyhow::Result<String> {
+    let message = format!("{timestamp}{method}{path}{body}");
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret_key.as_bytes())?;
+    mac.update(message.as_bytes());
+    Ok(BASE64_STANDARD.encode(mac.finalize().into_bytes()))
+}
+
+fn map_balance_position(row: Value) -> Option<Position> {
+    let currency = common::str_value(&row, "ccy");
+    let volume = common::f64_value(&row, "cashBal");
+    if currency.is_empty() || volume == 0.0 {
+        return None;
+    }
+
+    Some(Position {
+        position_id: format!("BALANCE/{currency}"),
+        product_id: if currency == "USDT" {
+            format!("{ID}/SPOT/USDT")
+        } else {
+            format!("{ID}/SPOT/{currency}-USDT")
+        },
+        direction: None,
+        volume: volume.abs(),
+        free_volume: common::f64_value(&row, "availBal").abs(),
+        position_price: 0.0,
+        closable_price: if currency == "USDT" { 1.0 } else { 0.0 },
+        floating_profit: 0.0,
+        comment: None,
+    })
+}
+
+fn map_derivative_position(row: Value) -> Option<Position> {
+    let inst_id = common::str_value(&row, "instId");
+    let inst_type = common::str_value(&row, "instType");
+    let position_id = common::str_value(&row, "posId");
+    let volume = common::f64_value(&row, "pos");
+    if inst_id.is_empty() || volume == 0.0 {
+        return None;
+    }
+    let side = common::str_value(&row, "posSide");
+    let direction = if side == "short" || volume < 0.0 {
+        crate::models::PositionDirection::Short
+    } else {
+        crate::models::PositionDirection::Long
+    };
+
+    Some(Position {
+        position_id,
+        product_id: format!("{ID}/{inst_type}/{inst_id}"),
+        direction: Some(direction),
+        volume: volume.abs(),
+        free_volume: common::f64_value(&row, "availPos").abs(),
+        position_price: common::f64_value(&row, "avgPx"),
+        closable_price: common::f64_value(&row, "markPx"),
+        floating_profit: common::f64_value(&row, "upl"),
+        comment: None,
+    })
 }
 
 fn map_product(inst_type: &str, row: &Value) -> Product {
