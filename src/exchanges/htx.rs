@@ -109,7 +109,7 @@ impl ExchangeAdapter for Adapter {
         Ok(balance_rows
             .into_iter()
             .filter_map(map_spot_position)
-            .chain(swap_balance.into_iter())
+            .chain(swap_balance)
             .chain(swap_rows.into_iter().filter_map(map_swap_position))
             .collect())
     }

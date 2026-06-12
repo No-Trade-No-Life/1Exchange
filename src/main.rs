@@ -2,7 +2,11 @@ mod credentials;
 mod exchanges;
 mod models;
 
-use std::{net::SocketAddr, path::PathBuf, str::FromStr};
+use std::{
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    str::FromStr,
+};
 
 use axum::{
     Json, Router,
@@ -93,7 +97,7 @@ fn listen_addr() -> anyhow::Result<SocketAddr> {
     Ok(value.parse()?)
 }
 
-async fn open_database(db_path: &PathBuf) -> anyhow::Result<SqlitePool> {
+async fn open_database(db_path: &Path) -> anyhow::Result<SqlitePool> {
     let database_url = format!("sqlite://{}", db_path.display());
     let options = SqliteConnectOptions::from_str(&database_url)?.create_if_missing(true);
     Ok(SqlitePool::connect_with(options).await?)
