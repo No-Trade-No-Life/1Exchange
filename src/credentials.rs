@@ -4,7 +4,10 @@ use serde_json::Value;
 use sqlx::{FromRow, SqlitePool};
 use uuid::Uuid;
 
-use crate::{AppError, AppState, exchanges::is_supported_exchange};
+use crate::{
+    AppError, AppState,
+    exchanges::{credential_required_fields, is_supported_exchange},
+};
 
 #[derive(Debug, Deserialize)]
 pub struct CreateCredentialRequest {
@@ -57,6 +60,8 @@ pub async fn create_credential(
         return Err(AppError::bad_request("unsupported exchange"));
     }
 
+    validate_payload(&request.exchange, &request.payload)?;
+
     let id = Uuid::new_v4().to_string();
     let payload = serde_json::to_string(&request.payload)?;
 
@@ -75,6 +80,25 @@ pub async fn create_credential(
 
     let credential = get_credential_meta(&state.db, &id).await?;
     Ok((StatusCode::CREATED, Json(credential)))
+}
+
+fn validate_payload(exchange: &str, payload: &Value) -> Result<(), AppError> {
+    let required_fields = credential_required_fields(exchange)
+        .ok_or_else(|| AppError::bad_request("unsupported exchange"))?;
+
+    for field in required_fields {
+        let value = payload
+            .get(*field)
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if value.is_empty() {
+            return Err(AppError::bad_request(format!(
+                "missing credential field: {field}"
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 async fn get_credential_meta(db: &SqlitePool, id: &str) -> Result<CredentialMeta, AppError> {

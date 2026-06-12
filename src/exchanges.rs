@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use crate::models::{AccountInfo, Order, Position, Product};
 
@@ -57,38 +57,74 @@ pub fn list_exchanges() -> Vec<ExchangeInfo> {
 }
 
 pub fn is_supported_exchange(exchange: &str) -> bool {
-    list_exchanges().iter().any(|item| item.id == exchange)
+    credential_required_fields(exchange).is_some()
 }
 
-fn api_key_exchange(id: &'static str, name: &'static str) -> ExchangeInfo {
+pub fn credential_required_fields(exchange: &str) -> Option<&'static [&'static str]> {
+    match exchange {
+        "BINANCE" => Some(&["access_key", "secret_key"]),
+        "OKX" => Some(&["access_key", "secret_key", "passphrase"]),
+        "HTX" => Some(&["access_key", "secret_key"]),
+        "GATE" => Some(&["access_key", "secret_key"]),
+        "BITGET" => Some(&["access_key", "secret_key", "passphrase"]),
+        "HYPERLIQUID" => Some(&["private_key", "address"]),
+        "ASTER" => Some(&["address", "secret_key", "api_key"]),
+        _ => None,
+    }
+}
+
+fn exchange(
+    id: &'static str,
+    name: &'static str,
+    required_fields: &'static [&'static str],
+) -> ExchangeInfo {
     ExchangeInfo {
         id,
         name,
-        credential_schema: json!({
-            "type": "object",
-            "required": ["access_key", "secret_key"],
-            "properties": {
-                "access_key": { "type": "string" },
-                "secret_key": { "type": "string" }
-            }
-        }),
+        credential_schema: credential_schema(required_fields),
         capabilities: vec!["products", "account", "positions", "orders"],
     }
+}
+
+fn credential_schema(required_fields: &[&str]) -> Value {
+    let mut properties = Map::new();
+    for field in required_fields {
+        properties.insert((*field).to_string(), json!({ "type": "string" }));
+    }
+
+    json!({
+        "type": "object",
+        "required": required_fields,
+        "properties": properties
+    })
 }
 
 fn registered_adapters() -> Vec<Box<dyn ExchangeAdapter>> {
     vec![
         Box::new(StaticExchangeAdapter {
-            info: api_key_exchange("BINANCE", "Binance"),
+            info: exchange("BINANCE", "Binance", &["access_key", "secret_key"]),
         }),
         Box::new(StaticExchangeAdapter {
-            info: api_key_exchange("GATE", "Gate.io"),
+            info: exchange("OKX", "OKX", &["access_key", "secret_key", "passphrase"]),
         }),
         Box::new(StaticExchangeAdapter {
-            info: api_key_exchange("ASTER", "Aster"),
+            info: exchange("HTX", "HTX", &["access_key", "secret_key"]),
         }),
         Box::new(StaticExchangeAdapter {
-            info: api_key_exchange("HYPERLIQUID", "Hyperliquid"),
+            info: exchange("GATE", "Gate.io", &["access_key", "secret_key"]),
+        }),
+        Box::new(StaticExchangeAdapter {
+            info: exchange(
+                "BITGET",
+                "Bitget",
+                &["access_key", "secret_key", "passphrase"],
+            ),
+        }),
+        Box::new(StaticExchangeAdapter {
+            info: exchange("HYPERLIQUID", "HyperLiquid", &["private_key", "address"]),
+        }),
+        Box::new(StaticExchangeAdapter {
+            info: exchange("ASTER", "Aster", &["address", "secret_key", "api_key"]),
         }),
     ]
 }
