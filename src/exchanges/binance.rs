@@ -3,7 +3,6 @@ use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use serde_json::Value;
 use sha2::Sha256;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
     exchanges::{ExchangeAdapter, ExchangeInfo, common},
@@ -12,6 +11,7 @@ use crate::{
 
 const SPOT_EXCHANGE_INFO_URL: &str = "https://api.binance.com/api/v3/exchangeInfo";
 const SPOT_ACCOUNT_URL: &str = "https://api.binance.com/api/v3/account";
+const SPOT_TIME_URL: &str = "https://api.binance.com/api/v3/time";
 const USD_M_FUTURES_EXCHANGE_INFO_URL: &str = "https://fapi.binance.com/fapi/v1/exchangeInfo";
 
 pub const ID: &str = "BINANCE";
@@ -54,6 +54,12 @@ struct SpotBalance {
     asset: String,
     free: String,
     locked: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BinanceTimeResponse {
+    server_time: u128,
 }
 
 #[async_trait]
@@ -105,8 +111,9 @@ impl ExchangeAdapter for Adapter {
 async fn fetch_spot_account(credential: &Value) -> anyhow::Result<SpotAccountResponse> {
     let access_key = common::str_value(credential, "access_key");
     let secret_key = common::str_value(credential, "secret_key");
-    let query = signed_query(&secret_key)?;
     let client = common::http_client()?;
+    let timestamp = fetch_server_timestamp(&client).await?;
+    let query = signed_query(&secret_key, timestamp)?;
 
     Ok(client
         .get(format!("{SPOT_ACCOUNT_URL}?{query}"))
@@ -118,8 +125,18 @@ async fn fetch_spot_account(credential: &Value) -> anyhow::Result<SpotAccountRes
         .await?)
 }
 
-fn signed_query(secret_key: &str) -> anyhow::Result<String> {
-    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
+async fn fetch_server_timestamp(client: &reqwest::Client) -> anyhow::Result<u128> {
+    Ok(client
+        .get(SPOT_TIME_URL)
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<BinanceTimeResponse>()
+        .await?
+        .server_time)
+}
+
+fn signed_query(secret_key: &str, timestamp: u128) -> anyhow::Result<String> {
     let query = format!("recvWindow=5000&timestamp={timestamp}");
     let mut mac = Hmac::<Sha256>::new_from_slice(secret_key.as_bytes())?;
     mac.update(query.as_bytes());
