@@ -38,14 +38,24 @@ pub fn str_value(value: &Value, key: &str) -> String {
 pub fn f64_value(value: &Value, key: &str) -> f64 {
     value
         .get(key)
-        .and_then(|item| item.as_f64().or_else(|| item.as_str()?.parse().ok()))
+        .and_then(|item| {
+            item.as_f64()
+                .filter(|value| value.is_finite())
+                .or_else(|| parse_f64(item.as_str()?))
+        })
         .unwrap_or_default()
 }
 
 pub fn opt_f64_value(value: &Value, key: &str) -> Option<f64> {
-    value
-        .get(key)
-        .and_then(|item| item.as_f64().or_else(|| item.as_str()?.parse().ok()))
+    value.get(key).and_then(|item| {
+        item.as_f64()
+            .filter(|value| value.is_finite())
+            .or_else(|| parse_f64(item.as_str()?))
+    })
+}
+
+pub fn parse_f64(value: &str) -> Option<f64> {
+    value.parse::<f64>().ok().filter(|value| value.is_finite())
 }
 
 pub fn pow_step(decimals: f64) -> f64 {
@@ -78,4 +88,28 @@ fn credential_schema(required_fields: &[&str]) -> Value {
         "required": required_fields,
         "properties": properties
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn parse_f64_rejects_non_finite_values() {
+        assert_eq!(parse_f64("1.25"), Some(1.25));
+        assert_eq!(parse_f64("NaN"), None);
+        assert_eq!(parse_f64("Infinity"), None);
+        assert_eq!(parse_f64("-Infinity"), None);
+    }
+
+    #[test]
+    fn json_number_helpers_reject_non_finite_string_values() {
+        let value = json!({ "valid": "2.5", "nan": "NaN" });
+
+        assert_eq!(f64_value(&value, "valid"), 2.5);
+        assert_eq!(f64_value(&value, "nan"), 0.0);
+        assert_eq!(opt_f64_value(&value, "nan"), None);
+    }
 }

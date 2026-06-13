@@ -902,10 +902,10 @@ function summarizePortfolioAssets(accounts: PortfolioAccount[]) {
       };
       current.credentialIds.add(account.credential.id);
       current.rows += 1;
-      current.volume += position.volume;
-      current.freeVolume += position.free_volume;
-      current.notionalValue += position.notional_value;
-      current.pnl += position.floating_profit;
+      current.volume += finiteNumber(position.volume);
+      current.freeVolume += finiteNumber(position.free_volume);
+      current.notionalValue += finiteNumber(position.notional_value);
+      current.pnl += finiteNumber(position.floating_profit);
       rows.set(rowKey, current);
     }
   }
@@ -921,7 +921,7 @@ function notionalValue(position: Position) {
 
 function addCurrencyTotal(totals: Map<string, number>, currency: string | null, value: number) {
   const key = currency ?? 'UNKNOWN';
-  totals.set(key, (totals.get(key) ?? 0) + value);
+  totals.set(key, (totals.get(key) ?? 0) + finiteNumber(value));
 }
 
 function mergeCurrencyTotals(target: Map<string, number>, source: Map<string, number>) {
@@ -945,7 +945,7 @@ function summarizeTradeRisk(positions: Position[]) {
   return positions.reduce(
     (summary, item) => ({
       total: summary.total + 1,
-      pnl: summary.pnl + item.floating_profit,
+      pnl: summary.pnl + finiteNumber(item.floating_profit),
       long: summary.long + (item.direction === 'LONG' ? 1 : 0),
       short: summary.short + (item.direction === 'SHORT' ? 1 : 0),
     }),
@@ -954,7 +954,7 @@ function summarizeTradeRisk(positions: Position[]) {
 }
 
 function boardQuote(product: Product | undefined, positions: Position[]) {
-  const positionMark = positions.find((item) => item.closable_price > 0)?.closable_price;
+  const positionMark = positions.find((item) => Number.isFinite(item.closable_price) && item.closable_price > 0)?.closable_price;
   const productStep = product?.price_step && product.price_step > 0 ? product.price_step * 10_000 : 1;
   return { mark: positionMark ?? productStep };
 }
@@ -973,11 +973,18 @@ function formatDate(value: string) {
 }
 
 function formatNumber(value: number) {
+  if (!Number.isFinite(value)) {
+    return '-';
+  }
   return Intl.NumberFormat(undefined, { maximumFractionDigits: 8 }).format(value);
 }
 
 function formatOptionalNumber(value: number | null) {
   return value === null ? '-' : formatNumber(value);
+}
+
+function finiteNumber(value: number) {
+  return Number.isFinite(value) ? value : 0;
 }
 
 function sideLabel(product: Product) {

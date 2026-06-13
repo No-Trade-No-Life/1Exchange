@@ -211,7 +211,7 @@ fn map_spot_position(row: Value, mids: &Value) -> Option<Position> {
     } else {
         mids.get(&coin)
             .and_then(Value::as_str)
-            .and_then(|value| value.parse().ok())
+            .and_then(common::parse_f64)
             .unwrap_or_default()
     };
 

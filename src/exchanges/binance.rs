@@ -204,8 +204,8 @@ fn signed_query(secret_key: &str, timestamp: u128) -> anyhow::Result<String> {
 }
 
 fn map_spot_balance(balance: SpotBalance) -> Option<Position> {
-    let free = balance.free.parse::<f64>().ok()?;
-    let locked = balance.locked.parse::<f64>().ok()?;
+    let free = common::parse_f64(&balance.free)?;
+    let locked = common::parse_f64(&balance.locked)?;
     let volume = free + locked;
     if volume <= 0.0 {
         return None;
@@ -236,7 +236,7 @@ fn spot_asset_product_id(asset: &str) -> String {
 }
 
 fn map_futures_asset(asset: FuturesAsset) -> Option<Position> {
-    let volume = asset.wallet_balance.parse::<f64>().ok()?;
+    let volume = common::parse_f64(&asset.wallet_balance)?;
     if volume <= 0.0 {
         return None;
     }
@@ -247,7 +247,7 @@ fn map_futures_asset(asset: FuturesAsset) -> Option<Position> {
         product_id: format!("{ID}/USDT-FUTURES/{}", asset.asset),
         direction: None,
         volume,
-        free_volume: asset.available_balance.parse().ok()?,
+        free_volume: common::parse_f64(&asset.available_balance)?,
         position_price: 0.0,
         closable_price,
         notional_value: common::notional_value(volume, closable_price),
@@ -258,12 +258,12 @@ fn map_futures_asset(asset: FuturesAsset) -> Option<Position> {
 }
 
 fn map_futures_position(position: FuturesPosition) -> Option<Position> {
-    let signed_volume = position.position_amt.parse::<f64>().ok()?;
+    let signed_volume = common::parse_f64(&position.position_amt)?;
     if signed_volume == 0.0 {
         return None;
     }
-    let entry_price = position.entry_price.parse::<f64>().ok()?;
-    let floating_profit = position.unrealized_profit.parse::<f64>().ok()?;
+    let entry_price = common::parse_f64(&position.entry_price)?;
+    let floating_profit = common::parse_f64(&position.unrealized_profit)?;
     let closable_price = entry_price + floating_profit / signed_volume;
 
     Some(Position {
@@ -345,5 +345,5 @@ fn filter_number(filters: &[BinanceFilter], filter_type: &str, field: &str) -> O
             "stepSize" => filter.step_size.as_deref(),
             _ => None,
         })
-        .and_then(|value| value.parse().ok())
+        .and_then(common::parse_f64)
 }
