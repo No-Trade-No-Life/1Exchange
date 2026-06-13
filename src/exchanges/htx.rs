@@ -290,6 +290,7 @@ fn map_spot_position(row: Value) -> Option<Position> {
     if currency.is_empty() || balance <= 0.0 {
         return None;
     }
+    let closable_price = if currency == "USDT" { 1.0 } else { 0.0 };
 
     Some(Position {
         position_id: format!("SPOT/{currency}"),
@@ -306,7 +307,9 @@ fn map_spot_position(row: Value) -> Option<Position> {
             0.0
         },
         position_price: 0.0,
-        closable_price: if currency == "USDT" { 1.0 } else { 0.0 },
+        closable_price,
+        notional_value: common::notional_value(balance, closable_price),
+        notional_currency: Some("USDT".to_string()),
         floating_profit: 0.0,
         comment: None,
     })
@@ -318,6 +321,11 @@ fn map_union_swap_asset(row: Value) -> Option<Position> {
     if currency.is_empty() || volume == 0.0 {
         return None;
     }
+    let closable_price = if matches!(currency.as_str(), "USDT" | "USDC" | "USDD") {
+        1.0
+    } else {
+        0.0
+    };
 
     Some(Position {
         position_id: format!("SWAP-ASSET/{currency}"),
@@ -326,11 +334,9 @@ fn map_union_swap_asset(row: Value) -> Option<Position> {
         volume,
         free_volume: common::f64_value(&row, "withdraw_available"),
         position_price: 0.0,
-        closable_price: if matches!(currency.as_str(), "USDT" | "USDC" | "USDD") {
-            1.0
-        } else {
-            0.0
-        },
+        closable_price,
+        notional_value: common::notional_value(volume, closable_price),
+        notional_currency: Some(currency),
         floating_profit: common::f64_value(&row, "profit_unreal"),
         comment: None,
     })
@@ -342,6 +348,8 @@ fn map_swap_position(row: Value) -> Option<Position> {
     if contract_code.is_empty() || volume == 0.0 {
         return None;
     }
+    let closable_price =
+        common::f64_value(&row, "last_price").max(common::f64_value(&row, "mark_price"));
 
     Some(Position {
         position_id: contract_code.clone(),
@@ -355,8 +363,9 @@ fn map_swap_position(row: Value) -> Option<Position> {
         free_volume: common::f64_value(&row, "available"),
         position_price: common::f64_value(&row, "cost_open")
             .max(common::f64_value(&row, "open_avg_price")),
-        closable_price: common::f64_value(&row, "last_price")
-            .max(common::f64_value(&row, "mark_price")),
+        closable_price,
+        notional_value: common::notional_value(volume, closable_price),
+        notional_currency: Some("USDT".to_string()),
         floating_profit: common::f64_value(&row, "profit_unreal"),
         comment: None,
     })

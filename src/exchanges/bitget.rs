@@ -198,6 +198,11 @@ fn map_asset_position(row: Value) -> Option<Position> {
     if coin.is_empty() || volume <= 0.0 {
         return None;
     }
+    let closable_price = if matches!(coin.as_str(), "USDT" | "USDC" | "USDD") {
+        1.0
+    } else {
+        0.0
+    };
 
     Some(Position {
         position_id: format!("UTA-ASSET/{coin}"),
@@ -210,11 +215,9 @@ fn map_asset_position(row: Value) -> Option<Position> {
         volume,
         free_volume: common::f64_value(&row, "available"),
         position_price: 0.0,
-        closable_price: if matches!(coin.as_str(), "USDT" | "USDC" | "USDD") {
-            1.0
-        } else {
-            0.0
-        },
+        closable_price,
+        notional_value: common::notional_value(volume, closable_price),
+        notional_currency: Some(coin),
         floating_profit: 0.0,
         comment: None,
     })
@@ -226,6 +229,7 @@ fn map_derivative_position(category: &str, row: Value) -> Option<Position> {
     if symbol.is_empty() || total == 0.0 {
         return None;
     }
+    let closable_price = common::f64_value(&row, "markPrice");
 
     Some(Position {
         position_id: format!("{}-{}", symbol, common::str_value(&row, "posSide")),
@@ -238,10 +242,20 @@ fn map_derivative_position(category: &str, row: Value) -> Option<Position> {
         volume: total.abs(),
         free_volume: common::f64_value(&row, "available").abs(),
         position_price: common::f64_value(&row, "avgPrice"),
-        closable_price: common::f64_value(&row, "markPrice"),
+        closable_price,
+        notional_value: common::notional_value(total, closable_price),
+        notional_currency: Some(bitget_notional_currency(category).to_string()),
         floating_profit: common::f64_value(&row, "unrealisedPnl"),
         comment: None,
     })
+}
+
+fn bitget_notional_currency(category: &str) -> &str {
+    if category == "COIN-FUTURES" {
+        "USD"
+    } else {
+        "USDT"
+    }
 }
 
 fn map_product(category: &str, row: &Value) -> Product {

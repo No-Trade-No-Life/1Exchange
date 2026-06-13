@@ -249,6 +249,7 @@ fn map_perp_asset(row: Value, prices: &Value) -> Option<Position> {
     if asset.is_empty() || volume == 0.0 {
         return None;
     }
+    let closable_price = asset_price(&asset, prices);
 
     Some(Position {
         position_id: format!("{asset}/ASSET"),
@@ -257,7 +258,9 @@ fn map_perp_asset(row: Value, prices: &Value) -> Option<Position> {
         volume,
         free_volume: common::f64_value(&row, "availableBalance"),
         position_price: 0.0,
-        closable_price: asset_price(&asset, prices),
+        closable_price,
+        notional_value: common::notional_value(volume, closable_price),
+        notional_currency: Some("USDT".to_string()),
         floating_profit: common::f64_value(&row, "unrealizedProfit"),
         comment: None,
     })
@@ -272,6 +275,13 @@ fn map_perp_position(row: Value) -> Option<Position> {
     let side = common::str_value(&row, "positionSide");
     let notional = common::f64_value(&row, "notional");
     let closable_price = common::f64_value(&row, "markPrice");
+    let resolved_closable_price = if closable_price > 0.0 {
+        closable_price
+    } else if amount != 0.0 {
+        (notional / amount).abs()
+    } else {
+        0.0
+    };
 
     Some(Position {
         position_id: symbol.clone(),
@@ -284,13 +294,9 @@ fn map_perp_position(row: Value) -> Option<Position> {
         volume: amount.abs(),
         free_volume: amount.abs(),
         position_price: common::f64_value(&row, "entryPrice"),
-        closable_price: if closable_price > 0.0 {
-            closable_price
-        } else if amount != 0.0 {
-            (notional / amount).abs()
-        } else {
-            0.0
-        },
+        closable_price: resolved_closable_price,
+        notional_value: notional.abs(),
+        notional_currency: Some("USDT".to_string()),
         floating_profit: common::f64_value(&row, "unRealizedProfit"),
         comment: None,
     })

@@ -178,6 +178,7 @@ fn map_balance_position(row: Value) -> Option<Position> {
     if currency.is_empty() || volume == 0.0 {
         return None;
     }
+    let closable_price = if currency == "USDT" { 1.0 } else { 0.0 };
 
     Some(Position {
         position_id: format!("BALANCE/{currency}"),
@@ -190,7 +191,9 @@ fn map_balance_position(row: Value) -> Option<Position> {
         volume: volume.abs(),
         free_volume: common::f64_value(&row, "availBal").abs(),
         position_price: 0.0,
-        closable_price: if currency == "USDT" { 1.0 } else { 0.0 },
+        closable_price,
+        notional_value: common::notional_value(volume, closable_price),
+        notional_currency: Some("USDT".to_string()),
         floating_profit: 0.0,
         comment: None,
     })
@@ -232,6 +235,7 @@ fn map_loan_position(row: Value) -> Option<Position> {
     if currency.is_empty() || volume == 0.0 {
         return None;
     }
+    let closable_price = if currency == "USDT" { 1.0 } else { 0.0 };
 
     Some(Position {
         position_id: format!("LOAN/{currency}"),
@@ -240,7 +244,9 @@ fn map_loan_position(row: Value) -> Option<Position> {
         volume: volume.abs(),
         free_volume: volume.abs(),
         position_price: 0.0,
-        closable_price: if currency == "USDT" { 1.0 } else { 0.0 },
+        closable_price,
+        notional_value: common::notional_value(volume, closable_price),
+        notional_currency: Some(currency),
         floating_profit: 0.0,
         comment: None,
     })
@@ -275,6 +281,12 @@ fn asset_position(
         free_volume: free_volume.abs(),
         position_price: 0.0,
         closable_price: if currency == "USDT" { 1.0 } else { 0.0 },
+        notional_value: if currency == "USDT" {
+            volume.abs()
+        } else {
+            0.0
+        },
+        notional_currency: Some(currency),
         floating_profit: 0.0,
         comment: None,
     }
@@ -294,6 +306,7 @@ fn map_derivative_position(row: Value) -> Option<Position> {
     } else {
         crate::models::PositionDirection::Long
     };
+    let closable_price = common::f64_value(&row, "markPx");
 
     Some(Position {
         position_id,
@@ -302,10 +315,16 @@ fn map_derivative_position(row: Value) -> Option<Position> {
         volume: volume.abs(),
         free_volume: common::f64_value(&row, "availPos").abs(),
         position_price: common::f64_value(&row, "avgPx"),
-        closable_price: common::f64_value(&row, "markPx"),
+        closable_price,
+        notional_value: common::notional_value(volume, closable_price),
+        notional_currency: okx_quote_currency(&inst_id),
         floating_profit: common::f64_value(&row, "upl"),
         comment: None,
     })
+}
+
+fn okx_quote_currency(inst_id: &str) -> Option<String> {
+    inst_id.split('-').nth(1).map(str::to_string)
 }
 
 fn map_product(inst_type: &str, row: &Value) -> Product {

@@ -19,6 +19,8 @@ pub struct Position {
     pub free_volume: f64,
     pub position_price: f64,
     pub closable_price: f64,
+    pub notional_value: f64,
+    pub notional_currency: Option<String>,
     pub floating_profit: f64,
     pub comment: Option<String>,
 }

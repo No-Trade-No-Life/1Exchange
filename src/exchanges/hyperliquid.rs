@@ -174,6 +174,11 @@ fn map_perp_position(row: Value) -> Option<Position> {
         return None;
     }
     let position_value = common::f64_value(position, "positionValue");
+    let closable_price = if size == 0.0 {
+        0.0
+    } else {
+        (position_value / size).abs()
+    };
 
     Some(Position {
         position_id: format!("{coin}-USD"),
@@ -186,11 +191,9 @@ fn map_perp_position(row: Value) -> Option<Position> {
         volume: size.abs(),
         free_volume: size.abs(),
         position_price: common::f64_value(position, "entryPx"),
-        closable_price: if size == 0.0 {
-            0.0
-        } else {
-            (position_value / size).abs()
-        },
+        closable_price,
+        notional_value: position_value.abs(),
+        notional_currency: Some("USD".to_string()),
         floating_profit: common::f64_value(position, "unrealizedPnl"),
         comment: None,
     })
@@ -220,6 +223,8 @@ fn map_spot_position(row: Value, mids: &Value) -> Option<Position> {
         free_volume: total - hold,
         position_price: 0.0,
         closable_price,
+        notional_value: common::notional_value(total, closable_price),
+        notional_currency: Some("USDC".to_string()),
         floating_profit: 0.0,
         comment: None,
     })

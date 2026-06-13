@@ -158,6 +158,7 @@ fn map_spot_position(row: Value) -> Option<Position> {
     if currency.is_empty() || volume <= 0.0 {
         return None;
     }
+    let closable_price = if currency == "USDT" { 1.0 } else { 0.0 };
 
     Some(Position {
         position_id: format!("SPOT/{currency}"),
@@ -170,7 +171,9 @@ fn map_spot_position(row: Value) -> Option<Position> {
         volume,
         free_volume: available,
         position_price: 0.0,
-        closable_price: if currency == "USDT" { 1.0 } else { 0.0 },
+        closable_price,
+        notional_value: common::notional_value(volume, closable_price),
+        notional_currency: Some("USDT".to_string()),
         floating_profit: 0.0,
         comment: None,
     })
@@ -182,6 +185,7 @@ fn map_unified_position(row: Value) -> Option<Position> {
     if currency.is_empty() || volume == 0.0 {
         return None;
     }
+    let closable_price = if currency == "USDT" { 1.0 } else { 0.0 };
 
     Some(Position {
         position_id: format!("UNIFIED/{currency}"),
@@ -190,7 +194,9 @@ fn map_unified_position(row: Value) -> Option<Position> {
         volume,
         free_volume: volume,
         position_price: 0.0,
-        closable_price: if currency == "USDT" { 1.0 } else { 0.0 },
+        closable_price,
+        notional_value: common::notional_value(volume, closable_price),
+        notional_currency: Some("USDT".to_string()),
         floating_profit: 0.0,
         comment: None,
     })
@@ -203,6 +209,7 @@ fn map_earn_position(row: Value) -> Option<Position> {
         return None;
     }
     let frozen = common::f64_value(&row, "frozen_amount");
+    let closable_price = if currency == "USDT" { 1.0 } else { 0.0 };
 
     Some(Position {
         position_id: format!("EARNING/{currency}"),
@@ -211,7 +218,9 @@ fn map_earn_position(row: Value) -> Option<Position> {
         volume,
         free_volume: (volume - frozen).max(0.0),
         position_price: 0.0,
-        closable_price: if currency == "USDT" { 1.0 } else { 0.0 },
+        closable_price,
+        notional_value: common::notional_value(volume, closable_price),
+        notional_currency: Some("USDT".to_string()),
         floating_profit: 0.0,
         comment: None,
     })
@@ -231,6 +240,8 @@ fn map_future_position(row: Value) -> Option<Position> {
     if contract.is_empty() || size == 0.0 {
         return None;
     }
+    let closable_price = common::f64_value(&row, "mark_price");
+    let notional_value = common::f64_value(&row, "value").abs();
 
     Some(Position {
         position_id: contract.clone(),
@@ -243,7 +254,13 @@ fn map_future_position(row: Value) -> Option<Position> {
         volume: size.abs(),
         free_volume: size.abs(),
         position_price: common::f64_value(&row, "entry_price"),
-        closable_price: common::f64_value(&row, "mark_price"),
+        closable_price,
+        notional_value: if notional_value > 0.0 {
+            notional_value
+        } else {
+            common::notional_value(size, closable_price)
+        },
+        notional_currency: Some("USDT".to_string()),
         floating_profit: common::f64_value(&row, "unrealised_pnl"),
         comment: None,
     })

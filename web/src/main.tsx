@@ -33,6 +33,8 @@ type Position = {
   free_volume: number;
   position_price: number;
   closable_price: number;
+  notional_value: number;
+  notional_currency: string | null;
   floating_profit: number;
   comment: string | null;
 };
@@ -331,7 +333,7 @@ function PortfolioPage(props: { accounts: PortfolioAccount[]; loading: boolean }
       <section className="metrics-grid compact" aria-label="Portfolio summary">
         <Metric label="Credentials" value={summary.credentials.toString()} />
         <Metric label="Loaded positions" value={summary.positions.toString()} />
-        <Metric label="Notional value" value={formatNumber(summary.notionalValue)} />
+        <Metric label="Notional value" value={formatNotionalBreakdown(summary.notionalByCurrency)} />
         <Metric label="Floating P/L" value={formatNumber(summary.pnl)} tone={summary.pnl < 0 ? 'warn' : 'good'} />
         <Metric label="Read errors" value={summary.errors.toString()} tone={summary.errors > 0 ? 'warn' : 'neutral'} />
       </section>
@@ -356,7 +358,7 @@ function PortfolioPage(props: { accounts: PortfolioAccount[]; loading: boolean }
               accountSummary.assets.toString(),
               accountSummary.long.toString(),
               accountSummary.short.toString(),
-              formatNumber(accountSummary.notionalValue),
+              formatNotionalBreakdown(accountSummary.notionalByCurrency),
               <Value key="pnl" value={accountSummary.pnl} />,
               account.error ? <span className="status-text bad" key="status">{account.error}</span> : <span className="status-text good" key="status">Loaded</span>,
             ];
@@ -374,9 +376,10 @@ function PortfolioPage(props: { accounts: PortfolioAccount[]; loading: boolean }
         </div>
         <DataTable
           empty="No positions were loaded from saved credentials."
-          headers={['Product', 'Credentials', 'Rows', 'Volume', 'Free', 'Notional value', 'Floating P/L']}
+          headers={['Product', 'Currency', 'Credentials', 'Rows', 'Volume', 'Free', 'Notional value', 'Floating P/L']}
           rows={assetRows.map((row) => [
             <code key="product">{row.productId}</code>,
+            row.currency,
             row.credentials.toString(),
             row.rows.toString(),
             formatNumber(row.volume),
@@ -848,41 +851,48 @@ function summarizePortfolio(accounts: PortfolioAccount[]) {
   return accounts.reduce(
     (summary, account) => {
       const accountSummary = summarizeAccountPositions(account.positions);
+      mergeCurrencyTotals(summary.notionalByCurrency, accountSummary.notionalByCurrency);
       return {
         credentials: summary.credentials + 1,
         errors: summary.errors + (account.error ? 1 : 0),
         positions: summary.positions + accountSummary.total,
-        notionalValue: summary.notionalValue + accountSummary.notionalValue,
+        notionalByCurrency: summary.notionalByCurrency,
         pnl: summary.pnl + accountSummary.pnl,
       };
     },
-    { credentials: 0, errors: 0, positions: 0, notionalValue: 0, pnl: 0 },
+    { credentials: 0, errors: 0, positions: 0, notionalByCurrency: new Map<string, number>(), pnl: 0 },
   );
 }
 
 function summarizeAccountPositions(positions: Position[]) {
   return positions.reduce(
-    (summary, item) => ({
-      total: summary.total + 1,
-      assets: summary.assets + (item.direction ? 0 : 1),
-      long: summary.long + (item.direction === 'LONG' ? 1 : 0),
-      short: summary.short + (item.direction === 'SHORT' ? 1 : 0),
-      notionalValue: summary.notionalValue + notionalValue(item),
-      pnl: summary.pnl + item.floating_profit,
-    }),
-    { total: 0, assets: 0, long: 0, short: 0, notionalValue: 0, pnl: 0 },
+    (summary, item) => {
+      addCurrencyTotal(summary.notionalByCurrency, item.notional_currency, item.notional_value);
+      return {
+        total: summary.total + 1,
+        assets: summary.assets + (item.direction ? 0 : 1),
+        long: summary.long + (item.direction === 'LONG' ? 1 : 0),
+        short: summary.short + (item.direction === 'SHORT' ? 1 : 0),
+        notionalByCurrency: summary.notionalByCurrency,
+        pnl: summary.pnl + item.floating_profit,
+      };
+    },
+    { total: 0, assets: 0, long: 0, short: 0, notionalByCurrency: new Map<string, number>(), pnl: 0 },
   );
 }
 
 function summarizePortfolioAssets(accounts: PortfolioAccount[]) {
   const rows = new Map<
     string,
-    { credentialIds: Set<string>; freeVolume: number; notionalValue: number; pnl: number; productId: string; rows: number; volume: number }
+    { credentialIds: Set<string>; currency: string; freeVolume: number; notionalValue: number; pnl: number; productId: string; rows: number; volume: number }
   >();
   for (const account of accounts) {
     for (const position of account.positions) {
-      const current = rows.get(position.product_id) ?? {
+      const currency = position.notional_currency ?? 'UNKNOWN';
+      const rowKey = `${position.product_id}\u0000${currency}`;
+      const current = rows.get(rowKey) ?? {
         credentialIds: new Set<string>(),
+        currency,
         freeVolume: 0,
         notionalValue: 0,
         pnl: 0,
@@ -894,9 +904,9 @@ function summarizePortfolioAssets(accounts: PortfolioAccount[]) {
       current.rows += 1;
       current.volume += position.volume;
       current.freeVolume += position.free_volume;
-      current.notionalValue += notionalValue(position);
+      current.notionalValue += position.notional_value;
       current.pnl += position.floating_profit;
-      rows.set(position.product_id, current);
+      rows.set(rowKey, current);
     }
   }
 
@@ -906,7 +916,29 @@ function summarizePortfolioAssets(accounts: PortfolioAccount[]) {
 }
 
 function notionalValue(position: Position) {
-  return position.closable_price > 0 ? position.volume * position.closable_price : 0;
+  return position.notional_value;
+}
+
+function addCurrencyTotal(totals: Map<string, number>, currency: string | null, value: number) {
+  const key = currency ?? 'UNKNOWN';
+  totals.set(key, (totals.get(key) ?? 0) + value);
+}
+
+function mergeCurrencyTotals(target: Map<string, number>, source: Map<string, number>) {
+  for (const [currency, value] of source.entries()) {
+    addCurrencyTotal(target, currency, value);
+  }
+}
+
+function formatNotionalBreakdown(totals: Map<string, number>) {
+  const rows = Array.from(totals.entries()).filter(([, value]) => value !== 0);
+  if (rows.length === 0) {
+    return '0';
+  }
+  return rows
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([currency, value]) => `${formatNumber(value)} ${currency}`)
+    .join(' / ');
 }
 
 function summarizeTradeRisk(positions: Position[]) {

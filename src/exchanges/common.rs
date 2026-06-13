@@ -52,6 +52,14 @@ pub fn pow_step(decimals: f64) -> f64 {
     10_f64.powf(-decimals)
 }
 
+pub fn notional_value(volume: f64, price: f64) -> f64 {
+    if price > 0.0 {
+        volume.abs() * price
+    } else {
+        0.0
+    }
+}
+
 pub fn now_timestamp_in_us() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

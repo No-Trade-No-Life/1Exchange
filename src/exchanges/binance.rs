@@ -210,6 +210,7 @@ fn map_spot_balance(balance: SpotBalance) -> Option<Position> {
     if volume <= 0.0 {
         return None;
     }
+    let closable_price = if balance.asset == "USDT" { 1.0 } else { 0.0 };
 
     Some(Position {
         position_id: format!("SPOT/{}", balance.asset),
@@ -218,7 +219,9 @@ fn map_spot_balance(balance: SpotBalance) -> Option<Position> {
         volume,
         free_volume: free,
         position_price: 0.0,
-        closable_price: if balance.asset == "USDT" { 1.0 } else { 0.0 },
+        closable_price,
+        notional_value: common::notional_value(volume, closable_price),
+        notional_currency: Some("USDT".to_string()),
         floating_profit: 0.0,
         comment: None,
     })
@@ -237,6 +240,7 @@ fn map_futures_asset(asset: FuturesAsset) -> Option<Position> {
     if volume <= 0.0 {
         return None;
     }
+    let closable_price = if asset.asset == "USDT" { 1.0 } else { 0.0 };
 
     Some(Position {
         position_id: format!("USDT-FUTURES/{}", asset.asset),
@@ -245,7 +249,9 @@ fn map_futures_asset(asset: FuturesAsset) -> Option<Position> {
         volume,
         free_volume: asset.available_balance.parse().ok()?,
         position_price: 0.0,
-        closable_price: if asset.asset == "USDT" { 1.0 } else { 0.0 },
+        closable_price,
+        notional_value: common::notional_value(volume, closable_price),
+        notional_currency: Some("USDT".to_string()),
         floating_profit: 0.0,
         comment: None,
     })
@@ -258,6 +264,7 @@ fn map_futures_position(position: FuturesPosition) -> Option<Position> {
     }
     let entry_price = position.entry_price.parse::<f64>().ok()?;
     let floating_profit = position.unrealized_profit.parse::<f64>().ok()?;
+    let closable_price = entry_price + floating_profit / signed_volume;
 
     Some(Position {
         position_id: format!(
@@ -269,7 +276,9 @@ fn map_futures_position(position: FuturesPosition) -> Option<Position> {
         volume: signed_volume.abs(),
         free_volume: signed_volume.abs(),
         position_price: entry_price,
-        closable_price: entry_price + floating_profit / signed_volume,
+        closable_price,
+        notional_value: common::notional_value(signed_volume, closable_price),
+        notional_currency: Some("USDT".to_string()),
         floating_profit,
         comment: None,
     })
