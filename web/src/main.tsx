@@ -331,7 +331,7 @@ function PortfolioPage(props: { accounts: PortfolioAccount[]; loading: boolean }
       <section className="metrics-grid compact" aria-label="Portfolio summary">
         <Metric label="Credentials" value={summary.credentials.toString()} />
         <Metric label="Loaded positions" value={summary.positions.toString()} />
-        <Metric label="Priced value" value={formatNumber(summary.pricedValue)} />
+        <Metric label="Notional value" value={formatNumber(summary.notionalValue)} />
         <Metric label="Floating P/L" value={formatNumber(summary.pnl)} tone={summary.pnl < 0 ? 'warn' : 'good'} />
         <Metric label="Read errors" value={summary.errors.toString()} tone={summary.errors > 0 ? 'warn' : 'neutral'} />
       </section>
@@ -346,7 +346,7 @@ function PortfolioPage(props: { accounts: PortfolioAccount[]; loading: boolean }
         </div>
         <DataTable
           empty="No credentials yet. Add credentials before loading a portfolio summary."
-          headers={['Credential', 'Exchange', 'Positions', 'Assets', 'Long', 'Short', 'Priced value', 'Floating P/L', 'Status']}
+          headers={['Credential', 'Exchange', 'Positions', 'Assets', 'Long', 'Short', 'Notional value', 'Floating P/L', 'Status']}
           rows={props.accounts.map((account) => {
             const accountSummary = summarizeAccountPositions(account.positions);
             return [
@@ -356,7 +356,7 @@ function PortfolioPage(props: { accounts: PortfolioAccount[]; loading: boolean }
               accountSummary.assets.toString(),
               accountSummary.long.toString(),
               accountSummary.short.toString(),
-              formatNumber(accountSummary.pricedValue),
+              formatNumber(accountSummary.notionalValue),
               <Value key="pnl" value={accountSummary.pnl} />,
               account.error ? <span className="status-text bad" key="status">{account.error}</span> : <span className="status-text good" key="status">Loaded</span>,
             ];
@@ -374,14 +374,14 @@ function PortfolioPage(props: { accounts: PortfolioAccount[]; loading: boolean }
         </div>
         <DataTable
           empty="No positions were loaded from saved credentials."
-          headers={['Product', 'Credentials', 'Rows', 'Volume', 'Free', 'Priced value', 'Floating P/L']}
+          headers={['Product', 'Credentials', 'Rows', 'Volume', 'Free', 'Notional value', 'Floating P/L']}
           rows={assetRows.map((row) => [
             <code key="product">{row.productId}</code>,
             row.credentials.toString(),
             row.rows.toString(),
             formatNumber(row.volume),
             formatNumber(row.freeVolume),
-            formatNumber(row.pricedValue),
+            formatNumber(row.notionalValue),
             <Value key="pnl" value={row.pnl} />,
           ])}
         />
@@ -473,13 +473,14 @@ function TradePage(props: {
         <PanelTitle label="Account" title="Positions" action={`${relatedPositions.length} related`} />
         <DataTable
           empty="No position matches the selected product."
-          headers={['Position', 'Side', 'Volume', 'Entry', 'Mark', 'P/L']}
+          headers={['Position', 'Side', 'Volume', 'Entry', 'Mark', 'Notional', 'P/L']}
           rows={(relatedPositions.length ? relatedPositions : props.positions.slice(0, 8)).map((item) => [
             item.position_id,
             item.direction ? <Badge key="side">{item.direction}</Badge> : 'Asset',
             formatNumber(item.volume),
             formatNumber(item.position_price),
             formatNumber(item.closable_price),
+            formatNumber(notionalValue(item)),
             <Value key="pnl" value={item.floating_profit} />,
           ])}
         />
@@ -684,7 +685,7 @@ function PositionsPage(props: {
         <InlineError message={props.error} />
         <DataTable
           empty="Select a credential to load positions. If a request fails, check API permissions on the exchange key."
-          headers={['Position', 'Product', 'Side', 'Volume', 'Free', 'Entry', 'Mark', 'P/L']}
+          headers={['Position', 'Product', 'Side', 'Volume', 'Free', 'Entry', 'Mark', 'Notional', 'P/L']}
           rows={props.positions.map((item) => [
             item.position_id,
             <code key="product">{item.product_id}</code>,
@@ -693,6 +694,7 @@ function PositionsPage(props: {
             formatNumber(item.free_volume),
             formatNumber(item.position_price),
             formatNumber(item.closable_price),
+            formatNumber(notionalValue(item)),
             <Value key="pnl" value={item.floating_profit} />,
           ])}
         />
@@ -850,11 +852,11 @@ function summarizePortfolio(accounts: PortfolioAccount[]) {
         credentials: summary.credentials + 1,
         errors: summary.errors + (account.error ? 1 : 0),
         positions: summary.positions + accountSummary.total,
-        pricedValue: summary.pricedValue + accountSummary.pricedValue,
+        notionalValue: summary.notionalValue + accountSummary.notionalValue,
         pnl: summary.pnl + accountSummary.pnl,
       };
     },
-    { credentials: 0, errors: 0, positions: 0, pricedValue: 0, pnl: 0 },
+    { credentials: 0, errors: 0, positions: 0, notionalValue: 0, pnl: 0 },
   );
 }
 
@@ -865,25 +867,25 @@ function summarizeAccountPositions(positions: Position[]) {
       assets: summary.assets + (item.direction ? 0 : 1),
       long: summary.long + (item.direction === 'LONG' ? 1 : 0),
       short: summary.short + (item.direction === 'SHORT' ? 1 : 0),
-      pricedValue: summary.pricedValue + pricedValue(item),
+      notionalValue: summary.notionalValue + notionalValue(item),
       pnl: summary.pnl + item.floating_profit,
     }),
-    { total: 0, assets: 0, long: 0, short: 0, pricedValue: 0, pnl: 0 },
+    { total: 0, assets: 0, long: 0, short: 0, notionalValue: 0, pnl: 0 },
   );
 }
 
 function summarizePortfolioAssets(accounts: PortfolioAccount[]) {
   const rows = new Map<
     string,
-    { credentialIds: Set<string>; freeVolume: number; pnl: number; pricedValue: number; productId: string; rows: number; volume: number }
+    { credentialIds: Set<string>; freeVolume: number; notionalValue: number; pnl: number; productId: string; rows: number; volume: number }
   >();
   for (const account of accounts) {
     for (const position of account.positions) {
       const current = rows.get(position.product_id) ?? {
         credentialIds: new Set<string>(),
         freeVolume: 0,
+        notionalValue: 0,
         pnl: 0,
-        pricedValue: 0,
         productId: position.product_id,
         rows: 0,
         volume: 0,
@@ -892,7 +894,7 @@ function summarizePortfolioAssets(accounts: PortfolioAccount[]) {
       current.rows += 1;
       current.volume += position.volume;
       current.freeVolume += position.free_volume;
-      current.pricedValue += pricedValue(position);
+      current.notionalValue += notionalValue(position);
       current.pnl += position.floating_profit;
       rows.set(position.product_id, current);
     }
@@ -900,10 +902,10 @@ function summarizePortfolioAssets(accounts: PortfolioAccount[]) {
 
   return Array.from(rows.values())
     .map((row) => ({ ...row, credentials: row.credentialIds.size }))
-    .sort((a, b) => Math.abs(b.pricedValue) - Math.abs(a.pricedValue));
+    .sort((a, b) => Math.abs(b.notionalValue) - Math.abs(a.notionalValue));
 }
 
-function pricedValue(position: Position) {
+function notionalValue(position: Position) {
   return position.closable_price > 0 ? position.volume * position.closable_price : 0;
 }
 
