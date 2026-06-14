@@ -5,9 +5,11 @@ mod models;
 use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
+    process::{Child, Command, Stdio},
     str::FromStr,
 };
 
+use anyhow::Context;
 use axum::{
     Json, Router,
     extract::{Query, State},
@@ -49,6 +51,10 @@ pub struct AppError {
     message: String,
 }
 
+struct ViteDevServer {
+    child: Child,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let data_dir = data_dir();
@@ -75,9 +81,12 @@ async fn main() -> anyhow::Result<()> {
         .fallback_service(ServeDir::new("web/dist"));
 
     let addr = listen_addr()?;
+    let _vite = start_vite_dev_server(addr)?;
     let listener = TcpListener::bind(addr).await?;
     println!("1Exchange listening on http://{addr}");
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
 
     Ok(())
 }
@@ -95,6 +104,66 @@ fn data_dir() -> PathBuf {
 fn listen_addr() -> anyhow::Result<SocketAddr> {
     let value = std::env::var("ONE_EXCHANGE_ADDR").unwrap_or_else(|_| "127.0.0.1:8787".to_string());
     Ok(value.parse()?)
+}
+
+fn vite_addr() -> anyhow::Result<SocketAddr> {
+    let value =
+        std::env::var("ONE_EXCHANGE_VITE_ADDR").unwrap_or_else(|_| "127.0.0.1:5173".to_string());
+    Ok(value.parse()?)
+}
+
+fn start_vite_dev_server(api_addr: SocketAddr) -> anyhow::Result<Option<ViteDevServer>> {
+    if !cfg!(debug_assertions) || vite_dev_server_disabled() {
+        return Ok(None);
+    }
+
+    let addr = vite_addr()?;
+    let child = Command::new("node_modules/.bin/vite")
+        .current_dir("web")
+        .arg("--host")
+        .arg(addr.ip().to_string())
+        .arg("--port")
+        .arg(addr.port().to_string())
+        .arg("--strictPort")
+        .env("VITE_API_TARGET", format!("http://{api_addr}"))
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .context("failed to start Vite dev server; run npm --prefix web install first")?;
+
+    println!("Vite dev server starting on http://{addr}");
+    Ok(Some(ViteDevServer { child }))
+}
+
+fn vite_dev_server_disabled() -> bool {
+    matches!(
+        std::env::var("ONE_EXCHANGE_VITE").as_deref(),
+        Ok("0") | Ok("false") | Ok("FALSE")
+    )
+}
+
+async fn shutdown_signal() {
+    if let Err(error) = wait_for_shutdown_signal().await {
+        eprintln!("failed to listen for shutdown signal: {error}");
+    }
+}
+
+#[cfg(unix)]
+async fn wait_for_shutdown_signal() -> anyhow::Result<()> {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let mut terminate = signal(SignalKind::terminate())?;
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => result?,
+        _ = terminate.recv() => {},
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+async fn wait_for_shutdown_signal() -> anyhow::Result<()> {
+    tokio::signal::ctrl_c().await?;
+    Ok(())
 }
 
 async fn open_database(db_path: &Path) -> anyhow::Result<SqlitePool> {
@@ -240,5 +309,12 @@ impl From<anyhow::Error> for AppError {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             message: error.to_string(),
         }
+    }
+}
+
+impl Drop for ViteDevServer {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
