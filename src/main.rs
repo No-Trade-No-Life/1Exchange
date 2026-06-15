@@ -103,7 +103,7 @@ fn data_dir() -> PathBuf {
 }
 
 fn listen_addr() -> anyhow::Result<SocketAddr> {
-    let value = std::env::var("ONE_EXCHANGE_ADDR").unwrap_or_else(|_| "127.0.0.1:0".to_string());
+    let value = std::env::var("ONE_EXCHANGE_ADDR").unwrap_or_else(|_| "127.0.0.1:8787".to_string());
     Ok(value.parse()?)
 }
 

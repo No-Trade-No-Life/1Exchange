@@ -151,13 +151,14 @@ cargo run
 
 Debug 模式下，Rust Server 会自动启动 Vite Dev Server：
 
-- 未设置端口环境变量时，Rust API 和 Vite UI 都会自动选择可用端口。
-- 实际地址会在启动日志中打印。
+- Rust API 默认地址：`http://127.0.0.1:8787`。
+- 未设置 `ONE_EXCHANGE_VITE_ADDR` 时，Vite UI 会自动选择可用端口。
+- Vite UI 实际地址会在启动日志中打印。
 - Vite 会把 `/api` 代理到当前 Rust API 地址。
 
 可用环境变量：
 
-- `ONE_EXCHANGE_ADDR=127.0.0.1:8787`：固定 Rust API 监听地址。
+- `ONE_EXCHANGE_ADDR=127.0.0.1:8787`：覆盖 Rust API 监听地址。
 - `ONE_EXCHANGE_VITE_ADDR=127.0.0.1:5173`：固定 Vite Dev Server 地址。
 - `ONE_EXCHANGE_VITE=0`：关闭自动启动 Vite。
 
