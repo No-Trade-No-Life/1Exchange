@@ -12,7 +12,7 @@ use std::{
 use anyhow::Context;
 use axum::{
     Json, Router,
-    extract::{Query, State},
+    extract::{OriginalUri, Query, State},
     http::StatusCode,
     response::{IntoResponse, Redirect, Response},
     routing::get,
@@ -90,7 +90,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/products", get(list_products));
     let app = Router::new().nest("/api", api);
     let app = if vite.is_some() {
-        app.route("/", get(redirect_to_vite))
+        app.fallback(redirect_to_vite)
     } else {
         app.fallback_service(ServeDir::new("web/dist"))
     }
@@ -168,12 +168,19 @@ async fn shutdown_signal() {
     }
 }
 
-async fn redirect_to_vite(State(state): State<AppState>) -> Result<Redirect, AppError> {
+async fn redirect_to_vite(
+    State(state): State<AppState>,
+    OriginalUri(uri): OriginalUri,
+) -> Result<Redirect, AppError> {
     let vite_origin = state
         .vite_origin
         .ok_or_else(|| AppError::bad_request("Vite dev server is not running"))?;
+    let path = uri
+        .path_and_query()
+        .map(|path| path.as_str())
+        .unwrap_or("/");
 
-    Ok(Redirect::temporary(&vite_origin))
+    Ok(Redirect::temporary(&format!("{vite_origin}{path}")))
 }
 
 #[cfg(unix)]
