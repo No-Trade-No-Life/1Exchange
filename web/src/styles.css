@@ -95,6 +95,7 @@ body {
   cursor: pointer;
   font: inherit;
   text-align: left;
+  text-decoration: none;
   transition: background 180ms ease, color 180ms ease;
 }
 
@@ -110,7 +111,7 @@ body {
 
 .nav-item:hover,
 .nav-item:focus-visible,
-.nav-item[aria-current="page"] {
+.nav-item.active {
   background: oklch(29% 0.04 252deg);
   color: oklch(86% 0.04 252deg);
   outline: none;

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { HashRouter, Navigate, NavLink, Route, Routes, useLocation } from 'react-router-dom';
 import './styles.css';
 
 type Health = {
@@ -80,15 +81,15 @@ type TradeAccount = {
 
 type Page = 'overview' | 'portfolio' | 'trade' | 'history' | 'credentials' | 'positions' | 'products' | 'exchanges';
 
-const pages: Array<{ id: Page; label: string; hint: string }> = [
-  { id: 'overview', label: 'Overview', hint: 'Service and adapter status' },
-  { id: 'portfolio', label: 'Portfolio', hint: 'All credential assets' },
-  { id: 'trade', label: 'Trade', hint: 'Trading board' },
-  { id: 'history', label: 'History', hint: 'Trade fills' },
-  { id: 'credentials', label: 'Credentials', hint: 'Saved local metadata' },
-  { id: 'positions', label: 'Positions', hint: 'Assets and open exposure' },
-  { id: 'products', label: 'Products', hint: 'Exchange product specs' },
-  { id: 'exchanges', label: 'Exchanges', hint: 'Schemas and capabilities' },
+const pages: Array<{ id: Page; label: string; hint: string; path: string }> = [
+  { id: 'overview', label: 'Overview', hint: 'Service and adapter status', path: '/overview' },
+  { id: 'portfolio', label: 'Portfolio', hint: 'All credential assets', path: '/portfolio' },
+  { id: 'trade', label: 'Trade', hint: 'Trading board', path: '/trade' },
+  { id: 'history', label: 'History', hint: 'Trade fills', path: '/history' },
+  { id: 'credentials', label: 'Credentials', hint: 'Saved local metadata', path: '/credentials' },
+  { id: 'positions', label: 'Positions', hint: 'Assets and open exposure', path: '/positions' },
+  { id: 'products', label: 'Products', hint: 'Exchange product specs', path: '/products' },
+  { id: 'exchanges', label: 'Exchanges', hint: 'Schemas and capabilities', path: '/exchanges' },
 ];
 
 const emptyCredentials: Credential[] = [];
@@ -216,7 +217,7 @@ function useTradeHistory(credentials: Credential[]) {
 }
 
 function App() {
-  const [page, setPage] = useState<Page>('overview');
+  const location = useLocation();
   const health = useJson<Health>('/api/health');
   const exchanges = useJson<ExchangeInfo[]>('/api/exchanges');
   const credentials = useJson<Credential[]>('/api/credentials');
@@ -248,9 +249,9 @@ function App() {
   }, [products.data, selectedTradeProductId]);
 
   const exposure = useMemo(() => summarizePositions(positions.data ?? []), [positions.data]);
+  const page = currentPage(location.pathname);
 
-  const content = {
-    overview: (
+  const overviewPage = (
       <OverviewPage
         credentialCount={credentials.data?.length ?? 0}
         database={health.data?.database ?? '~/.1ex/1ex.sqlite3'}
@@ -260,10 +261,10 @@ function App() {
         productCount={products.data?.length ?? 0}
         selectedCredential={selectedCredential}
       />
-    ),
-    portfolio: <PortfolioPage accounts={portfolio.accounts} loading={portfolio.loading} />,
-    history: <TradeHistoryPage accounts={tradeHistory.accounts} loading={tradeHistory.loading} />,
-    trade: (
+  );
+  const portfolioPage = <PortfolioPage accounts={portfolio.accounts} loading={portfolio.loading} />;
+  const historyPage = <TradeHistoryPage accounts={tradeHistory.accounts} loading={tradeHistory.loading} />;
+  const tradePage = (
       <TradePage
         credentials={credentialList}
         error={selectedCredentialId ? positions.error : null}
@@ -278,9 +279,9 @@ function App() {
         onSelectExchange={setSelectedExchangeId}
         onSelectProduct={setSelectedTradeProductId}
       />
-    ),
-    credentials: <CredentialsPage credentials={credentialList} exchanges={exchanges.data ?? []} />,
-    positions: (
+  );
+  const credentialsPage = <CredentialsPage credentials={credentialList} exchanges={exchanges.data ?? []} />;
+  const positionsPage = (
       <PositionsPage
         credentials={credentialList}
         error={selectedCredentialId ? positions.error : null}
@@ -290,8 +291,8 @@ function App() {
         selectedCredentialId={selectedCredentialId}
         onSelectCredential={setSelectedCredentialId}
       />
-    ),
-    products: (
+  );
+  const productsPage = (
       <ProductsPage
         error={products.error}
         exchanges={exchanges.data ?? []}
@@ -300,9 +301,8 @@ function App() {
         selectedExchangeId={selectedExchangeId}
         onSelectExchange={setSelectedExchangeId}
       />
-    ),
-    exchanges: <ExchangesPage exchanges={exchanges.data ?? []} />,
-  }[page];
+  );
+  const exchangesPage = <ExchangesPage exchanges={exchanges.data ?? []} />;
 
   return (
     <div className="app-shell">
@@ -316,16 +316,14 @@ function App() {
         </div>
         <nav className="nav-list">
           {pages.map((item) => (
-            <button
-              aria-current={page === item.id ? 'page' : undefined}
-              className="nav-item"
+            <NavLink
+              className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
               key={item.id}
-              onClick={() => setPage(item.id)}
-              type="button"
+              to={item.path}
             >
               <span>{item.label}</span>
               <small>{item.hint}</small>
-            </button>
+            </NavLink>
           ))}
         </nav>
       </aside>
@@ -333,14 +331,25 @@ function App() {
       <main className="workspace">
         <header className="topbar">
           <div>
-            <p className="section-label">{currentPage(page).label}</p>
-            <h1>{currentPage(page).hint}</h1>
+            <p className="section-label">{page.label}</p>
+            <h1>{page.hint}</h1>
           </div>
           <div className="status-pill" data-state={health.data?.status === 'ok' ? 'ok' : 'pending'}>
             <span /> API {health.data?.status ?? 'checking'}
           </div>
         </header>
-        {content}
+        <Routes>
+          <Route path="/" element={<Navigate replace to="/overview" />} />
+          <Route path="/overview" element={overviewPage} />
+          <Route path="/portfolio" element={portfolioPage} />
+          <Route path="/trade" element={tradePage} />
+          <Route path="/history" element={historyPage} />
+          <Route path="/credentials" element={credentialsPage} />
+          <Route path="/positions" element={positionsPage} />
+          <Route path="/products" element={productsPage} />
+          <Route path="/exchanges" element={exchangesPage} />
+          <Route path="*" element={<Navigate replace to="/overview" />} />
+        </Routes>
       </main>
     </div>
   );
@@ -962,8 +971,8 @@ function Value(props: { value: number }) {
   return <span className="value" data-tone={tone}>{formatNumber(props.value)}</span>;
 }
 
-function currentPage(page: Page) {
-  return pages.find((item) => item.id === page) ?? pages[0];
+function currentPage(pathname: string) {
+  return pages.find((item) => item.path === pathname) ?? pages[0];
 }
 
 function summarizePositions(positions: Position[]) {
@@ -1142,6 +1151,8 @@ function sideLabel(product: Product) {
 
 createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <App />
+    <HashRouter>
+      <App />
+    </HashRouter>
   </React.StrictMode>,
 );
