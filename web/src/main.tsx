@@ -237,9 +237,10 @@ function useTradeHistory(credentials: Credential[]) {
 
 function App() {
   const location = useLocation();
+  const [credentialsRevision, setCredentialsRevision] = useState(0);
   const health = useJson<Health>('/api/health');
   const exchanges = useJson<ExchangeInfo[]>('/api/exchanges');
-  const credentials = useJson<Credential[]>('/api/credentials');
+  const credentials = useJson<Credential[]>(`/api/credentials?refresh=${credentialsRevision}`);
   const credentialList = credentials.data ?? emptyCredentials;
   const [selectedCredentialId, setSelectedCredentialId] = useState('');
   const [selectedExchangeId, setSelectedExchangeId] = useState('BINANCE');
@@ -304,7 +305,17 @@ function App() {
         onSelectProduct={setSelectedTradeProductId}
       />
   );
-  const credentialsPage = <CredentialsPage accountIds={accountIds} credentials={credentialList} exchanges={exchanges.data ?? []} />;
+  const credentialsPage = (
+    <CredentialsPage
+      accountIds={accountIds}
+      credentials={credentialList}
+      exchanges={exchanges.data ?? []}
+      onCreated={(credential) => {
+        setSelectedCredentialId(credential.id);
+        setCredentialsRevision((value) => value + 1);
+      }}
+    />
+  );
   const positionsPage = (
       <PositionsPage
         accountIds={accountIds}
@@ -769,30 +780,20 @@ function ManualTradeDraft(props: { product?: Product; selectedCredentialId: stri
   );
 }
 
-function CredentialsPage(props: { accountIds: AccountIds; credentials: Credential[]; exchanges: ExchangeInfo[] }) {
+function CredentialsPage(props: {
+  accountIds: AccountIds;
+  credentials: Credential[];
+  exchanges: ExchangeInfo[];
+  onCreated: (credential: Credential) => void;
+}) {
   return (
     <div className="page-stack">
-      <section className="panel">
-        <div className="panel-heading">
-          <div>
-            <p className="section-label">Saved locally</p>
-            <h2>Credentials</h2>
-          </div>
-          <span className="count-chip">{props.credentials.length} saved</span>
-        </div>
-        <DataTable
-          empty="No credentials yet. POST /api/credentials or use the API directly to add one."
-          headers={['AccountID', 'Name', 'Exchange', 'Payload', 'Created', 'Credential ID']}
-          rows={props.credentials.map((item) => [
-            <code key="account">{accountIdForCredential(item, props.accountIds)}</code>,
-            item.name,
-            <Badge key="exchange">{item.exchange}</Badge>,
-            item.has_payload ? 'Stored' : 'Missing',
-            formatDate(item.created_at),
-            <code key="id">{item.id}</code>,
-          ])}
-        />
-      </section>
+      <div className="credential-manager">
+        <CredentialCreatePanel exchanges={props.exchanges} onCreated={props.onCreated} />
+        <CredentialSecurityPanel />
+      </div>
+
+      <CredentialInventory accountIds={props.accountIds} credentials={props.credentials} />
 
       <section className="panel">
         <div className="panel-heading">
@@ -811,6 +812,154 @@ function CredentialsPage(props: { accountIds: AccountIds; credentials: Credentia
         </div>
       </section>
     </div>
+  );
+}
+
+function CredentialCreatePanel(props: { exchanges: ExchangeInfo[]; onCreated: (credential: Credential) => void }) {
+  const [exchangeId, setExchangeId] = useState(props.exchanges[0]?.id ?? '');
+  const [name, setName] = useState('');
+  const [payload, setPayload] = useState<Record<string, string>>({});
+  const [error, setError] = useState<string | null>(null);
+  const [createdName, setCreatedName] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const selectedExchange = props.exchanges.find((exchange) => exchange.id === exchangeId) ?? props.exchanges[0];
+  const fields = selectedExchange?.credential_schema.required ?? [];
+
+  useEffect(() => {
+    if (!exchangeId && props.exchanges[0]) {
+      setExchangeId(props.exchanges[0].id);
+    }
+  }, [exchangeId, props.exchanges]);
+
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(null);
+    setCreatedName(null);
+    setSaving(true);
+
+    try {
+      const response = await fetch('/api/credentials', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ exchange: exchangeId, name, payload: credentialPayload(fields, payload) }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null) as { message?: string } | null;
+        throw new Error(body?.message ?? `${response.status} ${response.statusText}`);
+      }
+      const credential = await response.json() as Credential;
+      setCreatedName(credential.name);
+      setName('');
+      setPayload({});
+      props.onCreated(credential);
+    } catch (caught) {
+      setError((caught as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="panel credential-create-panel">
+      <div className="panel-heading">
+        <div>
+          <p className="section-label">Add credential</p>
+          <h2>Save read-only API access</h2>
+        </div>
+        <span className="count-chip">Local only</span>
+      </div>
+      <form className="credential-form" onSubmit={handleSubmit}>
+        <label>
+          Exchange
+          <select value={exchangeId} onChange={(event) => { setExchangeId(event.target.value); setPayload({}); }}>
+            {props.exchanges.map((exchange) => (
+              <option key={exchange.id} value={exchange.id}>
+                {exchange.id} · {exchange.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Credential name
+          <input required placeholder="readonly-main" value={name} onChange={(event) => setName(event.target.value)} />
+        </label>
+        <div className="credential-field-grid">
+          {fields.map((field) => (
+            <label key={field}>
+              {field}
+              <input
+                autoComplete="off"
+                required
+                type={isSecretCredentialField(field) ? 'password' : 'text'}
+                value={payload[field] ?? ''}
+                onChange={(event) => setPayload({ ...payload, [field]: event.target.value })}
+              />
+            </label>
+          ))}
+        </div>
+        <InlineError message={error} />
+        {createdName ? <p className="success-note">Saved {createdName}. Payload is stored server-side and hidden from this page.</p> : null}
+        <button className="primary-action" disabled={saving || !exchangeId || !name} type="submit">
+          {saving ? 'Saving...' : 'Save credential'}
+        </button>
+      </form>
+    </section>
+  );
+}
+
+function CredentialSecurityPanel() {
+  return (
+    <section className="panel credential-security-panel">
+      <div className="panel-heading">
+        <div>
+          <p className="section-label">Handling rules</p>
+          <h2>Payload stays hidden</h2>
+        </div>
+      </div>
+      <div className="credential-rules">
+        <p>Use exchange keys with read-only permissions. 1Exchange stores the payload locally, then only shows metadata and account identifiers in the GUI.</p>
+        <dl>
+          <div>
+            <dt>Display identity</dt>
+            <dd>AccountID uses exchange UID when the adapter can read it.</dd>
+          </div>
+          <div>
+            <dt>Payload visibility</dt>
+            <dd>Secret fields are accepted once and never rendered back.</dd>
+          </div>
+          <div>
+            <dt>Next check</dt>
+            <dd>Open Portfolio or Positions to validate that the key can read live data.</dd>
+          </div>
+        </dl>
+      </div>
+    </section>
+  );
+}
+
+function CredentialInventory(props: { accountIds: AccountIds; credentials: Credential[] }) {
+  return (
+    <section className="panel">
+      <div className="panel-heading">
+        <div>
+          <p className="section-label">Saved locally</p>
+          <h2>Credential inventory</h2>
+        </div>
+        <span className="count-chip">{props.credentials.length} saved</span>
+      </div>
+      <DataTable
+        empty="No credentials yet. Add a read-only credential from the form above."
+        headers={['AccountID', 'Name', 'Exchange', 'Payload', 'Created', 'Credential ID']}
+        rows={props.credentials.map((item) => [
+          <code key="account">{accountIdForCredential(item, props.accountIds)}</code>,
+          item.name,
+          <Badge key="exchange">{item.exchange}</Badge>,
+          item.has_payload ? 'Stored' : 'Missing',
+          formatDate(item.created_at),
+          <code key="id">{item.id}</code>,
+        ])}
+      />
+    </section>
   );
 }
 
@@ -1016,6 +1165,14 @@ function accountLabel(credential: Credential, accountIds: AccountIds) {
 
 function fallbackAccountId(credential: Credential) {
   return `${credential.exchange}/local:${credential.id.slice(0, 8)}`;
+}
+
+function credentialPayload(fields: string[], values: Record<string, string>) {
+  return Object.fromEntries(fields.map((field) => [field, values[field] ?? '']));
+}
+
+function isSecretCredentialField(field: string) {
+  return ['secret', 'key', 'passphrase', 'private', 'signer'].some((part) => field.includes(part));
 }
 
 function summarizePositions(positions: Position[]) {

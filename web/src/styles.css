@@ -272,6 +272,106 @@ h2 {
   padding: 14px 16px;
 }
 
+.credential-manager {
+  display: grid;
+  grid-template-columns: minmax(360px, 0.72fr) minmax(280px, 0.28fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.credential-form {
+  display: grid;
+  gap: 14px;
+  padding: 18px 20px 20px;
+}
+
+.credential-form label,
+.credential-field-grid label {
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.credential-form select {
+  width: 100%;
+  min-width: 0;
+}
+
+.credential-field-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.primary-action {
+  width: fit-content;
+  border: 0;
+  border-radius: 10px;
+  padding: 10px 14px;
+  background: var(--accent);
+  color: white;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 750;
+}
+
+.primary-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.primary-action:focus-visible {
+  outline: 3px solid var(--accent-soft);
+}
+
+.success-note {
+  margin: 0;
+  color: var(--good);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.credential-rules {
+  display: grid;
+  gap: 16px;
+  padding: 18px 20px 20px;
+}
+
+.credential-rules p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.credential-rules dl {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+}
+
+.credential-rules div {
+  display: grid;
+  gap: 4px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.credential-rules dt {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.credential-rules dd {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .toolbar-panel label {
   display: flex;
   align-items: center;
@@ -768,8 +868,12 @@ dd {
     flex-direction: column;
   }
 
+  .credential-manager,
   .trade-board {
     grid-template-columns: 1fr;
+  }
+
+  .trade-board {
     grid-template-areas:
       "toolbar"
       "chart"
