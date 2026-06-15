@@ -122,27 +122,32 @@ impl ExchangeAdapter for Adapter {
 
     async fn list_positions(&self, credential: &Value) -> anyhow::Result<Vec<Position>> {
         let spot_account = fetch_spot_account(credential).await?;
-        let futures_account = fetch_futures_account(credential).await?;
 
-        let spot_positions = spot_account
+        let mut positions = spot_account
             .balances
             .into_iter()
             .filter_map(map_spot_balance)
             .collect::<Vec<_>>();
-        let futures_assets = futures_account
-            .assets
-            .into_iter()
-            .filter_map(map_futures_asset);
-        let futures_positions = futures_account
-            .positions
-            .into_iter()
-            .filter_map(map_futures_position);
+        match fetch_futures_account(credential).await {
+            Ok(futures_account) => {
+                positions.extend(
+                    futures_account
+                        .assets
+                        .into_iter()
+                        .filter_map(map_futures_asset),
+                );
+                positions.extend(
+                    futures_account
+                        .positions
+                        .into_iter()
+                        .filter_map(map_futures_position),
+                );
+            }
+            Err(error) if is_http_auth_error(&error) => {}
+            Err(error) => return Err(error),
+        }
 
-        Ok(spot_positions
-            .into_iter()
-            .chain(futures_assets)
-            .chain(futures_positions)
-            .collect())
+        Ok(positions)
     }
 
     async fn list_orders(&self, _credential: &Value) -> anyhow::Result<Vec<Order>> {
@@ -201,6 +206,15 @@ fn signed_query(secret_key: &str, timestamp: u128) -> anyhow::Result<String> {
     let signature = hex::encode(mac.finalize().into_bytes());
 
     Ok(format!("{query}&signature={signature}"))
+}
+
+fn is_http_auth_error(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<reqwest::Error>()
+        .and_then(reqwest::Error::status)
+        .is_some_and(|status| {
+            status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN
+        })
 }
 
 fn map_spot_balance(balance: SpotBalance) -> Option<Position> {
