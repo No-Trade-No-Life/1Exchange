@@ -3,7 +3,7 @@ mod exchanges;
 mod models;
 
 use std::{
-    net::SocketAddr,
+    net::{SocketAddr, TcpListener as StdTcpListener},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     str::FromStr,
@@ -80,9 +80,10 @@ async fn main() -> anyhow::Result<()> {
         .nest("/api", api)
         .fallback_service(ServeDir::new("web/dist"));
 
-    let addr = listen_addr()?;
+    let requested_addr = listen_addr()?;
+    let listener = TcpListener::bind(requested_addr).await?;
+    let addr = listener.local_addr()?;
     let _vite = start_vite_dev_server(addr)?;
-    let listener = TcpListener::bind(addr).await?;
     println!("1Exchange listening on http://{addr}");
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
@@ -102,14 +103,21 @@ fn data_dir() -> PathBuf {
 }
 
 fn listen_addr() -> anyhow::Result<SocketAddr> {
-    let value = std::env::var("ONE_EXCHANGE_ADDR").unwrap_or_else(|_| "127.0.0.1:8787".to_string());
+    let value = std::env::var("ONE_EXCHANGE_ADDR").unwrap_or_else(|_| "127.0.0.1:0".to_string());
     Ok(value.parse()?)
 }
 
 fn vite_addr() -> anyhow::Result<SocketAddr> {
-    let value =
-        std::env::var("ONE_EXCHANGE_VITE_ADDR").unwrap_or_else(|_| "127.0.0.1:5173".to_string());
-    Ok(value.parse()?)
+    if let Ok(value) = std::env::var("ONE_EXCHANGE_VITE_ADDR") {
+        return Ok(value.parse()?);
+    }
+
+    free_loopback_addr()
+}
+
+fn free_loopback_addr() -> anyhow::Result<SocketAddr> {
+    let listener = StdTcpListener::bind("127.0.0.1:0")?;
+    Ok(listener.local_addr()?)
 }
 
 fn start_vite_dev_server(api_addr: SocketAddr) -> anyhow::Result<Option<ViteDevServer>> {
