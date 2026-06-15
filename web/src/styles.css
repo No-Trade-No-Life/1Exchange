@@ -333,6 +333,78 @@ h2 {
   font-weight: 700;
 }
 
+.account-id-link,
+.secondary-link {
+  color: var(--accent);
+  font-weight: 750;
+  text-decoration: none;
+}
+
+.account-id-link code {
+  color: inherit;
+}
+
+.account-id-link:hover,
+.account-id-link:focus-visible,
+.secondary-link:hover,
+.secondary-link:focus-visible {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.account-id-link:focus-visible,
+.secondary-link:focus-visible {
+  border-radius: 6px;
+  outline: 3px solid var(--accent-soft);
+}
+
+.account-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px 20px;
+}
+
+.account-detail-head h2 {
+  overflow-wrap: anywhere;
+}
+
+.account-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1px;
+  background: var(--line);
+}
+
+.detail-item {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 16px 18px;
+  background: var(--surface);
+}
+
+.detail-item span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.detail-item strong,
+.detail-item code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.empty-detail {
+  display: grid;
+  gap: 10px;
+  padding: 22px;
+}
+
 .credential-rules {
   display: grid;
   gap: 16px;
@@ -860,6 +932,7 @@ dd {
 
   .topbar,
   .panel-heading,
+  .account-detail-head,
   .split-panel,
   .toolbar-panel,
   .trade-toolbar,

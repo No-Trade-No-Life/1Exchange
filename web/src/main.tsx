@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { HashRouter, Navigate, NavLink, Route, Routes, useLocation } from 'react-router-dom';
+import { HashRouter, Link, Navigate, NavLink, Route, Routes, useLocation, useSearchParams } from 'react-router-dom';
 import './styles.css';
 
 type Health = {
@@ -87,10 +87,11 @@ type TradeAccount = {
 
 type AccountIds = Record<string, string>;
 
-type Page = 'overview' | 'portfolio' | 'trade' | 'history' | 'credentials' | 'positions' | 'products' | 'exchanges';
+type Page = 'overview' | 'accounts' | 'portfolio' | 'trade' | 'history' | 'credentials' | 'positions' | 'products' | 'exchanges';
 
 const pages: Array<{ id: Page; label: string; hint: string; path: string }> = [
   { id: 'overview', label: 'Overview', hint: 'Service and adapter status', path: '/overview' },
+  { id: 'accounts', label: 'Accounts', hint: 'Account identities and detail', path: '/accounts' },
   { id: 'portfolio', label: 'Portfolio', hint: 'All credential assets', path: '/portfolio' },
   { id: 'trade', label: 'Trade', hint: 'Trading board', path: '/trade' },
   { id: 'history', label: 'History', hint: 'Trade fills', path: '/history' },
@@ -286,6 +287,8 @@ function App() {
         selectedCredential={selectedCredential}
       />
   );
+  const accountsPage = <AccountsPage accounts={portfolio.accounts} loading={portfolio.loading} />;
+  const accountDetailPage = <AccountDetailPage accounts={portfolio.accounts} loading={portfolio.loading} />;
   const portfolioPage = <PortfolioPage accounts={portfolio.accounts} loading={portfolio.loading} />;
   const historyPage = <TradeHistoryPage accountIds={accountIds} accounts={tradeHistory.accounts} loading={tradeHistory.loading} />;
   const tradePage = (
@@ -377,6 +380,8 @@ function App() {
         <Routes>
           <Route path="/" element={<Navigate replace to="/overview" />} />
           <Route path="/overview" element={overviewPage} />
+          <Route path="/accounts" element={accountsPage} />
+          <Route path="/accounts/detail" element={accountDetailPage} />
           <Route path="/portfolio" element={portfolioPage} />
           <Route path="/trade" element={tradePage} />
           <Route path="/history" element={historyPage} />
@@ -462,7 +467,7 @@ function PortfolioPage(props: { accounts: PortfolioAccount[]; loading: boolean }
           rows={props.accounts.map((account) => {
             const accountSummary = summarizeAccountPositions(account.positions);
             return [
-              <code key="account">{account.accountId}</code>,
+              <AccountIdLink accountId={account.accountId} key="account" />,
               account.credential.name,
               <Badge key="exchange">{account.credential.exchange}</Badge>,
               accountSummary.total.toString(),
@@ -504,6 +509,147 @@ function PortfolioPage(props: { accounts: PortfolioAccount[]; loading: boolean }
   );
 }
 
+function AccountsPage(props: { accounts: PortfolioAccount[]; loading: boolean }) {
+  return (
+    <div className="page-stack">
+      <section className="metrics-grid compact" aria-label="Accounts summary">
+        <Metric label="Accounts" value={props.accounts.length.toString()} />
+        <Metric label="Loaded" value={props.accounts.filter((account) => !account.error).length.toString()} />
+        <Metric label="Read errors" value={props.accounts.filter((account) => account.error).length.toString()} tone={props.accounts.some((account) => account.error) ? 'warn' : 'neutral'} />
+        <Metric label="Status" value={props.loading ? 'Loading' : 'Ready'} />
+      </section>
+
+      <section className="panel">
+        <div className="panel-heading">
+          <div>
+            <p className="section-label">Account registry</p>
+            <h2>Accounts</h2>
+          </div>
+          <span className="count-chip">{props.loading ? 'Loading' : `${props.accounts.length} accounts`}</span>
+        </div>
+        <DataTable
+          empty="No accounts loaded yet. Add credentials first, then the account registry will appear here."
+          headers={['AccountID', 'Credential', 'Exchange', 'Positions', 'Assets', 'Notional value', 'Floating P/L', 'Status']}
+          rows={props.accounts.map((account) => {
+            const summary = summarizeAccountPositions(account.positions);
+            return [
+              <AccountIdLink accountId={account.accountId} key="account" />,
+              account.credential.name,
+              <Badge key="exchange">{account.credential.exchange}</Badge>,
+              summary.total.toString(),
+              summary.assets.toString(),
+              formatNotionalBreakdown(summary.notionalByCurrency),
+              <Value key="pnl" value={summary.pnl} />,
+              account.error ? <span className="status-text bad" key="status">{account.error}</span> : <span className="status-text good" key="status">Loaded</span>,
+            ];
+          })}
+        />
+      </section>
+    </div>
+  );
+}
+
+function AccountDetailPage(props: { accounts: PortfolioAccount[]; loading: boolean }) {
+  const [params] = useSearchParams();
+  const accountId = params.get('account_id') ?? '';
+  const account = props.accounts.find((item) => item.accountId === accountId);
+  const summary = summarizeAccountPositions(account?.positions ?? []);
+
+  if (!accountId) {
+    return <AccountDetailEmpty title="Select an account" message="Open the Accounts page and choose an AccountID to inspect positions and metadata." />;
+  }
+
+  if (!account) {
+    return props.loading
+      ? <AccountDetailEmpty title="Loading account" message="Account data is loading from saved credentials." />
+      : <AccountDetailEmpty title="Account not found" message="This AccountID is not available in the current credential registry." />;
+  }
+
+  return (
+    <div className="page-stack">
+      <section className="panel account-detail-head">
+        <div>
+          <p className="section-label">Account detail</p>
+          <h2><code>{account.accountId}</code></h2>
+        </div>
+        <Link className="secondary-link" to="/accounts">Back to accounts</Link>
+      </section>
+
+      <section className="metrics-grid compact" aria-label="Account detail summary">
+        <Metric label="Positions" value={summary.total.toString()} />
+        <Metric label="Assets" value={summary.assets.toString()} />
+        <Metric label="Notional value" value={formatNotionalBreakdown(summary.notionalByCurrency)} />
+        <Metric label="Floating P/L" value={formatNumber(summary.pnl)} tone={summary.pnl < 0 ? 'warn' : 'good'} />
+      </section>
+
+      <section className="panel">
+        <div className="account-detail-grid">
+          <DetailItem label="Credential" value={account.credential.name} />
+          <DetailItem label="Exchange" value={account.credential.exchange} />
+          <DetailItem label="Credential ID" value={account.credential.id} monospace />
+          <DetailItem label="Payload" value={account.credential.has_payload ? 'Stored' : 'Missing'} />
+          <DetailItem label="Created" value={formatDate(account.credential.created_at)} />
+          <DetailItem label="Updated" value={formatDate(account.credential.updated_at)} />
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-heading">
+          <div>
+            <p className="section-label">Live read</p>
+            <h2>Positions</h2>
+          </div>
+          <span className="count-chip">{account.positions.length} rows</span>
+        </div>
+        <InlineError message={account.error} />
+        <DataTable
+          empty="This account returned no positions."
+          headers={['Position', 'Product', 'Side', 'Volume', 'Free', 'Entry', 'Mark', 'Notional', 'P/L']}
+          rows={account.positions.map((item) => [
+            item.position_id,
+            <code key="product">{item.product_id}</code>,
+            item.direction ? <Badge key="direction">{item.direction}</Badge> : 'Asset',
+            formatNumber(item.volume),
+            formatNumber(item.free_volume),
+            formatNumber(item.position_price),
+            formatNumber(item.closable_price),
+            formatNumber(notionalValue(item)),
+            <Value key="pnl" value={item.floating_profit} />,
+          ])}
+        />
+      </section>
+    </div>
+  );
+}
+
+function AccountDetailEmpty(props: { title: string; message: string }) {
+  return (
+    <section className="panel empty-detail">
+      <p className="section-label">Account detail</p>
+      <h2>{props.title}</h2>
+      <p className="muted">{props.message}</p>
+      <Link className="secondary-link" to="/accounts">Open Accounts</Link>
+    </section>
+  );
+}
+
+function DetailItem(props: { label: string; value: string; monospace?: boolean }) {
+  return (
+    <div className="detail-item">
+      <span>{props.label}</span>
+      {props.monospace ? <code>{props.value}</code> : <strong>{props.value}</strong>}
+    </div>
+  );
+}
+
+function AccountIdLink(props: { accountId: string }) {
+  return (
+    <Link className="account-id-link" to={accountDetailPath(props.accountId)}>
+      <code>{props.accountId}</code>
+    </Link>
+  );
+}
+
 function TradeHistoryPage(props: { accountIds: AccountIds; accounts: TradeAccount[]; loading: boolean }) {
   const trades = props.accounts.flatMap((account) =>
     account.trades.map((trade) => ({ ...trade, accountId: accountIdForCredential(account.credential, props.accountIds) })),
@@ -535,7 +681,7 @@ function TradeHistoryPage(props: { accountIds: AccountIds; accounts: TradeAccoun
             .slice(0, 500)
             .map((trade) => [
               formatTradeTime(trade.created_at),
-              <code key="account">{trade.accountId}</code>,
+              <AccountIdLink accountId={trade.accountId} key="account" />,
               <Badge key="exchange">{trade.exchange}</Badge>,
               <code key="product">{trade.product_id}</code>,
               trade.direction ? <Badge key="direction">{trade.direction}</Badge> : '-',
@@ -559,7 +705,7 @@ function TradeHistoryPage(props: { accountIds: AccountIds; accounts: TradeAccoun
           empty="No credentials yet."
           headers={['AccountID', 'Credential', 'Exchange', 'Fills', 'Status']}
           rows={props.accounts.map((account) => [
-            <code key="account">{accountIdForCredential(account.credential, props.accountIds)}</code>,
+            <AccountIdLink accountId={accountIdForCredential(account.credential, props.accountIds)} key="account" />,
             account.credential.name,
             <Badge key="exchange">{account.credential.exchange}</Badge>,
             account.trades.length.toString(),
@@ -951,7 +1097,7 @@ function CredentialInventory(props: { accountIds: AccountIds; credentials: Crede
         empty="No credentials yet. Add a read-only credential from the form above."
         headers={['AccountID', 'Name', 'Exchange', 'Payload', 'Created', 'Credential ID']}
         rows={props.credentials.map((item) => [
-          <code key="account">{accountIdForCredential(item, props.accountIds)}</code>,
+          <AccountIdLink accountId={accountIdForCredential(item, props.accountIds)} key="account" />,
           item.name,
           <Badge key="exchange">{item.exchange}</Badge>,
           item.has_payload ? 'Stored' : 'Missing',
@@ -1151,7 +1297,7 @@ function Value(props: { value: number }) {
 }
 
 function currentPage(pathname: string) {
-  return pages.find((item) => item.path === pathname) ?? pages[0];
+  return pages.find((item) => item.path === pathname) ?? pages.find((item) => pathname.startsWith(`${item.path}/`)) ?? pages[0];
 }
 
 function accountIdForCredential(credential: Credential, accountIds: AccountIds) {
@@ -1161,6 +1307,10 @@ function accountIdForCredential(credential: Credential, accountIds: AccountIds) 
 function accountLabel(credential: Credential, accountIds: AccountIds) {
   const accountId = accountIds[credential.id];
   return accountId ? `${accountId} · ${credential.name}` : fallbackAccountId(credential);
+}
+
+function accountDetailPath(accountId: string) {
+  return `/accounts/detail?account_id=${encodeURIComponent(accountId)}`;
 }
 
 function fallbackAccountId(credential: Credential) {
