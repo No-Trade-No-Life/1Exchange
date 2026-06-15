@@ -82,6 +82,10 @@ pub fn notional_value(volume: f64, price: f64) -> f64 {
     }
 }
 
+pub fn normalized_volume_step(volume_step: Option<f64>, value_scale: Option<f64>) -> Option<f64> {
+    volume_step.map(|step| step * value_scale.unwrap_or(1.0))
+}
+
 pub fn now_timestamp_in_us() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

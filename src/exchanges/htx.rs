@@ -449,6 +449,7 @@ fn htx_fill_direction(side: &str, position_side: &str) -> Option<PositionDirecti
 
 fn map_swap_product(row: Value) -> Product {
     let code = common::str_value(&row, "contract_code");
+    let value_scale = common::opt_f64_value(&row, "contract_size");
     Product {
         datasource_id: ID.to_string(),
         product_id: format!("{ID}/SWAP/{code}"),
@@ -456,8 +457,8 @@ fn map_swap_product(row: Value) -> Product {
         quote_currency: Some("USDT".to_string()),
         base_currency: Some(common::str_value(&row, "symbol")).filter(|value| !value.is_empty()),
         price_step: common::opt_f64_value(&row, "price_tick"),
-        volume_step: Some(1.0),
-        value_scale: common::opt_f64_value(&row, "contract_size"),
+        volume_step: common::normalized_volume_step(Some(1.0), value_scale),
+        value_scale: Some(1.0),
         value_scale_unit: None,
         margin_rate: None,
         value_based_cost: None,
@@ -479,7 +480,10 @@ fn map_spot_product(row: Value) -> Product {
         quote_currency: Some(common::str_value(&row, "qc")).filter(|value| !value.is_empty()),
         base_currency: Some(common::str_value(&row, "bc")).filter(|value| !value.is_empty()),
         price_step: common::opt_f64_value(&row, "tpp").map(common::pow_step),
-        volume_step: common::opt_f64_value(&row, "tap").map(common::pow_step),
+        volume_step: common::normalized_volume_step(
+            common::opt_f64_value(&row, "tap").map(common::pow_step),
+            None,
+        ),
         value_scale: Some(1.0),
         value_scale_unit: None,
         margin_rate: None,

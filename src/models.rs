@@ -82,7 +82,9 @@ pub struct Product {
     pub quote_currency: Option<String>,
     pub base_currency: Option<String>,
     pub price_step: Option<f64>,
+    /// Minimum order quantity after applying exchange contract multipliers.
     pub volume_step: Option<f64>,
+    /// Normalized to 1.0; adapter contract multipliers are folded into volume_step.
     pub value_scale: Option<f64>,
     pub value_scale_unit: Option<String>,
     pub margin_rate: Option<f64>,

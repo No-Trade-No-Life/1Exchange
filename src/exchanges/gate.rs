@@ -312,6 +312,7 @@ fn map_future_product(row: Value) -> Product {
     let base = parts.next().unwrap_or_default().to_string();
     let quote = parts.next().unwrap_or_default().to_string();
     let leverage = common::f64_value(&row, "leverage_max");
+    let value_scale = common::opt_f64_value(&row, "quanto_multiplier");
 
     Product {
         datasource_id: ID.to_string(),
@@ -320,8 +321,8 @@ fn map_future_product(row: Value) -> Product {
         quote_currency: Some(quote).filter(|value| !value.is_empty()),
         base_currency: Some(base).filter(|value| !value.is_empty()),
         price_step: common::opt_f64_value(&row, "order_price_round"),
-        volume_step: Some(1.0),
-        value_scale: common::opt_f64_value(&row, "quanto_multiplier"),
+        volume_step: common::normalized_volume_step(Some(1.0), value_scale),
+        value_scale: Some(1.0),
         value_scale_unit: None,
         margin_rate: if leverage > 0.0 {
             Some(1.0 / leverage)
@@ -347,7 +348,7 @@ fn map_spot_product(row: Value) -> Product {
         quote_currency: Some(common::str_value(&row, "quote")).filter(|value| !value.is_empty()),
         base_currency: Some(common::str_value(&row, "base")).filter(|value| !value.is_empty()),
         price_step: common::opt_f64_value(&row, "precision").map(common::pow_step),
-        volume_step: Some(1.0),
+        volume_step: common::normalized_volume_step(Some(1.0), None),
         value_scale: Some(1.0),
         value_scale_unit: None,
         margin_rate: None,

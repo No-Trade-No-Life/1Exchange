@@ -220,8 +220,11 @@ fn map_product(row: &Value, market: &str, allow_short: bool) -> Product {
         base_currency: Some(base).filter(|value| !value.is_empty()),
         price_step: filter_number(row, "PRICE_FILTER", "tickSize")
             .or_else(|| common::opt_f64_value(row, "pricePrecision").map(common::pow_step)),
-        volume_step: filter_number(row, "LOT_SIZE", "stepSize")
-            .or_else(|| common::opt_f64_value(row, "quantityPrecision").map(common::pow_step)),
+        volume_step: common::normalized_volume_step(
+            filter_number(row, "LOT_SIZE", "stepSize")
+                .or_else(|| common::opt_f64_value(row, "quantityPrecision").map(common::pow_step)),
+            None,
+        ),
         value_scale: Some(1.0),
         value_scale_unit: None,
         margin_rate: Some(if allow_short { 0.1 } else { 1.0 }),

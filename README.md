@@ -19,6 +19,7 @@
 - `AccountInfo`：账户快照，包含 `positions`、`orders` 和生成时间；不迁移已废弃的 `IAccountMoney`。
 - `Position`：账户下的原子资产/持仓，支持按品种和方向聚合。
 - `Product`：交易品种规格，保留交易所原始 `product_id`，避免过早做统一命名。
+- `Product.volume_step`：已乘入交易所合约乘数；`Product.value_scale` 统一为 `1`，避免调用方记忆“一手”等于多少价值单位。
 - Exchange Adapter：每个交易所实现 Credential Schema、产品列表、持仓、订单等能力。
 
 Rust 版本会保留这些语义，但使用 Rust 类型、SQLite 表结构和 HTTP JSON API 表达。

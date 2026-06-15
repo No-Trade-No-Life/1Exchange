@@ -335,8 +335,11 @@ fn map_product(category: &str, row: &Value) -> Product {
         quote_currency: Some(common::str_value(row, "quoteCoin")).filter(|value| !value.is_empty()),
         base_currency: Some(common::str_value(row, "baseCoin")).filter(|value| !value.is_empty()),
         price_step: price_precision.map(common::pow_step),
-        volume_step: common::opt_f64_value(row, "quantityMultiplier")
-            .or_else(|| quantity_precision.map(common::pow_step)),
+        volume_step: common::normalized_volume_step(
+            common::opt_f64_value(row, "quantityMultiplier")
+                .or_else(|| quantity_precision.map(common::pow_step)),
+            None,
+        ),
         value_scale: Some(1.0),
         value_scale_unit: None,
         margin_rate: if category == "SPOT" || max_leverage <= 0.0 {

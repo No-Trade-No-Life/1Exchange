@@ -336,8 +336,11 @@ fn map_product(symbol: BinanceSymbol, market: &str, allow_short: bool) -> Produc
         quote_currency: Some(symbol.quote_asset),
         base_currency: Some(symbol.base_asset),
         price_step: filter_number(&symbol.filters, "PRICE_FILTER", "tickSize"),
-        volume_step: filter_number(&symbol.filters, "LOT_SIZE", "stepSize"),
-        value_scale: None,
+        volume_step: common::normalized_volume_step(
+            filter_number(&symbol.filters, "LOT_SIZE", "stepSize"),
+            None,
+        ),
+        value_scale: Some(1.0),
         value_scale_unit: None,
         margin_rate: None,
         value_based_cost: None,

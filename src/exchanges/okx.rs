@@ -388,6 +388,7 @@ fn okx_quote_currency(inst_id: &str) -> Option<String> {
 fn map_product(inst_type: &str, row: &Value) -> Product {
     let inst_id = common::str_value(row, "instId");
     let lever = common::opt_f64_value(row, "lever").unwrap_or(1.0);
+    let value_scale = common::opt_f64_value(row, "ctVal");
 
     Product {
         datasource_id: ID.to_string(),
@@ -396,8 +397,11 @@ fn map_product(inst_type: &str, row: &Value) -> Product {
         quote_currency: Some(common::str_value(row, "quoteCcy")).filter(|value| !value.is_empty()),
         base_currency: Some(common::str_value(row, "baseCcy")).filter(|value| !value.is_empty()),
         price_step: common::opt_f64_value(row, "tickSz"),
-        volume_step: common::opt_f64_value(row, "lotSz"),
-        value_scale: common::opt_f64_value(row, "ctVal"),
+        volume_step: common::normalized_volume_step(
+            common::opt_f64_value(row, "lotSz"),
+            value_scale,
+        ),
+        value_scale: Some(1.0),
         value_scale_unit: Some(common::str_value(row, "ctValCcy"))
             .filter(|value| !value.is_empty()),
         margin_rate: if inst_type == "SWAP" && lever > 0.0 {

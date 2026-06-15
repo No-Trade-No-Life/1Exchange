@@ -137,7 +137,10 @@ fn map_spot_product(row: Value) -> Product {
         quote_currency: Some("USDC".to_string()),
         base_currency: Some(name),
         price_step: Some(0.01),
-        volume_step: common::opt_f64_value(&row, "szDecimals").map(common::pow_step),
+        volume_step: common::normalized_volume_step(
+            common::opt_f64_value(&row, "szDecimals").map(common::pow_step),
+            None,
+        ),
         value_scale: Some(1.0),
         value_scale_unit: None,
         margin_rate: Some(1.0),
@@ -161,7 +164,10 @@ fn map_perp_product(row: Value) -> Product {
         quote_currency: Some("USD".to_string()),
         base_currency: Some(name),
         price_step: Some(0.01),
-        volume_step: common::opt_f64_value(&row, "szDecimals").map(common::pow_step),
+        volume_step: common::normalized_volume_step(
+            common::opt_f64_value(&row, "szDecimals").map(common::pow_step),
+            None,
+        ),
         value_scale: Some(1.0),
         value_scale_unit: None,
         margin_rate: if leverage > 0.0 {
