@@ -26,6 +26,7 @@ pub struct ExchangeInfo {
 pub trait ExchangeAdapter: Send + Sync {
     fn info(&self) -> ExchangeInfo;
     async fn list_products(&self) -> anyhow::Result<Vec<Product>>;
+    async fn get_account_id(&self, credential: &Value) -> anyhow::Result<String>;
     async fn get_account(&self, credential: &Value) -> anyhow::Result<AccountInfo>;
     async fn list_positions(&self, credential: &Value) -> anyhow::Result<Vec<Position>>;
     async fn list_orders(&self, credential: &Value) -> anyhow::Result<Vec<Order>>;

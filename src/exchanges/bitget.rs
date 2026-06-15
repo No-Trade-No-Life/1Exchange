@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use hmac::{Hmac, Mac};
 use serde_json::Value;
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
@@ -50,14 +50,32 @@ impl ExchangeAdapter for Adapter {
     }
 
     async fn get_account(&self, credential: &Value) -> anyhow::Result<AccountInfo> {
+        let account_id = self.get_account_id(credential).await?;
         let positions = self.list_positions(credential).await?;
 
         Ok(AccountInfo {
-            account_id: format!("{ID}/{}", common::str_value(credential, "access_key")),
+            account_id,
             positions,
             orders: Vec::new(),
             timestamp_in_us: common::now_timestamp_in_us(),
         })
+    }
+
+    async fn get_account_id(&self, credential: &Value) -> anyhow::Result<String> {
+        let response = bitget_get(credential, ACCOUNT_ASSETS_PATH, &[]).await?;
+        let user_id = response
+            .get("data")
+            .map(|data| common::text_value(data, "userId"))
+            .unwrap_or_default();
+        let uid = if user_id.is_empty() {
+            // COMPATIBILITY: Bitget UTA assets may omit userId for some keys.
+            // Use a stable non-secret local surrogate until the API exposes UID.
+            access_key_fingerprint(credential)
+        } else {
+            user_id
+        };
+
+        Ok(common::account_id(ID, uid))
     }
 
     async fn list_positions(&self, credential: &Value) -> anyhow::Result<Vec<Position>> {
@@ -127,6 +145,11 @@ impl ExchangeAdapter for Adapter {
 
         Ok(trades)
     }
+}
+
+fn access_key_fingerprint(credential: &Value) -> String {
+    let digest = Sha256::digest(common::str_value(credential, "access_key").as_bytes());
+    format!("key:{}", &hex::encode(digest)[..12])
 }
 
 async fn bitget_get(

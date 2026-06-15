@@ -86,6 +86,10 @@ pub fn normalized_volume_step(volume_step: Option<f64>, value_scale: Option<f64>
     volume_step.map(|step| step * value_scale.unwrap_or(1.0))
 }
 
+pub fn account_id(exchange: &str, uid: impl AsRef<str>) -> String {
+    format!("{exchange}/{}", uid.as_ref())
+}
+
 pub fn now_timestamp_in_us() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

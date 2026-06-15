@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AccountInfo {
+    /// Cross-market account identity, usually EXCHANGE/UID.
     pub account_id: String,
     /// Positions are the account's atomic assets. Product specifications are resolved by product_id.
     pub positions: Vec<Position>,

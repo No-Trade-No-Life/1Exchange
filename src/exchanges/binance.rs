@@ -48,6 +48,7 @@ struct BinanceFilter {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SpotAccountResponse {
+    uid: u64,
     balances: Vec<SpotBalance>,
 }
 
@@ -110,14 +111,21 @@ impl ExchangeAdapter for Adapter {
     }
 
     async fn get_account(&self, credential: &Value) -> anyhow::Result<AccountInfo> {
+        let account_id = self.get_account_id(credential).await?;
         let positions = self.list_positions(credential).await?;
 
         Ok(AccountInfo {
-            account_id: format!("{ID}/{}", common::str_value(credential, "access_key")),
+            account_id,
             positions,
             orders: Vec::new(),
             timestamp_in_us: common::now_timestamp_in_us(),
         })
+    }
+
+    async fn get_account_id(&self, credential: &Value) -> anyhow::Result<String> {
+        let spot_account = fetch_spot_account(credential).await?;
+
+        Ok(common::account_id(ID, spot_account.uid.to_string()))
     }
 
     async fn list_positions(&self, credential: &Value) -> anyhow::Result<Vec<Position>> {

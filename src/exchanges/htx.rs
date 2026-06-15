@@ -17,6 +17,7 @@ const SPOT_BASE_URL: &str = "https://api.huobi.pro";
 const SPOT_HOST: &str = "api.huobi.pro";
 const SPOT_ACCOUNTS_PATH: &str = "/v1/account/accounts";
 const SPOT_BALANCE_PATH_PREFIX: &str = "/v1/account/accounts/";
+const USER_UID_PATH: &str = "/v2/user/uid";
 const SWAP_CONTRACT_INFO_URL: &str = "https://api.hbdm.com/linear-swap-api/v1/swap_contract_info";
 const SWAP_HOST: &str = "api.hbdm.com";
 const SWAP_ACCOUNT_TYPE_PATH: &str = "/linear-swap-api/v3/swap_unified_account_type";
@@ -77,14 +78,23 @@ impl ExchangeAdapter for Adapter {
     }
 
     async fn get_account(&self, credential: &Value) -> anyhow::Result<AccountInfo> {
+        let account_id = self.get_account_id(credential).await?;
         let positions = self.list_positions(credential).await?;
 
         Ok(AccountInfo {
-            account_id: format!("{ID}/{}", common::str_value(credential, "access_key")),
+            account_id,
             positions,
             orders: Vec::new(),
             timestamp_in_us: common::now_timestamp_in_us(),
         })
+    }
+
+    async fn get_account_id(&self, credential: &Value) -> anyhow::Result<String> {
+        let response = htx_get(credential, SPOT_BASE_URL, SPOT_HOST, USER_UID_PATH).await?;
+        let uid = common::text_value(&response, "data");
+        anyhow::ensure!(!uid.is_empty(), "HTX account uid is missing");
+
+        Ok(common::account_id(ID, uid))
     }
 
     async fn list_positions(&self, credential: &Value) -> anyhow::Result<Vec<Position>> {

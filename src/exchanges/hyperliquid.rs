@@ -42,15 +42,22 @@ impl ExchangeAdapter for Adapter {
     }
 
     async fn get_account(&self, credential: &Value) -> anyhow::Result<AccountInfo> {
-        let address = credential_address(credential)?;
+        let account_id = self.get_account_id(credential).await?;
         let positions = self.list_positions(credential).await?;
 
         Ok(AccountInfo {
-            account_id: format!("{ID}/{}", address.to_lowercase()),
+            account_id,
             positions,
             orders: Vec::new(),
             timestamp_in_us: common::now_timestamp_in_us(),
         })
+    }
+
+    async fn get_account_id(&self, credential: &Value) -> anyhow::Result<String> {
+        Ok(common::account_id(
+            ID,
+            credential_address(credential)?.to_lowercase(),
+        ))
     }
 
     async fn list_positions(&self, credential: &Value) -> anyhow::Result<Vec<Position>> {

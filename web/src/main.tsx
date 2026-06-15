@@ -26,6 +26,11 @@ type Credential = {
   updated_at: string;
 };
 
+type AccountInfo = {
+  account_id: string;
+  positions: Position[];
+};
+
 type Position = {
   position_id: string;
   product_id: string;
@@ -53,6 +58,7 @@ type Product = {
 };
 
 type PortfolioAccount = {
+  accountId: string;
   credential: Credential;
   error: string | null;
   positions: Position[];
@@ -78,6 +84,8 @@ type TradeAccount = {
   error: string | null;
   trades: TradeFill[];
 };
+
+type AccountIds = Record<string, string>;
 
 type Page = 'overview' | 'portfolio' | 'trade' | 'history' | 'credentials' | 'positions' | 'products' | 'exchanges';
 
@@ -146,13 +154,24 @@ function usePortfolio(credentials: Credential[]) {
     Promise.all(
       credentials.map(async (credential) => {
         try {
-          const response = await fetch(`/api/positions?credential_id=${encodeURIComponent(credential.id)}`);
+          const response = await fetch(`/api/accounts?credential_id=${encodeURIComponent(credential.id)}`);
           if (!response.ok) {
             throw new Error(`${response.status} ${response.statusText}`);
           }
-          return { credential, error: null, positions: (await response.json()) as Position[] };
+          const account = ((await response.json()) as AccountInfo[])[0];
+          return {
+            accountId: account?.account_id ?? fallbackAccountId(credential),
+            credential,
+            error: null,
+            positions: account?.positions ?? [],
+          };
         } catch (caught) {
-          return { credential, error: (caught as Error).message, positions: [] };
+          return {
+            accountId: fallbackAccountId(credential),
+            credential,
+            error: (caught as Error).message,
+            positions: [],
+          };
         }
       }),
     )
@@ -235,6 +254,10 @@ function App() {
   const products = useJson<Product[]>(productsPath);
   const portfolio = usePortfolio(credentialList);
   const tradeHistory = useTradeHistory(credentialList);
+  const accountIds = useMemo(
+    () => Object.fromEntries(portfolio.accounts.map((account) => [account.credential.id, account.accountId])),
+    [portfolio.accounts],
+  );
 
   useEffect(() => {
     if (!selectedCredentialId && credentials.data?.[0]) {
@@ -263,9 +286,10 @@ function App() {
       />
   );
   const portfolioPage = <PortfolioPage accounts={portfolio.accounts} loading={portfolio.loading} />;
-  const historyPage = <TradeHistoryPage accounts={tradeHistory.accounts} loading={tradeHistory.loading} />;
+  const historyPage = <TradeHistoryPage accountIds={accountIds} accounts={tradeHistory.accounts} loading={tradeHistory.loading} />;
   const tradePage = (
       <TradePage
+        accountIds={accountIds}
         credentials={credentialList}
         error={selectedCredentialId ? positions.error : null}
         exchanges={exchanges.data ?? []}
@@ -280,9 +304,10 @@ function App() {
         onSelectProduct={setSelectedTradeProductId}
       />
   );
-  const credentialsPage = <CredentialsPage credentials={credentialList} exchanges={exchanges.data ?? []} />;
+  const credentialsPage = <CredentialsPage accountIds={accountIds} credentials={credentialList} exchanges={exchanges.data ?? []} />;
   const positionsPage = (
       <PositionsPage
+        accountIds={accountIds}
         credentials={credentialList}
         error={selectedCredentialId ? positions.error : null}
         exposure={exposure}
@@ -415,17 +440,18 @@ function PortfolioPage(props: { accounts: PortfolioAccount[]; loading: boolean }
       <section className="panel">
         <div className="panel-heading">
           <div>
-            <p className="section-label">By credential</p>
+            <p className="section-label">By account</p>
             <h2>Account summary</h2>
           </div>
-          <span className="count-chip">{props.loading ? 'Loading' : `${props.accounts.length} credentials`}</span>
+          <span className="count-chip">{props.loading ? 'Loading' : `${props.accounts.length} accounts`}</span>
         </div>
         <DataTable
           empty="No credentials yet. Add credentials before loading a portfolio summary."
-          headers={['Credential', 'Exchange', 'Positions', 'Assets', 'Long', 'Short', 'Notional value', 'Floating P/L', 'Status']}
+          headers={['AccountID', 'Credential', 'Exchange', 'Positions', 'Assets', 'Long', 'Short', 'Notional value', 'Floating P/L', 'Status']}
           rows={props.accounts.map((account) => {
             const accountSummary = summarizeAccountPositions(account.positions);
             return [
+              <code key="account">{account.accountId}</code>,
               account.credential.name,
               <Badge key="exchange">{account.credential.exchange}</Badge>,
               accountSummary.total.toString(),
@@ -467,9 +493,9 @@ function PortfolioPage(props: { accounts: PortfolioAccount[]; loading: boolean }
   );
 }
 
-function TradeHistoryPage(props: { accounts: TradeAccount[]; loading: boolean }) {
+function TradeHistoryPage(props: { accountIds: AccountIds; accounts: TradeAccount[]; loading: boolean }) {
   const trades = props.accounts.flatMap((account) =>
-    account.trades.map((trade) => ({ ...trade, credentialName: account.credential.name })),
+    account.trades.map((trade) => ({ ...trade, accountId: accountIdForCredential(account.credential, props.accountIds) })),
   );
   const errors = props.accounts.filter((account) => account.error).length;
 
@@ -492,13 +518,13 @@ function TradeHistoryPage(props: { accounts: TradeAccount[]; loading: boolean })
         </div>
         <DataTable
           empty="No trade fills returned. Some exchanges need trade-history permissions or a recent activity window."
-          headers={['Time', 'Credential', 'Exchange', 'Product', 'Side', 'Price', 'Volume', 'Value', 'Fee', 'Trade ID']}
+          headers={['Time', 'AccountID', 'Exchange', 'Product', 'Side', 'Price', 'Volume', 'Value', 'Fee', 'Trade ID']}
           rows={trades
             .sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''))
             .slice(0, 500)
             .map((trade) => [
               formatTradeTime(trade.created_at),
-              trade.credentialName,
+              <code key="account">{trade.accountId}</code>,
               <Badge key="exchange">{trade.exchange}</Badge>,
               <code key="product">{trade.product_id}</code>,
               trade.direction ? <Badge key="direction">{trade.direction}</Badge> : '-',
@@ -514,14 +540,15 @@ function TradeHistoryPage(props: { accounts: TradeAccount[]; loading: boolean })
       <section className="panel">
         <div className="panel-heading">
           <div>
-            <p className="section-label">By credential</p>
+            <p className="section-label">By account</p>
             <h2>History read status</h2>
           </div>
         </div>
         <DataTable
           empty="No credentials yet."
-          headers={['Credential', 'Exchange', 'Fills', 'Status']}
+          headers={['AccountID', 'Credential', 'Exchange', 'Fills', 'Status']}
           rows={props.accounts.map((account) => [
+            <code key="account">{accountIdForCredential(account.credential, props.accountIds)}</code>,
             account.credential.name,
             <Badge key="exchange">{account.credential.exchange}</Badge>,
             account.trades.length.toString(),
@@ -534,6 +561,7 @@ function TradeHistoryPage(props: { accounts: TradeAccount[]; loading: boolean })
 }
 
 function TradePage(props: {
+  accountIds: AccountIds;
   credentials: Credential[];
   error: string | null;
   exchanges: ExchangeInfo[];
@@ -562,7 +590,7 @@ function TradePage(props: {
             <option value="">Select credential</option>
             {props.credentials.map((credential) => (
               <option key={credential.id} value={credential.id}>
-                {credential.exchange} · {credential.name}
+                {accountLabel(credential, props.accountIds)}
               </option>
             ))}
           </select>
@@ -741,7 +769,7 @@ function ManualTradeDraft(props: { product?: Product; selectedCredentialId: stri
   );
 }
 
-function CredentialsPage(props: { credentials: Credential[]; exchanges: ExchangeInfo[] }) {
+function CredentialsPage(props: { accountIds: AccountIds; credentials: Credential[]; exchanges: ExchangeInfo[] }) {
   return (
     <div className="page-stack">
       <section className="panel">
@@ -754,8 +782,9 @@ function CredentialsPage(props: { credentials: Credential[]; exchanges: Exchange
         </div>
         <DataTable
           empty="No credentials yet. POST /api/credentials or use the API directly to add one."
-          headers={['Name', 'Exchange', 'Payload', 'Created', 'ID']}
+          headers={['AccountID', 'Name', 'Exchange', 'Payload', 'Created', 'Credential ID']}
           rows={props.credentials.map((item) => [
+            <code key="account">{accountIdForCredential(item, props.accountIds)}</code>,
             item.name,
             <Badge key="exchange">{item.exchange}</Badge>,
             item.has_payload ? 'Stored' : 'Missing',
@@ -786,6 +815,7 @@ function CredentialsPage(props: { credentials: Credential[]; exchanges: Exchange
 }
 
 function PositionsPage(props: {
+  accountIds: AccountIds;
   credentials: Credential[];
   error: string | null;
   exposure: { total: number; long: number; short: number; assets: number };
@@ -803,7 +833,7 @@ function PositionsPage(props: {
             <option value="">Select credential</option>
             {props.credentials.map((credential) => (
               <option key={credential.id} value={credential.id}>
-                {credential.exchange} · {credential.name}
+                {accountLabel(credential, props.accountIds)}
               </option>
             ))}
           </select>
@@ -973,6 +1003,19 @@ function Value(props: { value: number }) {
 
 function currentPage(pathname: string) {
   return pages.find((item) => item.path === pathname) ?? pages[0];
+}
+
+function accountIdForCredential(credential: Credential, accountIds: AccountIds) {
+  return accountIds[credential.id] ?? fallbackAccountId(credential);
+}
+
+function accountLabel(credential: Credential, accountIds: AccountIds) {
+  const accountId = accountIds[credential.id];
+  return accountId ? `${accountId} · ${credential.name}` : fallbackAccountId(credential);
+}
+
+function fallbackAccountId(credential: Credential) {
+  return `${credential.exchange}/local:${credential.id.slice(0, 8)}`;
 }
 
 function summarizePositions(positions: Position[]) {

@@ -19,6 +19,7 @@ const SPOT_PAIRS_URL: &str = "https://api.gateio.ws/api/v4/spot/currency_pairs";
 const UNIFIED_ACCOUNTS_PATH: &str = "/api/v4/unified/accounts";
 const EARN_BALANCE_PATH: &str = "/api/v4/earn/uni/lends";
 const FUTURES_TRADES_PATH: &str = "/api/v4/futures/usdt/my_trades_timerange";
+const ACCOUNT_DETAIL_PATH: &str = "/api/v4/account/detail";
 
 pub struct Adapter;
 
@@ -53,14 +54,23 @@ impl ExchangeAdapter for Adapter {
     }
 
     async fn get_account(&self, credential: &Value) -> anyhow::Result<AccountInfo> {
+        let account_id = self.get_account_id(credential).await?;
         let positions = self.list_positions(credential).await?;
 
         Ok(AccountInfo {
-            account_id: format!("{ID}/{}", common::str_value(credential, "access_key")),
+            account_id,
             positions,
             orders: Vec::new(),
             timestamp_in_us: common::now_timestamp_in_us(),
         })
+    }
+
+    async fn get_account_id(&self, credential: &Value) -> anyhow::Result<String> {
+        let response = gate_get(credential, ACCOUNT_DETAIL_PATH, "").await?;
+        let user_id = common::text_value(&response, "user_id");
+        anyhow::ensure!(!user_id.is_empty(), "Gate account user_id is missing");
+
+        Ok(common::account_id(ID, user_id))
     }
 
     async fn list_positions(&self, credential: &Value) -> anyhow::Result<Vec<Position>> {

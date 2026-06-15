@@ -20,6 +20,7 @@ const FUNDING_BALANCES_PATH: &str = "/api/v5/asset/balances";
 const SAVINGS_BALANCE_PATH: &str = "/api/v5/finance/savings/balance";
 const FLEXIBLE_LOAN_PATH: &str = "/api/v5/finance/flexible-loan/loan-info";
 const FILLS_HISTORY_PATH: &str = "/api/v5/trade/fills-history";
+const ACCOUNT_CONFIG_PATH: &str = "/api/v5/account/config";
 
 pub struct Adapter;
 
@@ -53,14 +54,28 @@ impl ExchangeAdapter for Adapter {
     }
 
     async fn get_account(&self, credential: &Value) -> anyhow::Result<AccountInfo> {
+        let account_id = self.get_account_id(credential).await?;
         let positions = self.list_positions(credential).await?;
 
         Ok(AccountInfo {
-            account_id: format!("{ID}/{}", common::str_value(credential, "access_key")),
+            account_id,
             positions,
             orders: Vec::new(),
             timestamp_in_us: common::now_timestamp_in_us(),
         })
+    }
+
+    async fn get_account_id(&self, credential: &Value) -> anyhow::Result<String> {
+        let config = okx_get(credential, ACCOUNT_CONFIG_PATH).await?;
+        let uid = config
+            .get("data")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .map(|row| common::text_value(row, "uid"))
+            .unwrap_or_default();
+        anyhow::ensure!(!uid.is_empty(), "OKX account uid is missing");
+
+        Ok(common::account_id(ID, uid))
     }
 
     async fn list_positions(&self, credential: &Value) -> anyhow::Result<Vec<Position>> {
