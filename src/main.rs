@@ -14,7 +14,7 @@ use axum::{
     Json, Router,
     extract::{Query, State},
     http::StatusCode,
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Redirect, Response},
     routing::get,
 };
 use models::{AccountInfo, Position, Product};
@@ -27,6 +27,7 @@ use tower_http::services::ServeDir;
 pub struct AppState {
     db_path: PathBuf,
     pub db: SqlitePool,
+    vite_origin: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -52,6 +53,7 @@ pub struct AppError {
 }
 
 struct ViteDevServer {
+    addr: SocketAddr,
     child: Child,
 }
 
@@ -64,7 +66,17 @@ async fn main() -> anyhow::Result<()> {
     let db = open_database(&db_path).await?;
     migrate(&db).await?;
 
-    let state = AppState { db_path, db };
+    let requested_addr = listen_addr()?;
+    let listener = TcpListener::bind(requested_addr).await?;
+    let addr = listener.local_addr()?;
+    let vite = start_vite_dev_server(addr)?;
+    let state = AppState {
+        db_path,
+        db,
+        vite_origin: vite
+            .as_ref()
+            .map(|server| format!("http://{}", server.addr)),
+    };
     let api = Router::new()
         .route("/health", get(health))
         .route("/exchanges", get(list_exchanges))
@@ -74,16 +86,15 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/accounts", get(list_accounts))
         .route("/positions", get(list_positions))
-        .route("/products", get(list_products))
-        .with_state(state);
-    let app = Router::new()
-        .nest("/api", api)
-        .fallback_service(ServeDir::new("web/dist"));
+        .route("/products", get(list_products));
+    let app = Router::new().nest("/api", api);
+    let app = if vite.is_some() {
+        app.route("/", get(redirect_to_vite))
+    } else {
+        app.fallback_service(ServeDir::new("web/dist"))
+    }
+    .with_state(state);
 
-    let requested_addr = listen_addr()?;
-    let listener = TcpListener::bind(requested_addr).await?;
-    let addr = listener.local_addr()?;
-    let _vite = start_vite_dev_server(addr)?;
     println!("1Exchange listening on http://{addr}");
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
@@ -140,7 +151,7 @@ fn start_vite_dev_server(api_addr: SocketAddr) -> anyhow::Result<Option<ViteDevS
         .context("failed to start Vite dev server; run npm --prefix web install first")?;
 
     println!("Vite dev server starting on http://{addr}");
-    Ok(Some(ViteDevServer { child }))
+    Ok(Some(ViteDevServer { addr, child }))
 }
 
 fn vite_dev_server_disabled() -> bool {
@@ -154,6 +165,14 @@ async fn shutdown_signal() {
     if let Err(error) = wait_for_shutdown_signal().await {
         eprintln!("failed to listen for shutdown signal: {error}");
     }
+}
+
+async fn redirect_to_vite(State(state): State<AppState>) -> Result<Redirect, AppError> {
+    let vite_origin = state
+        .vite_origin
+        .ok_or_else(|| AppError::bad_request("Vite dev server is not running"))?;
+
+    Ok(Redirect::temporary(&vite_origin))
 }
 
 #[cfg(unix)]
