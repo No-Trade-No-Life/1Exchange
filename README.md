@@ -73,6 +73,7 @@ AccountInfo（账户） -> Position（持仓 / 资产） -> Product（规格）
 - `POST /api/credentials`：新增 Credential。
 - `GET /api/accounts?credential_id=...`：按本地 Credential 拉取账户快照。
 - `GET /api/positions?credential_id=...`：按本地 Credential 拉取账户持仓/资产投影。
+- `GET /api/trades?credential_id=...`：按本地 Credential 拉取最近一批历史成交流水。
 - `GET /api/products?exchange=BINANCE`：列出指定交易所的交易产品规格。
 
 当前 `accounts`、`positions`、`products` 已固定标准响应模型，但真实数据拉取仍待交易所 Adapter 接入。
@@ -82,11 +83,11 @@ AccountInfo（账户） -> Position（持仓 / 资产） -> Product（规格）
 | 交易所 ID | Products | Account / Position |
 | --- | --- | --- |
 | `BINANCE` | 已接入公开现货和 U 本位合约产品 | 已接入 Spot 余额、USD-M Futures 资产和持仓 |
-| `OKX` | 已接入公开现货、杠杆和永续产品 | 已接入 Trading 余额和持仓、Funding 资产、Savings 资产、Flexible Loan 资产和负债 |
-| `HTX` | 已接入公开现货和 U 本位合约产品 | 已接入 Spot 只读余额、U 本位合约账户模式识别、联合保证金资产和持仓 |
-| `GATE` | 已接入公开现货和 U 本位合约产品 | 已接入 Spot 余额、USDT 永续持仓、Unified 资产和 Earning 资产 |
-| `BITGET` | 已接入公开现货、U 本位和币本位合约产品 | 已接入 UTA v3 账户资产、USDT-FUTURES 和 COIN-FUTURES 持仓 |
-| `HYPERLIQUID` | 已接入公开现货和永续产品 | 已接入只读账户和持仓 |
+| `OKX` | 已接入公开现货、杠杆和永续产品 | 已接入 Trading 余额和持仓、Funding 资产、Savings 资产、Flexible Loan 资产和负债；已接入最近 SPOT/SWAP 成交流水 |
+| `HTX` | 已接入公开现货和 U 本位合约产品 | 已接入 Spot 只读余额、U 本位合约账户模式识别、联合保证金资产和持仓；已接入最近 U 本位合约成交流水 |
+| `GATE` | 已接入公开现货和 U 本位合约产品 | 已接入 Spot 余额、USDT 永续持仓、Unified 资产和 Earning 资产；已接入最近 USDT 永续成交流水 |
+| `BITGET` | 已接入公开现货、U 本位和币本位合约产品 | 已接入 UTA v3 账户资产、USDT-FUTURES 和 COIN-FUTURES 持仓；已接入最近 SPOT/USDT-FUTURES/COIN-FUTURES 成交流水 |
+| `HYPERLIQUID` | 已接入公开现货和永续产品 | 已接入只读账户和持仓；已接入最近用户 fills |
 | `ASTER` | 已接入公开现货和永续产品 | 已接入 Pro API V3 永续账户和持仓；Spot V3 私有账户官方接口当前返回 500，暂未纳入主链路 |
 
 当前交易所注册表覆盖：

@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
     exchanges::{ExchangeAdapter, ExchangeInfo, common},
-    models::{AccountInfo, Order, Position, PositionDirection, Product},
+    models::{AccountInfo, Order, Position, PositionDirection, Product, TradeFill},
 };
 
 pub const ID: &str = "BITGET";
@@ -16,6 +16,7 @@ const BASE_URL: &str = "https://api.bitget.com";
 const ACCOUNT_ASSETS_PATH: &str = "/api/v3/account/assets";
 const INSTRUMENTS_URL: &str = "https://api.bitget.com/api/v3/market/instruments";
 const CURRENT_POSITION_PATH: &str = "/api/v3/position/current-position";
+const TRADE_FILLS_PATH: &str = "/api/v3/trade/fills";
 
 pub struct Adapter;
 
@@ -101,6 +102,30 @@ impl ExchangeAdapter for Adapter {
 
     async fn list_orders(&self, _credential: &Value) -> anyhow::Result<Vec<Order>> {
         Err(common::not_implemented(ID, "order"))
+    }
+
+    async fn list_trades(&self, credential: &Value) -> anyhow::Result<Vec<TradeFill>> {
+        let mut trades = Vec::new();
+        for category in ["USDT-FUTURES", "COIN-FUTURES", "SPOT"] {
+            let response = bitget_get(
+                credential,
+                TRADE_FILLS_PATH,
+                &[("category", category), ("limit", "100")],
+            )
+            .await?;
+            let rows = response
+                .get("data")
+                .and_then(|data| data.get("list"))
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            trades.extend(
+                rows.into_iter()
+                    .filter_map(|row| map_trade_fill(category, row)),
+            );
+        }
+
+        Ok(trades)
     }
 }
 
@@ -255,6 +280,45 @@ fn bitget_notional_currency(category: &str) -> &str {
         "USD"
     } else {
         "USDT"
+    }
+}
+
+fn map_trade_fill(category: &str, row: Value) -> Option<TradeFill> {
+    let trade_id = common::str_value(&row, "execId");
+    let symbol = common::str_value(&row, "symbol");
+    let price = common::f64_value(&row, "execPrice");
+    let volume = common::f64_value(&row, "execQty");
+    if trade_id.is_empty() || symbol.is_empty() || volume == 0.0 {
+        return None;
+    }
+    let fee = row
+        .get("feeDetail")
+        .and_then(Value::as_array)
+        .and_then(|fees| fees.first())
+        .cloned()
+        .unwrap_or_default();
+
+    Some(TradeFill {
+        exchange: ID.to_string(),
+        trade_id,
+        order_id: Some(common::str_value(&row, "orderId")).filter(|value| !value.is_empty()),
+        product_id: format!("{ID}/{category}/{symbol}"),
+        direction: bitget_fill_direction(&common::str_value(&row, "side")),
+        price,
+        volume: volume.abs(),
+        value: common::f64_value(&row, "execValue"),
+        value_currency: Some(bitget_notional_currency(category).to_string()),
+        fee: common::f64_value(&fee, "fee"),
+        fee_currency: Some(common::str_value(&fee, "feeCoin")).filter(|value| !value.is_empty()),
+        created_at: Some(common::str_value(&row, "createdTime")).filter(|value| !value.is_empty()),
+    })
+}
+
+fn bitget_fill_direction(side: &str) -> Option<PositionDirection> {
+    match side {
+        "buy" => Some(PositionDirection::Long),
+        "sell" => Some(PositionDirection::Short),
+        _ => None,
     }
 }
 

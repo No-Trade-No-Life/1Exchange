@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::models::{AccountInfo, Order, Position, Product};
+use crate::models::{AccountInfo, Order, Position, Product, TradeFill};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct ExchangeInfo {
@@ -29,6 +29,9 @@ pub trait ExchangeAdapter: Send + Sync {
     async fn get_account(&self, credential: &Value) -> anyhow::Result<AccountInfo>;
     async fn list_positions(&self, credential: &Value) -> anyhow::Result<Vec<Position>>;
     async fn list_orders(&self, credential: &Value) -> anyhow::Result<Vec<Order>>;
+    async fn list_trades(&self, _credential: &Value) -> anyhow::Result<Vec<TradeFill>> {
+        Err(anyhow::anyhow!("trade history adapter is not implemented"))
+    }
 }
 
 pub fn list_exchanges() -> Vec<ExchangeInfo> {

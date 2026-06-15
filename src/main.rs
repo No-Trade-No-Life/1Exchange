@@ -17,7 +17,7 @@ use axum::{
     response::{IntoResponse, Redirect, Response},
     routing::get,
 };
-use models::{AccountInfo, Position, Product};
+use models::{AccountInfo, Position, Product, TradeFill};
 use serde::{Serialize, ser::SerializeStruct};
 use sqlx::{SqlitePool, sqlite::SqliteConnectOptions};
 use tokio::net::TcpListener;
@@ -86,6 +86,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/accounts", get(list_accounts))
         .route("/positions", get(list_positions))
+        .route("/trades", get(list_trades))
         .route("/products", get(list_products));
     let app = Router::new().nest("/api", api);
     let app = if vite.is_some() {
@@ -274,6 +275,18 @@ async fn list_positions(
     })?;
 
     Ok(Json(adapter.list_positions(&credential.payload).await?))
+}
+
+async fn list_trades(
+    State(state): State<AppState>,
+    Query(query): Query<CredentialQuery>,
+) -> Result<Json<Vec<TradeFill>>, AppError> {
+    let credential = credentials::get_stored_credential(&state.db, &query.credential_id).await?;
+    let adapter = exchanges::adapter(&credential.exchange).ok_or_else(|| {
+        AppError::bad_request(format!("unsupported exchange: {}", credential.exchange))
+    })?;
+
+    Ok(Json(adapter.list_trades(&credential.payload).await?))
 }
 
 async fn list_products(Query(query): Query<ProductsQuery>) -> Result<Json<Vec<Product>>, AppError> {

@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 
 use crate::{
     exchanges::{ExchangeAdapter, ExchangeInfo, common},
-    models::{AccountInfo, Order, Position, PositionDirection, Product},
+    models::{AccountInfo, Order, Position, PositionDirection, Product, TradeFill},
 };
 
 pub const ID: &str = "HYPERLIQUID";
@@ -93,6 +93,19 @@ impl ExchangeAdapter for Adapter {
 
     async fn list_orders(&self, _credential: &Value) -> anyhow::Result<Vec<Order>> {
         Err(common::not_implemented(ID, "order"))
+    }
+
+    async fn list_trades(&self, credential: &Value) -> anyhow::Result<Vec<TradeFill>> {
+        let address = credential_address(credential)?;
+        let client = common::http_client()?;
+        let response = post_info(&client, json!({ "type": "userFills", "user": address })).await?;
+        let rows = response
+            .get("fills")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_else(|| response.as_array().cloned().unwrap_or_default());
+
+        Ok(rows.into_iter().filter_map(map_fill).collect())
     }
 }
 
@@ -228,4 +241,37 @@ fn map_spot_position(row: Value, mids: &Value) -> Option<Position> {
         floating_profit: 0.0,
         comment: None,
     })
+}
+
+fn map_fill(row: Value) -> Option<TradeFill> {
+    let coin = common::str_value(&row, "coin");
+    let trade_id = common::text_value(&row, "tid");
+    let price = common::f64_value(&row, "px");
+    let volume = common::f64_value(&row, "sz");
+    if coin.is_empty() || trade_id.is_empty() || volume == 0.0 {
+        return None;
+    }
+
+    Some(TradeFill {
+        exchange: ID.to_string(),
+        trade_id,
+        order_id: Some(common::text_value(&row, "oid")).filter(|value| !value.is_empty()),
+        product_id: format!("{ID}/PERPETUAL/{coin}-USD"),
+        direction: hyperliquid_fill_direction(&common::str_value(&row, "side")),
+        price,
+        volume: volume.abs(),
+        value: common::notional_value(volume, price),
+        value_currency: Some("USD".to_string()),
+        fee: common::f64_value(&row, "fee"),
+        fee_currency: Some(common::str_value(&row, "feeToken")).filter(|value| !value.is_empty()),
+        created_at: Some(common::text_value(&row, "time")).filter(|value| !value.is_empty()),
+    })
+}
+
+fn hyperliquid_fill_direction(side: &str) -> Option<PositionDirection> {
+    match side {
+        "B" | "buy" => Some(PositionDirection::Long),
+        "A" | "sell" => Some(PositionDirection::Short),
+        _ => None,
+    }
 }

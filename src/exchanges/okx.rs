@@ -7,7 +7,7 @@ use sha2::Sha256;
 
 use crate::{
     exchanges::{ExchangeAdapter, ExchangeInfo, common},
-    models::{AccountInfo, Order, Position, PositionDirection, Product},
+    models::{AccountInfo, Order, Position, PositionDirection, Product, TradeFill},
 };
 
 pub const ID: &str = "OKX";
@@ -19,6 +19,7 @@ const POSITIONS_PATH: &str = "/api/v5/account/positions";
 const FUNDING_BALANCES_PATH: &str = "/api/v5/asset/balances";
 const SAVINGS_BALANCE_PATH: &str = "/api/v5/finance/savings/balance";
 const FLEXIBLE_LOAN_PATH: &str = "/api/v5/finance/flexible-loan/loan-info";
+const FILLS_HISTORY_PATH: &str = "/api/v5/trade/fills-history";
 
 pub struct Adapter;
 
@@ -108,19 +109,43 @@ impl ExchangeAdapter for Adapter {
     async fn list_orders(&self, _credential: &Value) -> anyhow::Result<Vec<Order>> {
         Err(common::not_implemented(ID, "order"))
     }
+
+    async fn list_trades(&self, credential: &Value) -> anyhow::Result<Vec<TradeFill>> {
+        let mut trades = Vec::new();
+        for inst_type in ["SPOT", "SWAP"] {
+            let response = okx_get_query(
+                credential,
+                FILLS_HISTORY_PATH,
+                &format!("instType={inst_type}&limit=100"),
+            )
+            .await?;
+            trades.extend(data_rows(&response).into_iter().filter_map(map_trade_fill));
+        }
+
+        Ok(trades)
+    }
 }
 
 async fn okx_get(credential: &Value, path: &str) -> anyhow::Result<Value> {
+    okx_get_query(credential, path, "").await
+}
+
+async fn okx_get_query(credential: &Value, path: &str, query: &str) -> anyhow::Result<Value> {
     let timestamp = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+    let request_path = if query.is_empty() {
+        path.to_string()
+    } else {
+        format!("{path}?{query}")
+    };
     let signature = okx_signature(
         &common::str_value(credential, "secret_key"),
         &timestamp,
         "GET",
-        path,
+        &request_path,
         "",
     )?;
     let response = common::http_client()?
-        .get(format!("{BASE_URL}{path}"))
+        .get(format!("{BASE_URL}{request_path}"))
         .header("OK-ACCESS-KEY", common::str_value(credential, "access_key"))
         .header("OK-ACCESS-SIGN", signature)
         .header("OK-ACCESS-TIMESTAMP", timestamp)
@@ -321,6 +346,39 @@ fn map_derivative_position(row: Value) -> Option<Position> {
         floating_profit: common::f64_value(&row, "upl"),
         comment: None,
     })
+}
+
+fn map_trade_fill(row: Value) -> Option<TradeFill> {
+    let trade_id = common::text_value(&row, "tradeId");
+    let inst_id = common::str_value(&row, "instId");
+    let price = common::f64_value(&row, "fillPx");
+    let volume = common::f64_value(&row, "fillSz");
+    if trade_id.is_empty() || inst_id.is_empty() || volume == 0.0 {
+        return None;
+    }
+
+    Some(TradeFill {
+        exchange: ID.to_string(),
+        trade_id,
+        order_id: Some(common::text_value(&row, "ordId")).filter(|value| !value.is_empty()),
+        product_id: format!("{ID}/{}/{}", common::str_value(&row, "instType"), inst_id),
+        direction: okx_fill_direction(&common::str_value(&row, "side")),
+        price,
+        volume: volume.abs(),
+        value: common::notional_value(volume, price),
+        value_currency: okx_quote_currency(&inst_id),
+        fee: common::f64_value(&row, "fee"),
+        fee_currency: Some(common::str_value(&row, "feeCcy")).filter(|value| !value.is_empty()),
+        created_at: Some(common::text_value(&row, "ts")).filter(|value| !value.is_empty()),
+    })
+}
+
+fn okx_fill_direction(side: &str) -> Option<PositionDirection> {
+    match side {
+        "buy" => Some(PositionDirection::Long),
+        "sell" => Some(PositionDirection::Short),
+        _ => None,
+    }
 }
 
 fn okx_quote_currency(inst_id: &str) -> Option<String> {

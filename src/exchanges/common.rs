@@ -12,7 +12,7 @@ pub fn exchange_info(
         id,
         name,
         credential_schema: credential_schema(required_fields),
-        capabilities: vec!["products", "account", "positions", "orders"],
+        capabilities: vec!["products", "account", "positions", "orders", "trades"],
     }
 }
 
@@ -33,6 +33,18 @@ pub fn str_value(value: &Value, key: &str) -> String {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string()
+}
+
+pub fn text_value(value: &Value, key: &str) -> String {
+    value
+        .get(key)
+        .and_then(|item| {
+            item.as_str()
+                .map(str::to_string)
+                .or_else(|| item.as_i64().map(|number| number.to_string()))
+                .or_else(|| item.as_u64().map(|number| number.to_string()))
+        })
+        .unwrap_or_default()
 }
 
 pub fn f64_value(value: &Value, key: &str) -> f64 {

@@ -57,12 +57,34 @@ type PortfolioAccount = {
   positions: Position[];
 };
 
-type Page = 'overview' | 'portfolio' | 'trade' | 'credentials' | 'positions' | 'products' | 'exchanges';
+type TradeFill = {
+  exchange: string;
+  trade_id: string;
+  order_id: string | null;
+  product_id: string;
+  direction: 'LONG' | 'SHORT' | null;
+  price: number;
+  volume: number;
+  value: number;
+  value_currency: string | null;
+  fee: number;
+  fee_currency: string | null;
+  created_at: string | null;
+};
+
+type TradeAccount = {
+  credential: Credential;
+  error: string | null;
+  trades: TradeFill[];
+};
+
+type Page = 'overview' | 'portfolio' | 'trade' | 'history' | 'credentials' | 'positions' | 'products' | 'exchanges';
 
 const pages: Array<{ id: Page; label: string; hint: string }> = [
   { id: 'overview', label: 'Overview', hint: 'Service and adapter status' },
   { id: 'portfolio', label: 'Portfolio', hint: 'All credential assets' },
   { id: 'trade', label: 'Trade', hint: 'Trading board' },
+  { id: 'history', label: 'History', hint: 'Trade fills' },
   { id: 'credentials', label: 'Credentials', hint: 'Saved local metadata' },
   { id: 'positions', label: 'Positions', hint: 'Assets and open exposure' },
   { id: 'products', label: 'Products', hint: 'Exchange product specs' },
@@ -152,6 +174,47 @@ function usePortfolio(credentials: Credential[]) {
   return { accounts, loading };
 }
 
+function useTradeHistory(credentials: Credential[]) {
+  const [accounts, setAccounts] = useState<TradeAccount[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(credentials.length > 0);
+    setAccounts([]);
+
+    Promise.all(
+      credentials.map(async (credential) => {
+        try {
+          const response = await fetch(`/api/trades?credential_id=${encodeURIComponent(credential.id)}`);
+          if (!response.ok) {
+            throw new Error(`${response.status} ${response.statusText}`);
+          }
+          return { credential, error: null, trades: (await response.json()) as TradeFill[] };
+        } catch (caught) {
+          return { credential, error: (caught as Error).message, trades: [] };
+        }
+      }),
+    )
+      .then((nextAccounts) => {
+        if (alive) {
+          setAccounts(nextAccounts);
+        }
+      })
+      .finally(() => {
+        if (alive) {
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      alive = false;
+    };
+  }, [credentials]);
+
+  return { accounts, loading };
+}
+
 function App() {
   const [page, setPage] = useState<Page>('overview');
   const health = useJson<Health>('/api/health');
@@ -170,6 +233,7 @@ function App() {
   const positions = useJson<Position[]>(positionsPath);
   const products = useJson<Product[]>(productsPath);
   const portfolio = usePortfolio(credentialList);
+  const tradeHistory = useTradeHistory(credentialList);
 
   useEffect(() => {
     if (!selectedCredentialId && credentials.data?.[0]) {
@@ -198,6 +262,7 @@ function App() {
       />
     ),
     portfolio: <PortfolioPage accounts={portfolio.accounts} loading={portfolio.loading} />,
+    history: <TradeHistoryPage accounts={tradeHistory.accounts} loading={tradeHistory.loading} />,
     trade: (
       <TradePage
         credentials={credentialList}
@@ -386,6 +451,72 @@ function PortfolioPage(props: { accounts: PortfolioAccount[]; loading: boolean }
             formatNumber(row.freeVolume),
             formatNumber(row.notionalValue),
             <Value key="pnl" value={row.pnl} />,
+          ])}
+        />
+      </section>
+    </div>
+  );
+}
+
+function TradeHistoryPage(props: { accounts: TradeAccount[]; loading: boolean }) {
+  const trades = props.accounts.flatMap((account) =>
+    account.trades.map((trade) => ({ ...trade, credentialName: account.credential.name })),
+  );
+  const errors = props.accounts.filter((account) => account.error).length;
+
+  return (
+    <div className="page-stack">
+      <section className="metrics-grid compact" aria-label="Trade history summary">
+        <Metric label="Credentials" value={props.accounts.length.toString()} />
+        <Metric label="Fills" value={trades.length.toString()} />
+        <Metric label="Read errors" value={errors.toString()} tone={errors > 0 ? 'warn' : 'neutral'} />
+        <Metric label="Status" value={props.loading ? 'Loading' : 'Ready'} />
+      </section>
+
+      <section className="panel">
+        <div className="panel-heading">
+          <div>
+            <p className="section-label">Recent fills</p>
+            <h2>Historical trade flow</h2>
+          </div>
+          <span className="count-chip">{props.loading ? 'Loading' : `${trades.length} fills`}</span>
+        </div>
+        <DataTable
+          empty="No trade fills returned. Some exchanges need trade-history permissions or a recent activity window."
+          headers={['Time', 'Credential', 'Exchange', 'Product', 'Side', 'Price', 'Volume', 'Value', 'Fee', 'Trade ID']}
+          rows={trades
+            .sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''))
+            .slice(0, 500)
+            .map((trade) => [
+              formatTradeTime(trade.created_at),
+              trade.credentialName,
+              <Badge key="exchange">{trade.exchange}</Badge>,
+              <code key="product">{trade.product_id}</code>,
+              trade.direction ? <Badge key="direction">{trade.direction}</Badge> : '-',
+              formatNumber(trade.price),
+              formatNumber(trade.volume),
+              `${formatNumber(trade.value)} ${trade.value_currency ?? ''}`.trim(),
+              `${formatNumber(trade.fee)} ${trade.fee_currency ?? ''}`.trim(),
+              <code key="trade">{trade.trade_id}</code>,
+            ])}
+        />
+      </section>
+
+      <section className="panel">
+        <div className="panel-heading">
+          <div>
+            <p className="section-label">By credential</p>
+            <h2>History read status</h2>
+          </div>
+        </div>
+        <DataTable
+          empty="No credentials yet."
+          headers={['Credential', 'Exchange', 'Fills', 'Status']}
+          rows={props.accounts.map((account) => [
+            account.credential.name,
+            <Badge key="exchange">{account.credential.exchange}</Badge>,
+            account.trades.length.toString(),
+            account.error ? <span className="status-text bad" key="status">{account.error}</span> : <span className="status-text good" key="status">Loaded</span>,
           ])}
         />
       </section>
@@ -970,6 +1101,18 @@ function mockOrderBook(mark: number) {
 
 function formatDate(value: string) {
   return new Date(value).toLocaleString();
+}
+
+function formatTradeTime(value: string | null) {
+  if (!value) {
+    return '-';
+  }
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) {
+    const ms = numeric > 10_000_000_000 ? numeric : numeric * 1000;
+    return new Date(ms).toLocaleString();
+  }
+  return formatDate(value);
 }
 
 function formatNumber(value: number) {

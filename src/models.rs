@@ -47,6 +47,22 @@ pub struct Order {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TradeFill {
+    pub exchange: String,
+    pub trade_id: String,
+    pub order_id: Option<String>,
+    pub product_id: String,
+    pub direction: Option<PositionDirection>,
+    pub price: f64,
+    pub volume: f64,
+    pub value: f64,
+    pub value_currency: Option<String>,
+    pub fee: f64,
+    pub fee_currency: Option<String>,
+    pub created_at: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum OrderStatus {
     Pending,

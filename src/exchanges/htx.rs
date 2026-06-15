@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use crate::{
     exchanges::{ExchangeAdapter, ExchangeInfo, common},
-    models::{AccountInfo, Order, Position, PositionDirection, Product},
+    models::{AccountInfo, Order, Position, PositionDirection, Product, TradeFill},
 };
 
 pub const ID: &str = "HTX";
@@ -23,6 +23,7 @@ const SWAP_ACCOUNT_TYPE_PATH: &str = "/linear-swap-api/v3/swap_unified_account_t
 const SWAP_POSITION_INFO_PATH: &str = "/linear-swap-api/v1/swap_position_info";
 const UNION_ACCOUNT_BALANCE_PATH: &str = "/v5/account/balance";
 const UNION_POSITION_OPENS_PATH: &str = "/v5/trade/position/opens";
+const UNION_ORDER_DETAILS_PATH: &str = "/v5/trade/order/details";
 const SWAP_BASE_URL: &str = "https://api.hbdm.com";
 const SPOT_SYMBOLS_URL: &str = "https://api.huobi.pro/v2/settings/common/symbols";
 
@@ -117,6 +118,31 @@ impl ExchangeAdapter for Adapter {
     async fn list_orders(&self, _credential: &Value) -> anyhow::Result<Vec<Order>> {
         Err(common::not_implemented(ID, "order"))
     }
+
+    async fn list_trades(&self, credential: &Value) -> anyhow::Result<Vec<TradeFill>> {
+        let now = chrono::Utc::now().timestamp_millis();
+        let start = now.saturating_sub(48 * 60 * 60 * 1000);
+        let response = htx_get_query(
+            credential,
+            SWAP_BASE_URL,
+            SWAP_HOST,
+            UNION_ORDER_DETAILS_PATH,
+            &BTreeMap::from([
+                ("start_time".to_string(), start.to_string()),
+                ("end_time".to_string(), now.to_string()),
+                ("direct".to_string(), "next".to_string()),
+                ("limit".to_string(), "100".to_string()),
+            ]),
+        )
+        .await?;
+        let rows = response
+            .get("data")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+
+        Ok(rows.into_iter().filter_map(map_trade_fill).collect())
+    }
 }
 
 async fn htx_get(
@@ -125,7 +151,17 @@ async fn htx_get(
     host: &str,
     path: &str,
 ) -> anyhow::Result<Value> {
-    let query = htx_signed_query(credential, "GET", host, path)?;
+    htx_get_query(credential, base_url, host, path, &BTreeMap::new()).await
+}
+
+async fn htx_get_query(
+    credential: &Value,
+    base_url: &str,
+    host: &str,
+    path: &str,
+    params: &BTreeMap<String, String>,
+) -> anyhow::Result<Value> {
+    let query = htx_signed_query(credential, "GET", host, path, params)?;
     let response = common::http_client()?
         .get(format!("{base_url}{path}?{query}"))
         .send()
@@ -140,7 +176,7 @@ async fn htx_post(
     path: &str,
     body: &str,
 ) -> anyhow::Result<Value> {
-    let query = htx_signed_query(credential, "POST", host, path)?;
+    let query = htx_signed_query(credential, "POST", host, path, &BTreeMap::new())?;
     let response = common::http_client()?
         .post(format!("{base_url}{path}?{query}"))
         .header("content-type", "application/json")
@@ -222,6 +258,7 @@ fn htx_signed_query(
     method: &str,
     host: &str,
     path: &str,
+    extra_params: &BTreeMap<String, String>,
 ) -> anyhow::Result<String> {
     let mut params = BTreeMap::from([
         (
@@ -235,6 +272,7 @@ fn htx_signed_query(
             Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
         ),
     ]);
+    params.extend(extra_params.clone());
     let payload_query = encode_query(&params);
     let payload = format!("{method}\n{host}\n{path}\n{payload_query}");
     let mut mac =
@@ -369,6 +407,44 @@ fn map_swap_position(row: Value) -> Option<Position> {
         floating_profit: common::f64_value(&row, "profit_unreal"),
         comment: None,
     })
+}
+
+fn map_trade_fill(row: Value) -> Option<TradeFill> {
+    let trade_id = common::text_value(&row, "trade_id");
+    let contract = common::str_value(&row, "contract_code");
+    let price = common::f64_value(&row, "trade_price");
+    let volume = common::f64_value(&row, "trade_volume");
+    if trade_id.is_empty() || contract.is_empty() || volume == 0.0 {
+        return None;
+    }
+
+    Some(TradeFill {
+        exchange: ID.to_string(),
+        trade_id,
+        order_id: Some(common::text_value(&row, "order_id")).filter(|value| !value.is_empty()),
+        product_id: format!("{ID}/SWAP/{contract}"),
+        direction: htx_fill_direction(
+            &common::str_value(&row, "side"),
+            &common::str_value(&row, "position_side"),
+        ),
+        price,
+        volume: volume.abs(),
+        value: common::f64_value(&row, "trade_turnover"),
+        value_currency: Some("USDT".to_string()),
+        fee: common::f64_value(&row, "trade_fee"),
+        fee_currency: Some(common::str_value(&row, "fee_currency"))
+            .filter(|value| !value.is_empty()),
+        created_at: Some(common::text_value(&row, "created_time"))
+            .filter(|value| !value.is_empty()),
+    })
+}
+
+fn htx_fill_direction(side: &str, position_side: &str) -> Option<PositionDirection> {
+    match (side, position_side) {
+        ("buy", _) => Some(PositionDirection::Long),
+        ("sell", _) => Some(PositionDirection::Short),
+        _ => None,
+    }
 }
 
 fn map_swap_product(row: Value) -> Product {

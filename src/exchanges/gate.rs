@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
     exchanges::{ExchangeAdapter, ExchangeInfo, common},
-    models::{AccountInfo, Order, Position, PositionDirection, Product},
+    models::{AccountInfo, Order, Position, PositionDirection, Product, TradeFill},
 };
 
 pub const ID: &str = "GATE";
@@ -18,6 +18,7 @@ const SPOT_ACCOUNTS_PATH: &str = "/api/v4/spot/accounts";
 const SPOT_PAIRS_URL: &str = "https://api.gateio.ws/api/v4/spot/currency_pairs";
 const UNIFIED_ACCOUNTS_PATH: &str = "/api/v4/unified/accounts";
 const EARN_BALANCE_PATH: &str = "/api/v4/earn/uni/lends";
+const FUTURES_TRADES_PATH: &str = "/api/v4/futures/usdt/my_trades_timerange";
 
 pub struct Adapter;
 
@@ -83,6 +84,16 @@ impl ExchangeAdapter for Adapter {
 
     async fn list_orders(&self, _credential: &Value) -> anyhow::Result<Vec<Order>> {
         Err(common::not_implemented(ID, "order"))
+    }
+
+    async fn list_trades(&self, credential: &Value) -> anyhow::Result<Vec<TradeFill>> {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+        let from = now.saturating_sub(7 * 24 * 60 * 60);
+        let query = format!("from={from}&to={now}&limit=500");
+        let response = gate_get(credential, FUTURES_TRADES_PATH, &query).await?;
+        let rows = response.as_array().cloned().unwrap_or_default();
+
+        Ok(rows.into_iter().filter_map(map_trade_fill).collect())
     }
 }
 
@@ -263,6 +274,35 @@ fn map_future_position(row: Value) -> Option<Position> {
         notional_currency: Some("USDT".to_string()),
         floating_profit: common::f64_value(&row, "unrealised_pnl"),
         comment: None,
+    })
+}
+
+fn map_trade_fill(row: Value) -> Option<TradeFill> {
+    let trade_id = common::text_value(&row, "trade_id");
+    let contract = common::str_value(&row, "contract");
+    let size = common::f64_value(&row, "size");
+    let price = common::f64_value(&row, "price");
+    if trade_id.is_empty() || contract.is_empty() || size == 0.0 {
+        return None;
+    }
+
+    Some(TradeFill {
+        exchange: ID.to_string(),
+        trade_id,
+        order_id: Some(common::text_value(&row, "order_id")).filter(|value| !value.is_empty()),
+        product_id: format!("{ID}/FUTURE/{contract}"),
+        direction: Some(if size > 0.0 {
+            PositionDirection::Long
+        } else {
+            PositionDirection::Short
+        }),
+        price,
+        volume: size.abs(),
+        value: common::notional_value(size, price),
+        value_currency: Some("USDT".to_string()),
+        fee: common::f64_value(&row, "fee"),
+        fee_currency: Some("USDT".to_string()),
+        created_at: Some(common::text_value(&row, "create_time")).filter(|value| !value.is_empty()),
     })
 }
 
