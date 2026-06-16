@@ -218,7 +218,7 @@ fn map_balance_position(row: Value) -> Option<Position> {
     if currency.is_empty() || volume == 0.0 {
         return None;
     }
-    let closable_price = if currency == "USDT" { 1.0 } else { 0.0 };
+    let closable_price = common::stablecoin_unit_price(&currency);
 
     Some(Position {
         position_id: format!("BALANCE/{currency}"),
@@ -277,7 +277,7 @@ fn map_loan_position(row: Value) -> Option<Position> {
     if currency.is_empty() || volume == 0.0 {
         return None;
     }
-    let closable_price = if currency == "USDT" { 1.0 } else { 0.0 };
+    let closable_price = 1.0;
 
     Some(Position {
         position_id: format!("LOAN/{currency}"),
@@ -326,12 +326,8 @@ fn asset_position(
         volume: volume.abs(),
         free_volume: free_volume.abs(),
         position_price: 0.0,
-        closable_price: if currency == "USDT" { 1.0 } else { 0.0 },
-        notional_value: if currency == "USDT" {
-            volume.abs()
-        } else {
-            0.0
-        },
+        closable_price: 1.0,
+        notional_value: volume.abs(),
         notional_currency: Some(currency),
         floating_profit: 0.0,
         comment: None,

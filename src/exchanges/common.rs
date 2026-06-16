@@ -82,6 +82,14 @@ pub fn notional_value(volume: f64, price: f64) -> f64 {
     }
 }
 
+pub fn stablecoin_unit_price(currency: &str) -> f64 {
+    if matches!(currency, "USD" | "USDT" | "USDC" | "USDD") {
+        1.0
+    } else {
+        0.0
+    }
+}
+
 pub fn normalized_volume_step(volume_step: Option<f64>, value_scale: Option<f64>) -> Option<f64> {
     volume_step.map(|step| step * value_scale.unwrap_or(1.0))
 }
