@@ -237,6 +237,8 @@ fn map_spot_balance(balance: SpotBalance) -> Option<Position> {
     Some(Position {
         position_id: format!("SPOT/{}", balance.asset),
         product_id: spot_asset_product_id(&balance.asset),
+        base_currency: Some(balance.asset.clone()),
+        quote_currency: Some("USDT".to_string()),
         direction: None,
         volume,
         free_volume: free,
@@ -267,6 +269,8 @@ fn map_futures_asset(asset: FuturesAsset) -> Option<Position> {
     Some(Position {
         position_id: format!("USDT-FUTURES/{}", asset.asset),
         product_id: format!("{ID}/USDT-FUTURES/{}", asset.asset),
+        base_currency: Some(asset.asset.clone()),
+        quote_currency: Some("USDT".to_string()),
         direction: None,
         volume,
         free_volume: common::parse_f64(&asset.available_balance)?,
@@ -294,6 +298,8 @@ fn map_futures_position(position: FuturesPosition) -> Option<Position> {
             position.symbol, position.position_side
         ),
         product_id: format!("{ID}/USDT-FUTURES/{}", position.symbol),
+        base_currency: Some(position.symbol.trim_end_matches("USDT").to_string()),
+        quote_currency: Some("USDT".to_string()),
         direction: Some(futures_direction(signed_volume, &position.position_side)),
         volume: signed_volume.abs(),
         free_volume: signed_volume.abs(),

@@ -259,6 +259,8 @@ fn map_asset_position(row: Value) -> Option<Position> {
         } else {
             format!("{ID}/SPOT/{coin}USDT")
         },
+        base_currency: Some(coin.clone()),
+        quote_currency: Some(coin.clone()),
         direction: None,
         volume,
         free_volume: common::f64_value(&row, "available"),
@@ -278,10 +280,13 @@ fn map_derivative_position(category: &str, row: Value) -> Option<Position> {
         return None;
     }
     let closable_price = common::f64_value(&row, "markPrice");
+    let (base_currency, quote_currency) = bitget_symbol_currencies(&symbol);
 
     Some(Position {
         position_id: format!("{}-{}", symbol, common::str_value(&row, "posSide")),
         product_id: format!("{ID}/{category}/{symbol}"),
+        base_currency,
+        quote_currency,
         direction: Some(if common::str_value(&row, "posSide") == "long" {
             PositionDirection::Long
         } else {
@@ -296,6 +301,15 @@ fn map_derivative_position(category: &str, row: Value) -> Option<Position> {
         floating_profit: common::f64_value(&row, "unrealisedPnl"),
         comment: None,
     })
+}
+
+fn bitget_symbol_currencies(symbol: &str) -> (Option<String>, Option<String>) {
+    for quote in ["USDT", "USDC", "USD"] {
+        if let Some(base) = symbol.strip_suffix(quote) {
+            return (Some(base.to_string()), Some(quote.to_string()));
+        }
+    }
+    (Some(symbol.to_string()), None)
 }
 
 fn bitget_notional_currency(category: &str) -> &str {

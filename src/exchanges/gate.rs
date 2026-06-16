@@ -188,6 +188,8 @@ fn map_spot_position(row: Value) -> Option<Position> {
         } else {
             format!("{ID}/SPOT/{currency}_USDT")
         },
+        base_currency: Some(currency.clone()),
+        quote_currency: Some("USDT".to_string()),
         direction: None,
         volume,
         free_volume: available,
@@ -211,6 +213,8 @@ fn map_unified_position(row: Value) -> Option<Position> {
     Some(Position {
         position_id: format!("UNIFIED/{currency}"),
         product_id: spot_product_id(&currency),
+        base_currency: Some(currency.clone()),
+        quote_currency: Some("USDT".to_string()),
         direction: None,
         volume,
         free_volume: volume,
@@ -235,6 +239,8 @@ fn map_earn_position(row: Value) -> Option<Position> {
     Some(Position {
         position_id: format!("EARNING/{currency}"),
         product_id: format!("{ID}/EARNING/{currency}"),
+        base_currency: Some(currency.clone()),
+        quote_currency: Some("USDT".to_string()),
         direction: None,
         volume,
         free_volume: (volume - frozen).max(0.0),
@@ -263,10 +269,13 @@ fn map_future_position(row: Value) -> Option<Position> {
     }
     let closable_price = common::f64_value(&row, "mark_price");
     let notional_value = common::f64_value(&row, "value").abs();
+    let (base_currency, quote_currency) = gate_contract_currencies(&contract);
 
     Some(Position {
         position_id: contract.clone(),
         product_id: format!("{ID}/FUTURE/{contract}"),
+        base_currency,
+        quote_currency,
         direction: Some(if size < 0.0 {
             PositionDirection::Short
         } else {
@@ -285,6 +294,14 @@ fn map_future_position(row: Value) -> Option<Position> {
         floating_profit: common::f64_value(&row, "unrealised_pnl"),
         comment: None,
     })
+}
+
+fn gate_contract_currencies(contract: &str) -> (Option<String>, Option<String>) {
+    let mut parts = contract.split('_');
+    (
+        parts.next().map(str::to_string),
+        parts.next().map(str::to_string),
+    )
 }
 
 fn map_trade_fill(row: Value) -> Option<TradeFill> {

@@ -262,6 +262,8 @@ fn map_perp_asset(row: Value, prices: &Value) -> Option<Position> {
     Some(Position {
         position_id: format!("{asset}/ASSET"),
         product_id: format!("{ID}/PERP-ASSET/{asset}"),
+        base_currency: Some(asset.clone()),
+        quote_currency: Some("USDT".to_string()),
         direction: None,
         volume,
         free_volume: common::f64_value(&row, "availableBalance"),
@@ -294,6 +296,8 @@ fn map_perp_position(row: Value) -> Option<Position> {
     Some(Position {
         position_id: symbol.clone(),
         product_id: format!("{ID}/PERP/{symbol}"),
+        base_currency: Some(symbol.trim_end_matches("USDT").to_string()),
+        quote_currency: Some("USDT".to_string()),
         direction: Some(if side == "SHORT" || amount < 0.0 {
             PositionDirection::Short
         } else {

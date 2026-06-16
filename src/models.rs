@@ -15,6 +15,8 @@ pub struct Position {
     pub position_id: String,
     /// Keeps the exchange-native product id. The matching Product describes its contract or asset specs.
     pub product_id: String,
+    pub base_currency: Option<String>,
+    pub quote_currency: Option<String>,
     pub direction: Option<PositionDirection>,
     pub volume: f64,
     pub free_volume: f64,

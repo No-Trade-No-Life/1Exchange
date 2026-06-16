@@ -209,6 +209,8 @@ fn map_perp_position(row: Value) -> Option<Position> {
     Some(Position {
         position_id: format!("{coin}-USD"),
         product_id: format!("{ID}/PERPETUAL/{coin}-USD"),
+        base_currency: Some(coin),
+        quote_currency: Some("USD".to_string()),
         direction: Some(if size > 0.0 {
             PositionDirection::Long
         } else {
@@ -244,6 +246,8 @@ fn map_spot_position(row: Value, mids: &Value) -> Option<Position> {
     Some(Position {
         position_id: coin.clone(),
         product_id: format!("{ID}/SPOT/{coin}-USDC"),
+        base_currency: Some(coin),
+        quote_currency: Some("USDC".to_string()),
         direction: None,
         volume: total,
         free_volume: total - hold,

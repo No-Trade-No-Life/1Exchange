@@ -34,6 +34,8 @@ type AccountInfo = {
 type Position = {
   position_id: string;
   product_id: string;
+  base_currency: string | null;
+  quote_currency: string | null;
   direction: 'LONG' | 'SHORT' | null;
   volume: number;
   free_volume: number;
@@ -604,16 +606,18 @@ function AccountDetailPage(props: { accounts: PortfolioAccount[]; loading: boole
         <InlineError message={account.error} />
         <DataTable
           empty="This account returned no positions."
-          headers={['Position', 'Product', 'Side', 'Volume', 'Free', 'Entry', 'Mark', 'Notional', 'P/L']}
+          headers={['Position', 'Product', 'Base', 'Quote', 'Side', 'Volume', 'Free', 'Entry', 'Mark', 'Notional', 'P/L']}
           rows={account.positions.map((item) => [
             item.position_id,
             <code key="product">{item.product_id}</code>,
+            item.base_currency ?? '-',
+            item.quote_currency ?? '-',
             item.direction ? <Badge key="direction">{item.direction}</Badge> : 'Asset',
             formatNumber(item.volume),
             formatNumber(item.free_volume),
             formatNumber(item.position_price),
             formatNumber(item.closable_price),
-            formatNumber(notionalValue(item)),
+            formatPositionNotional(item),
             <Value key="pnl" value={item.floating_profit} />,
           ])}
         />
@@ -801,14 +805,16 @@ function TradePage(props: {
         <PanelTitle label="Account" title="Positions" action={`${relatedPositions.length} related`} />
         <DataTable
           empty="No position matches the selected product."
-          headers={['Position', 'Side', 'Volume', 'Entry', 'Mark', 'Notional', 'P/L']}
+          headers={['Position', 'Base', 'Quote', 'Side', 'Volume', 'Entry', 'Mark', 'Notional', 'P/L']}
           rows={(relatedPositions.length ? relatedPositions : props.positions.slice(0, 8)).map((item) => [
             item.position_id,
+            item.base_currency ?? '-',
+            item.quote_currency ?? '-',
             item.direction ? <Badge key="side">{item.direction}</Badge> : 'Asset',
             formatNumber(item.volume),
             formatNumber(item.position_price),
             formatNumber(item.closable_price),
-            formatNumber(notionalValue(item)),
+            formatPositionNotional(item),
             <Value key="pnl" value={item.floating_profit} />,
           ])}
         />
@@ -1153,16 +1159,18 @@ function PositionsPage(props: {
         <InlineError message={props.error} />
         <DataTable
           empty="Select a credential to load positions. If a request fails, check API permissions on the exchange key."
-          headers={['Position', 'Product', 'Side', 'Volume', 'Free', 'Entry', 'Mark', 'Notional', 'P/L']}
+          headers={['Position', 'Product', 'Base', 'Quote', 'Side', 'Volume', 'Free', 'Entry', 'Mark', 'Notional', 'P/L']}
           rows={props.positions.map((item) => [
             item.position_id,
             <code key="product">{item.product_id}</code>,
+            item.base_currency ?? '-',
+            item.quote_currency ?? '-',
             item.direction ? <Badge key="direction">{item.direction}</Badge> : 'Asset',
             formatNumber(item.volume),
             formatNumber(item.free_volume),
             formatNumber(item.position_price),
             formatNumber(item.closable_price),
-            formatNumber(notionalValue(item)),
+            formatPositionNotional(item),
             <Value key="pnl" value={item.floating_profit} />,
           ])}
         />
@@ -1407,6 +1415,10 @@ function summarizePortfolioAssets(accounts: PortfolioAccount[]) {
 
 function notionalValue(position: Position) {
   return position.notional_value;
+}
+
+function formatPositionNotional(position: Position) {
+  return `${formatNumber(notionalValue(position))} ${position.notional_currency ?? position.quote_currency ?? ''}`.trim();
 }
 
 function addCurrencyTotal(totals: Map<string, number>, currency: string | null, value: number) {

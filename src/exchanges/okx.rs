@@ -227,6 +227,8 @@ fn map_balance_position(row: Value) -> Option<Position> {
         } else {
             format!("{ID}/SPOT/{currency}-USDT")
         },
+        base_currency: Some(currency.clone()),
+        quote_currency: Some("USDT".to_string()),
         direction: None,
         volume: volume.abs(),
         free_volume: common::f64_value(&row, "availBal").abs(),
@@ -280,6 +282,8 @@ fn map_loan_position(row: Value) -> Option<Position> {
     Some(Position {
         position_id: format!("LOAN/{currency}"),
         product_id: format!("{ID}/LOAN/{currency}"),
+        base_currency: Some(currency.clone()),
+        quote_currency: Some(currency.clone()),
         direction: Some(PositionDirection::Short),
         volume: volume.abs(),
         free_volume: volume.abs(),
@@ -316,6 +320,8 @@ fn asset_position(
     Position {
         product_id: format!("{ID}/{position_id}"),
         position_id,
+        base_currency: Some(currency.clone()),
+        quote_currency: Some(currency.clone()),
         direction: None,
         volume: volume.abs(),
         free_volume: free_volume.abs(),
@@ -347,10 +353,13 @@ fn map_derivative_position(row: Value) -> Option<Position> {
         crate::models::PositionDirection::Long
     };
     let closable_price = common::f64_value(&row, "markPx");
+    let (base_currency, quote_currency) = okx_pair_currencies(&inst_id);
 
     Some(Position {
         position_id,
         product_id: format!("{ID}/{inst_type}/{inst_id}"),
+        base_currency,
+        quote_currency,
         direction: Some(direction),
         volume: volume.abs(),
         free_volume: common::f64_value(&row, "availPos").abs(),
@@ -361,6 +370,14 @@ fn map_derivative_position(row: Value) -> Option<Position> {
         floating_profit: common::f64_value(&row, "upl"),
         comment: None,
     })
+}
+
+fn okx_pair_currencies(inst_id: &str) -> (Option<String>, Option<String>) {
+    let mut parts = inst_id.split('-');
+    (
+        parts.next().map(str::to_string),
+        parts.next().map(str::to_string),
+    )
 }
 
 fn map_trade_fill(row: Value) -> Option<TradeFill> {

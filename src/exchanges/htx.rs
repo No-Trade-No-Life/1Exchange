@@ -347,6 +347,8 @@ fn map_spot_position(row: Value) -> Option<Position> {
         } else {
             format!("{ID}/SPOT/{}usdt", currency.to_lowercase())
         },
+        base_currency: Some(currency.clone()),
+        quote_currency: Some("USDT".to_string()),
         direction: None,
         volume: balance,
         free_volume: if common::str_value(&row, "type") == "trade" {
@@ -378,6 +380,8 @@ fn map_union_swap_asset(row: Value) -> Option<Position> {
     Some(Position {
         position_id: format!("SWAP-ASSET/{currency}"),
         product_id: format!("{ID}/SWAP-ASSET/{currency}"),
+        base_currency: Some(currency.clone()),
+        quote_currency: Some(currency.clone()),
         direction: None,
         volume,
         free_volume: common::f64_value(&row, "withdraw_available"),
@@ -398,10 +402,13 @@ fn map_swap_position(row: Value) -> Option<Position> {
     }
     let closable_price =
         common::f64_value(&row, "last_price").max(common::f64_value(&row, "mark_price"));
+    let (base_currency, quote_currency) = htx_contract_currencies(&contract_code);
 
     Some(Position {
         position_id: contract_code.clone(),
         product_id: format!("{ID}/SWAP/{contract_code}"),
+        base_currency,
+        quote_currency,
         direction: Some(if common::str_value(&row, "direction") == "sell" {
             PositionDirection::Short
         } else {
@@ -417,6 +424,14 @@ fn map_swap_position(row: Value) -> Option<Position> {
         floating_profit: common::f64_value(&row, "profit_unreal"),
         comment: None,
     })
+}
+
+fn htx_contract_currencies(contract_code: &str) -> (Option<String>, Option<String>) {
+    let mut parts = contract_code.split('-');
+    (
+        parts.next().map(str::to_string),
+        parts.next().map(str::to_string),
+    )
 }
 
 fn map_trade_fill(row: Value) -> Option<TradeFill> {
