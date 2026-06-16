@@ -75,9 +75,23 @@ AccountInfo（账户） -> Position（持仓 / 资产） -> Product（规格）
 - `GET /api/accounts?credential_id=...`：按本地 Credential 拉取账户快照。
 - `GET /api/positions?credential_id=...`：按本地 Credential 拉取账户持仓/资产投影。
 - `GET /api/trades?credential_id=...`：按本地 Credential 拉取最近一批历史成交流水。
+- `GET /api/rates?target=USD`：返回当前汇率图快照，汇率边可多跳换算到目标币种。
+- `GET /api/rates/convert?from=USDC&to=USD`：检查单个币种到目标币种的当前换算路径结果。
 - `GET /api/products?exchange=BINANCE`：列出指定交易所的交易产品规格。
 
 当前 `accounts`、`positions`、`products` 已固定标准响应模型，但真实数据拉取仍待交易所 Adapter 接入。
+
+## 汇率图
+
+汇率不是一张“所有币直接到 USD”的表，而是一张有向图：每条边表示 `base_currency -> quote_currency` 的当前换算率。Portfolio 做 USD 估值时会在图上查找路径，例如 `OKSOL -> USDC -> USD`。找不到路径的币种不会被强行估值，会在 GUI 中显示为 `unpriced`。
+
+当前第一版只内置稳定币锚点边：`USD`、`USDT`、`USDC`、`USDD` 之间按 `1:1` 互相连通。后续汇率更新建议按以下顺序接入：
+
+- 公共 ticker 边：从已支持交易所的公开行情拉取 `BASE/QUOTE` mid price，不使用私有 credential。
+- SQLite 缓存：保存 `base_currency`、`quote_currency`、`rate`、`source`、`updated_at`、`ttl`，服务启动后先读缓存，再后台刷新。
+- 多来源合并：同一条边可以保留多个来源，默认使用最新且未过期的 rate；必要时再加 source priority。
+- 更新节奏：稳定币锚点为静态边；主流公共 ticker 可 30-60 秒刷新；低频或失败的边保留旧值直到 TTL 过期。
+- 安全语义：没有路径就是未知估值，不显示为 0。
 
 当前实质接入状态：
 

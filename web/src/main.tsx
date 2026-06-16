@@ -59,6 +59,19 @@ type Product = {
   allow_short: boolean | null;
 };
 
+type CurrencyRateEdge = {
+  base_currency: string;
+  quote_currency: string;
+  rate: number;
+  source: string;
+  updated_at: string;
+};
+
+type CurrencyRateSnapshot = {
+  target_currency: string;
+  edges: CurrencyRateEdge[];
+};
+
 type PortfolioAccount = {
   accountId: string;
   credential: Credential;
@@ -243,6 +256,7 @@ function App() {
   const [credentialsRevision, setCredentialsRevision] = useState(0);
   const health = useJson<Health>('/api/health');
   const exchanges = useJson<ExchangeInfo[]>('/api/exchanges');
+  const rates = useJson<CurrencyRateSnapshot>('/api/rates?target=USD');
   const credentials = useJson<Credential[]>(`/api/credentials?refresh=${credentialsRevision}`);
   const credentialList = credentials.data ?? emptyCredentials;
   const [selectedCredentialId, setSelectedCredentialId] = useState('');
@@ -289,9 +303,10 @@ function App() {
         selectedCredential={selectedCredential}
       />
   );
-  const accountsPage = <AccountsPage accounts={portfolio.accounts} loading={portfolio.loading} />;
-  const accountDetailPage = <AccountDetailPage accounts={portfolio.accounts} loading={portfolio.loading} />;
-  const portfolioPage = <PortfolioPage accounts={portfolio.accounts} loading={portfolio.loading} />;
+  const rateEdges = rates.data?.edges ?? [];
+  const accountsPage = <AccountsPage accounts={portfolio.accounts} loading={portfolio.loading} rateEdges={rateEdges} />;
+  const accountDetailPage = <AccountDetailPage accounts={portfolio.accounts} loading={portfolio.loading} rateEdges={rateEdges} />;
+  const portfolioPage = <PortfolioPage accounts={portfolio.accounts} loading={portfolio.loading} rateEdges={rateEdges} />;
   const historyPage = <TradeHistoryPage accountIds={accountIds} accounts={tradeHistory.accounts} loading={tradeHistory.loading} />;
   const tradePage = (
       <TradePage
@@ -441,9 +456,10 @@ function OverviewPage(props: {
   );
 }
 
-function PortfolioPage(props: { accounts: PortfolioAccount[]; loading: boolean }) {
+function PortfolioPage(props: { accounts: PortfolioAccount[]; loading: boolean; rateEdges: CurrencyRateEdge[] }) {
   const summary = summarizePortfolio(props.accounts);
   const assetRows = summarizePortfolioAssets(props.accounts);
+  const usdValue = convertCurrencyTotals(summary.notionalByCurrency, 'USD', props.rateEdges);
 
   return (
     <div className="page-stack">
@@ -451,6 +467,7 @@ function PortfolioPage(props: { accounts: PortfolioAccount[]; loading: boolean }
         <Metric label="Credentials" value={summary.credentials.toString()} />
         <Metric label="Loaded positions" value={summary.positions.toString()} />
         <Metric label="Notional value" value={formatNotionalBreakdown(summary.notionalByCurrency)} />
+        <Metric label="USD converted" value={formatConvertedValue(usdValue, 'USD')} tone={usdValue.unconverted.length > 0 ? 'warn' : 'neutral'} />
         <Metric label="Floating P/L" value={formatNumber(summary.pnl)} tone={summary.pnl < 0 ? 'warn' : 'good'} />
         <Metric label="Read errors" value={summary.errors.toString()} tone={summary.errors > 0 ? 'warn' : 'neutral'} />
       </section>
@@ -511,7 +528,7 @@ function PortfolioPage(props: { accounts: PortfolioAccount[]; loading: boolean }
   );
 }
 
-function AccountsPage(props: { accounts: PortfolioAccount[]; loading: boolean }) {
+function AccountsPage(props: { accounts: PortfolioAccount[]; loading: boolean; rateEdges: CurrencyRateEdge[] }) {
   return (
     <div className="page-stack">
       <section className="metrics-grid compact" aria-label="Accounts summary">
@@ -531,7 +548,7 @@ function AccountsPage(props: { accounts: PortfolioAccount[]; loading: boolean })
         </div>
         <DataTable
           empty="No accounts loaded yet. Add credentials first, then the account registry will appear here."
-          headers={['AccountID', 'Credential', 'Exchange', 'Positions', 'Assets', 'Notional value', 'Floating P/L', 'Status']}
+          headers={['AccountID', 'Credential', 'Exchange', 'Positions', 'Assets', 'USD converted', 'Floating P/L', 'Status']}
           rows={props.accounts.map((account) => {
             const summary = summarizeAccountPositions(account.positions);
             return [
@@ -540,7 +557,7 @@ function AccountsPage(props: { accounts: PortfolioAccount[]; loading: boolean })
               <Badge key="exchange">{account.credential.exchange}</Badge>,
               summary.total.toString(),
               summary.assets.toString(),
-              formatNotionalBreakdown(summary.notionalByCurrency),
+              formatConvertedValue(convertCurrencyTotals(summary.notionalByCurrency, 'USD', props.rateEdges), 'USD'),
               <Value key="pnl" value={summary.pnl} />,
               account.error ? <span className="status-text bad" key="status">{account.error}</span> : <span className="status-text good" key="status">Loaded</span>,
             ];
@@ -551,11 +568,12 @@ function AccountsPage(props: { accounts: PortfolioAccount[]; loading: boolean })
   );
 }
 
-function AccountDetailPage(props: { accounts: PortfolioAccount[]; loading: boolean }) {
+function AccountDetailPage(props: { accounts: PortfolioAccount[]; loading: boolean; rateEdges: CurrencyRateEdge[] }) {
   const [params] = useSearchParams();
   const accountId = params.get('account_id') ?? '';
   const account = props.accounts.find((item) => item.accountId === accountId);
   const summary = summarizeAccountPositions(account?.positions ?? []);
+  const usdValue = convertCurrencyTotals(summary.notionalByCurrency, 'USD', props.rateEdges);
 
   if (!accountId) {
     return <AccountDetailEmpty title="Select an account" message="Open the Accounts page and choose an AccountID to inspect positions and metadata." />;
@@ -581,6 +599,7 @@ function AccountDetailPage(props: { accounts: PortfolioAccount[]; loading: boole
         <Metric label="Positions" value={summary.total.toString()} />
         <Metric label="Assets" value={summary.assets.toString()} />
         <Metric label="Notional value" value={formatNotionalBreakdown(summary.notionalByCurrency)} />
+        <Metric label="USD converted" value={formatConvertedValue(usdValue, 'USD')} tone={usdValue.unconverted.length > 0 ? 'warn' : 'neutral'} />
         <Metric label="Floating P/L" value={formatNumber(summary.pnl)} tone={summary.pnl < 0 ? 'warn' : 'good'} />
       </section>
 
@@ -1441,6 +1460,50 @@ function formatNotionalBreakdown(totals: Map<string, number>) {
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([currency, value]) => `${formatNumber(value)} ${currency}`)
     .join(' / ');
+}
+
+function convertCurrencyTotals(totals: Map<string, number>, target: string, edges: CurrencyRateEdge[]) {
+  return Array.from(totals.entries()).reduce(
+    (result, [currency, value]) => {
+      const rate = currencyRate(edges, currency, target);
+      if (rate == null) {
+        result.unconverted.push(currency);
+      } else {
+        result.value += finiteNumber(value) * rate;
+      }
+      return result;
+    },
+    { value: 0, unconverted: [] as string[] },
+  );
+}
+
+function currencyRate(edges: CurrencyRateEdge[], from: string, to: string) {
+  if (from === to) {
+    return 1;
+  }
+  const queue: Array<{ currency: string; rate: number }> = [{ currency: from, rate: 1 }];
+  const seen = new Set([from]);
+
+  for (let index = 0; index < queue.length; index += 1) {
+    const current = queue[index];
+    for (const edge of edges) {
+      if (edge.base_currency !== current.currency || seen.has(edge.quote_currency) || edge.rate <= 0) {
+        continue;
+      }
+      const nextRate = current.rate * edge.rate;
+      if (edge.quote_currency === to) {
+        return nextRate;
+      }
+      seen.add(edge.quote_currency);
+      queue.push({ currency: edge.quote_currency, rate: nextRate });
+    }
+  }
+  return null;
+}
+
+function formatConvertedValue(result: { value: number; unconverted: string[] }, currency: string) {
+  const suffix = result.unconverted.length > 0 ? ` (${result.unconverted.length} unpriced)` : '';
+  return `${formatNumber(result.value)} ${currency}${suffix}`;
 }
 
 function summarizeTradeRisk(positions: Position[]) {

@@ -1,6 +1,7 @@
 mod credentials;
 mod exchanges;
 mod models;
+mod rates;
 
 use std::{
     net::{SocketAddr, TcpListener as StdTcpListener},
@@ -46,6 +47,17 @@ struct CredentialQuery {
     credential_id: String,
 }
 
+#[derive(serde::Deserialize)]
+struct RatesQuery {
+    target: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct ConvertRateQuery {
+    from: String,
+    to: Option<String>,
+}
+
 #[derive(Debug)]
 pub struct AppError {
     status: StatusCode,
@@ -87,6 +99,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/accounts", get(list_accounts))
         .route("/positions", get(list_positions))
         .route("/trades", get(list_trades))
+        .route("/rates", get(list_rates))
+        .route("/rates/convert", get(convert_rate))
         .route("/products", get(list_products));
     let app = Router::new().nest("/api", api);
     let app = if vite.is_some() {
@@ -294,6 +308,17 @@ async fn list_trades(
     })?;
 
     Ok(Json(adapter.list_trades(&credential.payload).await?))
+}
+
+async fn list_rates(Query(query): Query<RatesQuery>) -> Json<rates::CurrencyRateSnapshot> {
+    Json(rates::snapshot(query.target.as_deref().unwrap_or("USD")))
+}
+
+async fn convert_rate(Query(query): Query<ConvertRateQuery>) -> Json<rates::CurrencyConversion> {
+    let target = query.to.as_deref().unwrap_or("USD");
+    let snapshot = rates::snapshot(target);
+
+    Json(rates::conversion(&snapshot.edges, &query.from, target))
 }
 
 async fn list_products(Query(query): Query<ProductsQuery>) -> Result<Json<Vec<Product>>, AppError> {
