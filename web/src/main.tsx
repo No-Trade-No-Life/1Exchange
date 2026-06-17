@@ -118,12 +118,19 @@ const pages: Array<{ id: Page; label: string; hint: string; path: string }> = [
 
 const emptyCredentials: Credential[] = [];
 
-function useJson<T>(path: string) {
+function useJson<T>(path: string | null) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    if (!path) {
+      setData(null);
+      setError(null);
+      setLoading(false);
+      return;
+    }
+
     let alive = true;
     setLoading(true);
     setError(null);
@@ -253,6 +260,7 @@ function useTradeHistory(credentials: Credential[]) {
 
 function App() {
   const location = useLocation();
+  const page = currentPage(location.pathname);
   const [credentialsRevision, setCredentialsRevision] = useState(0);
   const health = useJson<Health>('/api/health');
   const exchanges = useJson<ExchangeInfo[]>('/api/exchanges');
@@ -267,7 +275,7 @@ function App() {
   const positionsPath = selectedCredentialId
     ? `/api/positions?credential_id=${encodeURIComponent(selectedCredentialId)}`
     : '/api/positions?credential_id=';
-  const productsPath = `/api/products?exchange=${encodeURIComponent(selectedExchangeId)}`;
+  const productsPath = page.id === 'trade' || page.id === 'products' ? `/api/products?exchange=${encodeURIComponent(selectedExchangeId)}` : null;
   const positions = useJson<Position[]>(positionsPath);
   const products = useJson<Product[]>(productsPath);
   const portfolio = usePortfolio(credentialList);
@@ -290,8 +298,6 @@ function App() {
   }, [products.data, selectedTradeProductId]);
 
   const exposure = useMemo(() => summarizePositions(positions.data ?? []), [positions.data]);
-  const page = currentPage(location.pathname);
-
   const overviewPage = (
       <OverviewPage
         credentialCount={credentials.data?.length ?? 0}
