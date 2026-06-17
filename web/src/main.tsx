@@ -135,6 +135,7 @@ const pages: Array<{ id: Page; label: string; hint: string; path: string }> = [
 ];
 
 const emptyCredentials: Credential[] = [];
+const emptyVirtualAccountConfigs: VirtualAccountConfig[] = [];
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -213,6 +214,65 @@ function usePortfolio(credentials: Credential[]) {
   return { accounts, loading };
 }
 
+function useVirtualPortfolio(configs: VirtualAccountConfig[], enabled: boolean) {
+  const [accounts, setAccounts] = useState<PortfolioAccount[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    const activeConfigs = configs.filter((config) => config.enabled);
+    setLoading(enabled && activeConfigs.length > 0);
+    setAccounts([]);
+
+    if (!enabled || activeConfigs.length === 0) {
+      return () => {
+        alive = false;
+      };
+    }
+
+    Promise.all(
+      activeConfigs.map(async (config) => {
+        try {
+          const response = await fetch(`/api/virtual-accounts/account?account_id=${encodeURIComponent(config.account_id)}`);
+          if (!response.ok) {
+            throw new Error(`${response.status} ${response.statusText}`);
+          }
+          const account = await response.json() as AccountInfo;
+          return {
+            accountId: account.account_id,
+            credential: virtualCredential(config),
+            error: null,
+            positions: account.positions,
+          };
+        } catch (caught) {
+          return {
+            accountId: config.account_id,
+            credential: virtualCredential(config),
+            error: (caught as Error).message,
+            positions: [],
+          };
+        }
+      }),
+    )
+      .then((nextAccounts) => {
+        if (alive) {
+          setAccounts(nextAccounts);
+        }
+      })
+      .finally(() => {
+        if (alive) {
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      alive = false;
+    };
+  }, [configs, enabled]);
+
+  return { accounts, loading };
+}
+
 function useTradeHistory(credentials: Credential[]) {
   const [accounts, setAccounts] = useState<TradeAccount[]>([]);
   const [loading, setLoading] = useState(false);
@@ -273,7 +333,8 @@ function App() {
     ? `/api/positions?credential_id=${encodeURIComponent(selectedCredentialId)}`
     : '/api/positions?credential_id=';
   const productsPath = page.id === 'trade' || page.id === 'products' ? `/api/products?exchange=${encodeURIComponent(selectedExchangeId)}` : null;
-  const virtualAccountsPath = page.id === 'virtual-accounts' ? '/api/virtual-accounts' : null;
+  const accountRegistryPage = page.id === 'accounts' || page.id === 'portfolio';
+  const virtualAccountsPath = accountRegistryPage || page.id === 'virtual-accounts' ? '/api/virtual-accounts' : null;
   const virtualAccountPath = page.id === 'virtual-accounts' && selectedVirtualAccountId
     ? `/api/virtual-accounts/account?account_id=${encodeURIComponent(selectedVirtualAccountId)}`
     : null;
@@ -282,6 +343,9 @@ function App() {
   const virtualAccounts = useJson<VirtualAccountConfig[]>(virtualAccountsPath);
   const virtualAccount = useJson<AccountInfo>(virtualAccountPath);
   const portfolio = usePortfolio(credentialList);
+  const virtualAccountConfigs = virtualAccounts.data ?? emptyVirtualAccountConfigs;
+  const virtualPortfolio = useVirtualPortfolio(virtualAccountConfigs, accountRegistryPage);
+  const accountRegistry = [...portfolio.accounts, ...virtualPortfolio.accounts];
   const tradeHistory = useTradeHistory(credentialList);
   const accountIds = useMemo(
     () => Object.fromEntries(portfolio.accounts.map((account) => [account.credential.id, account.accountId])),
@@ -313,9 +377,10 @@ function App() {
       />
   );
   const rateEdges = rates.data?.edges ?? [];
-  const accountsPage = <AccountsPage accounts={portfolio.accounts} loading={portfolio.loading} rateEdges={rateEdges} />;
-  const accountDetailPage = <AccountDetailPage accounts={portfolio.accounts} loading={portfolio.loading} rateEdges={rateEdges} />;
-  const portfolioPage = <PortfolioPage accounts={portfolio.accounts} loading={portfolio.loading} rateEdges={rateEdges} />;
+  const accountsLoading = portfolio.loading || virtualAccounts.loading || virtualPortfolio.loading;
+  const accountsPage = <AccountsPage accounts={accountRegistry} loading={accountsLoading} rateEdges={rateEdges} />;
+  const accountDetailPage = <AccountDetailPage accounts={accountRegistry} loading={accountsLoading} rateEdges={rateEdges} />;
+  const portfolioPage = <PortfolioPage accounts={accountRegistry} loading={accountsLoading} rateEdges={rateEdges} />;
   const historyPage = <TradeHistoryPage accountIds={accountIds} accounts={tradeHistory.accounts} loading={tradeHistory.loading} />;
   const tradePage = (
       <TradePage
@@ -349,7 +414,7 @@ function App() {
     <VirtualAccountsPage
       accountIds={accountIds}
       accountInfo={virtualAccount.data}
-      configs={virtualAccounts.data ?? []}
+      configs={virtualAccountConfigs}
       credentials={credentialList}
       error={virtualAccounts.error ?? virtualAccount.error}
       loading={virtualAccounts.loading || virtualAccount.loading}
@@ -1530,6 +1595,17 @@ function accountDetailPath(accountId: string) {
 
 function fallbackAccountId(credential: Credential) {
   return `${credential.exchange}/local:${credential.id.slice(0, 8)}`;
+}
+
+function virtualCredential(config: VirtualAccountConfig): Credential {
+  return {
+    id: config.account_id,
+    exchange: 'VIRTUAL',
+    name: config.name,
+    has_payload: false,
+    created_at: config.created_at,
+    updated_at: config.updated_at,
+  };
 }
 
 function credentialPayload(fields: string[], values: Record<string, string>) {
