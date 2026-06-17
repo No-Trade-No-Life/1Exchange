@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { createRoot } from 'react-dom/client';
 import { HashRouter, Link, Navigate, NavLink, Route, Routes, useLocation, useSearchParams } from 'react-router-dom';
 import './styles.css';
@@ -117,52 +118,30 @@ const pages: Array<{ id: Page; label: string; hint: string; path: string }> = [
 ];
 
 const emptyCredentials: Credential[] = [];
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      refetchOnWindowFocus: false,
+      staleTime: 30_000,
+    },
+  },
+});
 
 function useJson<T>(path: string | null) {
-  const [data, setData] = useState<T | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const query = useQuery({
+    enabled: path !== null,
+    queryKey: ['json', path],
+    queryFn: async ({ queryKey }) => {
+      const requestPath = queryKey[1] as string;
+      const response = await fetch(requestPath);
+      if (!response.ok) {
+        throw new Error(`${response.status} ${response.statusText}`);
+      }
+      return response.json() as Promise<T>;
+    },
+  });
 
-  useEffect(() => {
-    if (!path) {
-      setData(null);
-      setError(null);
-      setLoading(false);
-      return;
-    }
-
-    let alive = true;
-    setLoading(true);
-    setError(null);
-    fetch(path)
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error(`${response.status} ${response.statusText}`);
-        }
-        return response.json() as Promise<T>;
-      })
-      .then((value) => {
-        if (alive) {
-          setData(value);
-        }
-      })
-      .catch((caught: Error) => {
-        if (alive) {
-          setError(caught.message);
-        }
-      })
-      .finally(() => {
-        if (alive) {
-          setLoading(false);
-        }
-      });
-
-    return () => {
-      alive = false;
-    };
-  }, [path]);
-
-  return { data, error, loading };
+  return { data: query.data ?? null, error: query.error?.message ?? null, loading: query.isLoading };
 }
 
 function usePortfolio(credentials: Credential[]) {
@@ -1582,8 +1561,10 @@ function sideLabel(product: Product) {
 
 createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <HashRouter>
-      <App />
-    </HashRouter>
+    <QueryClientProvider client={queryClient}>
+      <HashRouter>
+        <App />
+      </HashRouter>
+    </QueryClientProvider>
   </React.StrictMode>,
 );
