@@ -326,6 +326,29 @@ h2 {
   outline: 3px solid var(--accent-soft);
 }
 
+.secondary-action {
+  width: fit-content;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 9px 12px;
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 750;
+}
+
+.secondary-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.inline-check {
+  align-items: center;
+  display: flex !important;
+  grid-template-columns: none !important;
+}
+
 .success-note {
   margin: 0;
   color: var(--good);

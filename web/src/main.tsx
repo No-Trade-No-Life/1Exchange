@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createRoot } from 'react-dom/client';
 import { HashRouter, Link, Navigate, NavLink, Route, Routes, useLocation, useSearchParams } from 'react-router-dom';
 import './styles.css';
@@ -101,9 +101,25 @@ type TradeAccount = {
   trades: TradeFill[];
 };
 
+type VirtualAccountSource = {
+  credential_id: string;
+  coefficient: number;
+  enabled: boolean;
+  force_zero: boolean;
+};
+
+type VirtualAccountConfig = {
+  account_id: string;
+  name: string;
+  enabled: boolean;
+  sources: VirtualAccountSource[];
+  created_at: string;
+  updated_at: string;
+};
+
 type AccountIds = Record<string, string>;
 
-type Page = 'overview' | 'accounts' | 'portfolio' | 'trade' | 'history' | 'credentials' | 'positions' | 'products' | 'exchanges';
+type Page = 'overview' | 'accounts' | 'portfolio' | 'trade' | 'history' | 'credentials' | 'virtual-accounts' | 'positions' | 'products' | 'exchanges';
 
 const pages: Array<{ id: Page; label: string; hint: string; path: string }> = [
   { id: 'overview', label: 'Overview', hint: 'Service and adapter status', path: '/overview' },
@@ -112,6 +128,7 @@ const pages: Array<{ id: Page; label: string; hint: string; path: string }> = [
   { id: 'trade', label: 'Trade', hint: 'Trading board', path: '/trade' },
   { id: 'history', label: 'History', hint: 'Trade fills', path: '/history' },
   { id: 'credentials', label: 'Credentials', hint: 'Saved local metadata', path: '/credentials' },
+  { id: 'virtual-accounts', label: 'Virtual Accounts', hint: 'Linear account composition', path: '/virtual-accounts' },
   { id: 'positions', label: 'Positions', hint: 'Assets and open exposure', path: '/positions' },
   { id: 'products', label: 'Products', hint: 'Exchange product specs', path: '/products' },
   { id: 'exchanges', label: 'Exchanges', hint: 'Schemas and capabilities', path: '/exchanges' },
@@ -249,14 +266,21 @@ function App() {
   const [selectedCredentialId, setSelectedCredentialId] = useState('');
   const [selectedExchangeId, setSelectedExchangeId] = useState('BINANCE');
   const [selectedTradeProductId, setSelectedTradeProductId] = useState('');
+  const [selectedVirtualAccountId, setSelectedVirtualAccountId] = useState('');
 
   const selectedCredential = credentials.data?.find((item) => item.id === selectedCredentialId);
   const positionsPath = selectedCredentialId
     ? `/api/positions?credential_id=${encodeURIComponent(selectedCredentialId)}`
     : '/api/positions?credential_id=';
   const productsPath = page.id === 'trade' || page.id === 'products' ? `/api/products?exchange=${encodeURIComponent(selectedExchangeId)}` : null;
+  const virtualAccountsPath = page.id === 'virtual-accounts' ? '/api/virtual-accounts' : null;
+  const virtualAccountPath = page.id === 'virtual-accounts' && selectedVirtualAccountId
+    ? `/api/virtual-accounts/account?account_id=${encodeURIComponent(selectedVirtualAccountId)}`
+    : null;
   const positions = useJson<Position[]>(positionsPath);
   const products = useJson<Product[]>(productsPath);
+  const virtualAccounts = useJson<VirtualAccountConfig[]>(virtualAccountsPath);
+  const virtualAccount = useJson<AccountInfo>(virtualAccountPath);
   const portfolio = usePortfolio(credentialList);
   const tradeHistory = useTradeHistory(credentialList);
   const accountIds = useMemo(
@@ -319,6 +343,18 @@ function App() {
         setSelectedCredentialId(credential.id);
         setCredentialsRevision((value) => value + 1);
       }}
+    />
+  );
+  const virtualAccountsPage = (
+    <VirtualAccountsPage
+      accountIds={accountIds}
+      accountInfo={virtualAccount.data}
+      configs={virtualAccounts.data ?? []}
+      credentials={credentialList}
+      error={virtualAccounts.error ?? virtualAccount.error}
+      loading={virtualAccounts.loading || virtualAccount.loading}
+      selectedAccountId={selectedVirtualAccountId}
+      onSelectAccount={setSelectedVirtualAccountId}
     />
   );
   const positionsPage = (
@@ -388,6 +424,7 @@ function App() {
           <Route path="/trade" element={tradePage} />
           <Route path="/history" element={historyPage} />
           <Route path="/credentials" element={credentialsPage} />
+          <Route path="/virtual-accounts" element={virtualAccountsPage} />
           <Route path="/positions" element={positionsPage} />
           <Route path="/products" element={productsPage} />
           <Route path="/exchanges" element={exchangesPage} />
@@ -971,6 +1008,172 @@ function CredentialsPage(props: {
   );
 }
 
+function VirtualAccountsPage(props: {
+  accountIds: AccountIds;
+  accountInfo: AccountInfo | null;
+  configs: VirtualAccountConfig[];
+  credentials: Credential[];
+  error: string | null;
+  loading: boolean;
+  selectedAccountId: string;
+  onSelectAccount: (accountId: string) => void;
+}) {
+  const positions = props.accountInfo?.positions ?? [];
+  const exposure = summarizeAccountPositions(positions);
+
+  return (
+    <div className="page-stack">
+      <VirtualAccountCreatePanel accountIds={props.accountIds} credentials={props.credentials} />
+
+      <section className="panel">
+        <PanelTitle label="Virtual account configs" title="Local linear compositions" action={`${props.configs.length} configs`} />
+        <InlineError message={props.error} />
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Account</th>
+                <th>Name</th>
+                <th>Status</th>
+                <th>Sources</th>
+                <th>Updated</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {props.configs.map((config) => (
+                <tr key={config.account_id}>
+                  <td>{config.account_id}</td>
+                  <td>{config.name}</td>
+                  <td>{config.enabled ? 'Enabled' : 'Disabled'}</td>
+                  <td>{config.sources.filter((source) => source.enabled).length}/{config.sources.length}</td>
+                  <td>{config.updated_at}</td>
+                  <td>
+                    <button className="secondary-action" disabled={!config.enabled} type="button" onClick={() => props.onSelectAccount(config.account_id)}>
+                      Compose now
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {!props.configs.length ? <div className="empty-state">No virtual account configs yet.</div> : null}
+        </div>
+      </section>
+
+      <section className="panel">
+        <PanelTitle label="Temporary result" title={props.selectedAccountId || 'No virtual account selected'} action={props.loading ? 'Loading' : `${positions.length} positions`} />
+        <section className="metrics-grid" aria-label="Virtual account summary">
+          <Metric label="Assets" value={exposure.assets.toString()} />
+          <Metric label="Long" value={exposure.long.toString()} />
+          <Metric label="Short" value={exposure.short.toString()} />
+          <Metric label="Notional groups" value={exposure.notionalByCurrency.size.toString()} />
+        </section>
+        <DataTable
+          empty="Compose a virtual account to preview its temporary positions."
+          headers={['Product', 'Base', 'Quote', 'Direction', 'Volume', 'Free', 'Price', 'Notional', 'PnL']}
+          rows={positions.map((position) => [
+            position.product_id,
+            position.base_currency ?? '-',
+            position.quote_currency ?? '-',
+            position.direction ?? 'ASSET',
+            formatNumber(position.volume),
+            formatNumber(position.free_volume),
+            formatNumber(position.position_price),
+            formatPositionNotional(position),
+            <Value value={position.floating_profit} />,
+          ])}
+        />
+      </section>
+    </div>
+  );
+}
+
+function VirtualAccountCreatePanel(props: { accountIds: AccountIds; credentials: Credential[] }) {
+  const queryClient = useQueryClient();
+  const [accountId, setAccountId] = useState('VIRTUAL/local');
+  const [name, setName] = useState('Local virtual account');
+  const [sources, setSources] = useState<VirtualAccountSource[]>([
+    { credential_id: props.credentials[0]?.id ?? '', coefficient: 1, enabled: true, force_zero: false },
+  ]);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (sources.length === 1 && !sources[0].credential_id && props.credentials[0]) {
+      setSources([{ ...sources[0], credential_id: props.credentials[0].id }]);
+    }
+  }, [props.credentials, sources]);
+
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(null);
+    setSaving(true);
+
+    try {
+      const response = await fetch('/api/virtual-accounts', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ account_id: accountId, name, enabled: true, sources }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null) as { message?: string } | null;
+        throw new Error(body?.message ?? `${response.status} ${response.statusText}`);
+      }
+      await queryClient.invalidateQueries({ queryKey: ['json', '/api/virtual-accounts'] });
+    } catch (caught) {
+      setError((caught as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="panel credential-create-panel">
+      <div className="panel-heading">
+        <div>
+          <p className="section-label">Create virtual account</p>
+          <h2>Linear source composition</h2>
+        </div>
+        <span className="count-chip">On demand</span>
+      </div>
+      <form className="credential-form" onSubmit={handleSubmit}>
+        <label>
+          Virtual account ID
+          <input required value={accountId} onChange={(event) => setAccountId(event.target.value)} />
+        </label>
+        <label>
+          Name
+          <input required value={name} onChange={(event) => setName(event.target.value)} />
+        </label>
+        <p className="form-note">Coefficient expresses add/subtract/multiply/divide: 1 adds, -1 subtracts, 2 multiplies, 0.5 divides by 2. The account is composed only when queried.</p>
+        <div className="schema-grid">
+          {sources.map((source, index) => (
+            <div className="schema-row" key={index}>
+              <select value={source.credential_id} onChange={(event) => setSourceAt(sources, setSources, index, { ...source, credential_id: event.target.value })}>
+                {props.credentials.map((credential) => (
+                  <option key={credential.id} value={credential.id}>{accountLabel(credential, props.accountIds)}</option>
+                ))}
+              </select>
+              <input inputMode="decimal" value={source.coefficient} onChange={(event) => setSourceAt(sources, setSources, index, { ...source, coefficient: Number(event.target.value) })} />
+              <label className="inline-check">
+                <input checked={source.force_zero} type="checkbox" onChange={(event) => setSourceAt(sources, setSources, index, { ...source, force_zero: event.target.checked })} />
+                Force zero
+              </label>
+              <button className="secondary-action" type="button" onClick={() => setSources(sources.filter((_, sourceIndex) => sourceIndex !== index))}>Remove</button>
+            </div>
+          ))}
+        </div>
+        <button className="secondary-action" type="button" onClick={() => setSources([...sources, { credential_id: props.credentials[0]?.id ?? '', coefficient: 1, enabled: true, force_zero: false }])}>Add source</button>
+        <InlineError message={error} />
+        <button className="primary-action" disabled={saving || !props.credentials.length || !sources.length} type="submit">
+          {saving ? 'Saving...' : 'Save virtual account'}
+        </button>
+      </form>
+    </section>
+  );
+}
+
 function CredentialCreatePanel(props: { exchanges: ExchangeInfo[]; onCreated: (credential: Credential) => void }) {
   const [exchangeId, setExchangeId] = useState(props.exchanges[0]?.id ?? '');
   const [name, setName] = useState('');
@@ -1331,6 +1534,15 @@ function fallbackAccountId(credential: Credential) {
 
 function credentialPayload(fields: string[], values: Record<string, string>) {
   return Object.fromEntries(fields.map((field) => [field, values[field] ?? '']));
+}
+
+function setSourceAt(
+  sources: VirtualAccountSource[],
+  setSources: (sources: VirtualAccountSource[]) => void,
+  index: number,
+  source: VirtualAccountSource,
+) {
+  setSources(sources.map((item, itemIndex) => (itemIndex === index ? source : item)));
 }
 
 function isSecretCredentialField(field: string) {

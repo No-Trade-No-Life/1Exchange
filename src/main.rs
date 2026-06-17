@@ -2,6 +2,7 @@ mod credentials;
 mod exchanges;
 mod models;
 mod rates;
+mod virtual_accounts;
 
 use std::{
     net::{SocketAddr, TcpListener as StdTcpListener},
@@ -97,6 +98,15 @@ async fn main() -> anyhow::Result<()> {
             get(credentials::list_credentials).post(credentials::create_credential),
         )
         .route("/accounts", get(list_accounts))
+        .route(
+            "/virtual-accounts",
+            get(virtual_accounts::list_virtual_accounts)
+                .post(virtual_accounts::create_virtual_account),
+        )
+        .route(
+            "/virtual-accounts/account",
+            get(virtual_accounts::get_virtual_account),
+        )
         .route("/positions", get(list_positions))
         .route("/trades", get(list_trades))
         .route("/rates", get(list_rates))
@@ -253,6 +263,21 @@ async fn migrate(db: &SqlitePool) -> anyhow::Result<()> {
         r#"
         CREATE INDEX IF NOT EXISTS idx_credentials_exchange
         ON credentials (exchange)
+        "#,
+    )
+    .execute(db)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS virtual_accounts (
+            account_id TEXT PRIMARY KEY NOT NULL,
+            name TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            sources TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
         "#,
     )
     .execute(db)
