@@ -44,6 +44,12 @@ struct ProductsQuery {
 }
 
 #[derive(serde::Deserialize)]
+struct AccountQuery {
+    credential_id: Option<String>,
+    account_id: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
 struct CredentialQuery {
     credential_id: String,
 }
@@ -102,10 +108,6 @@ async fn main() -> anyhow::Result<()> {
             "/virtual-accounts",
             get(virtual_accounts::list_virtual_accounts)
                 .post(virtual_accounts::create_virtual_account),
-        )
-        .route(
-            "/virtual-accounts/account",
-            get(virtual_accounts::get_virtual_account),
         )
         .route("/positions", get(list_positions))
         .route("/trades", get(list_trades))
@@ -301,26 +303,64 @@ async fn list_exchanges() -> Json<Vec<exchanges::ExchangeInfo>> {
 
 async fn list_accounts(
     State(state): State<AppState>,
-    Query(query): Query<CredentialQuery>,
+    Query(query): Query<AccountQuery>,
 ) -> Result<Json<Vec<AccountInfo>>, AppError> {
-    let credential = credentials::get_stored_credential(&state.db, &query.credential_id).await?;
-    let adapter = exchanges::adapter(&credential.exchange).ok_or_else(|| {
-        AppError::bad_request(format!("unsupported exchange: {}", credential.exchange))
-    })?;
-
-    Ok(Json(vec![adapter.get_account(&credential.payload).await?]))
+    Ok(Json(vec![read_account(&state.db, query).await?]))
 }
 
 async fn list_positions(
     State(state): State<AppState>,
-    Query(query): Query<CredentialQuery>,
+    Query(query): Query<AccountQuery>,
 ) -> Result<Json<Vec<Position>>, AppError> {
-    let credential = credentials::get_stored_credential(&state.db, &query.credential_id).await?;
+    Ok(Json(read_account(&state.db, query).await?.positions))
+}
+
+async fn read_account(db: &SqlitePool, query: AccountQuery) -> Result<AccountInfo, AppError> {
+    if let Some(credential_id) = query.credential_id {
+        return read_credential_account(db, &credential_id).await;
+    }
+    if let Some(account_id) = query.account_id {
+        return read_account_by_account_id(db, &account_id).await;
+    }
+
+    Err(AppError::bad_request(
+        "missing credential_id or account_id query",
+    ))
+}
+
+async fn read_credential_account(
+    db: &SqlitePool,
+    credential_id: &str,
+) -> Result<AccountInfo, AppError> {
+    let credential = credentials::get_stored_credential(db, credential_id).await?;
     let adapter = exchanges::adapter(&credential.exchange).ok_or_else(|| {
         AppError::bad_request(format!("unsupported exchange: {}", credential.exchange))
     })?;
 
-    Ok(Json(adapter.list_positions(&credential.payload).await?))
+    Ok(adapter.get_account(&credential.payload).await?)
+}
+
+async fn read_account_by_account_id(
+    db: &SqlitePool,
+    account_id: &str,
+) -> Result<AccountInfo, AppError> {
+    if let Some(account) = virtual_accounts::compose_virtual_account_by_id(db, account_id).await? {
+        return Ok(account);
+    }
+
+    for credential in credentials::list_stored_credentials(db).await? {
+        let adapter = exchanges::adapter(&credential.exchange).ok_or_else(|| {
+            AppError::bad_request(format!("unsupported exchange: {}", credential.exchange))
+        })?;
+        let account = adapter.get_account(&credential.payload).await?;
+        if account.account_id == account_id {
+            return Ok(account);
+        }
+    }
+
+    Err(AppError::bad_request(format!(
+        "account not found: {account_id}"
+    )))
 }
 
 async fn list_trades(

@@ -233,11 +233,11 @@ function useVirtualPortfolio(configs: VirtualAccountConfig[], enabled: boolean) 
     Promise.all(
       activeConfigs.map(async (config) => {
         try {
-          const response = await fetch(`/api/virtual-accounts/account?account_id=${encodeURIComponent(config.account_id)}`);
+          const response = await fetch(`/api/accounts?account_id=${encodeURIComponent(config.account_id)}`);
           if (!response.ok) {
             throw new Error(`${response.status} ${response.statusText}`);
           }
-          const account = await response.json() as AccountInfo;
+          const account = ((await response.json()) as AccountInfo[])[0];
           return {
             accountId: account.account_id,
             credential: virtualCredential(config),
@@ -336,12 +336,12 @@ function App() {
   const accountRegistryPage = page.id === 'accounts' || page.id === 'portfolio';
   const virtualAccountsPath = accountRegistryPage || page.id === 'virtual-accounts' ? '/api/virtual-accounts' : null;
   const virtualAccountPath = page.id === 'virtual-accounts' && selectedVirtualAccountId
-    ? `/api/virtual-accounts/account?account_id=${encodeURIComponent(selectedVirtualAccountId)}`
+    ? `/api/accounts?account_id=${encodeURIComponent(selectedVirtualAccountId)}`
     : null;
   const positions = useJson<Position[]>(positionsPath);
   const products = useJson<Product[]>(productsPath);
   const virtualAccounts = useJson<VirtualAccountConfig[]>(virtualAccountsPath);
-  const virtualAccount = useJson<AccountInfo>(virtualAccountPath);
+  const virtualAccount = useJson<AccountInfo[]>(virtualAccountPath);
   const portfolio = usePortfolio(credentialList);
   const virtualAccountConfigs = virtualAccounts.data ?? emptyVirtualAccountConfigs;
   const virtualPortfolio = useVirtualPortfolio(virtualAccountConfigs, accountRegistryPage);
@@ -413,7 +413,7 @@ function App() {
   const virtualAccountsPage = (
     <VirtualAccountsPage
       accountIds={accountIds}
-      accountInfo={virtualAccount.data}
+      accountInfo={virtualAccount.data?.[0] ?? null}
       configs={virtualAccountConfigs}
       credentials={credentialList}
       error={virtualAccounts.error ?? virtualAccount.error}

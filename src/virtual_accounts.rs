@@ -91,21 +91,36 @@ pub async fn create_virtual_account(
     ))
 }
 
-pub async fn get_virtual_account(
-    State(state): State<AppState>,
-    axum::extract::Query(query): axum::extract::Query<VirtualAccountQuery>,
-) -> Result<Json<AccountInfo>, AppError> {
-    let config = get_virtual_account_config(&state.db, &query.account_id).await?;
+pub async fn compose_virtual_account_by_id(
+    db: &SqlitePool,
+    account_id: &str,
+) -> Result<Option<AccountInfo>, AppError> {
+    let Some(config) = find_virtual_account_config(db, account_id).await? else {
+        return Ok(None);
+    };
     if !config.enabled {
         return Err(AppError::bad_request("virtual account is disabled"));
     }
 
-    Ok(Json(compose_virtual_account(&state.db, config).await?))
+    Ok(Some(compose_virtual_account_config(db, config).await?))
 }
 
-#[derive(Debug, Deserialize)]
-pub struct VirtualAccountQuery {
-    account_id: String,
+async fn find_virtual_account_config(
+    db: &SqlitePool,
+    account_id: &str,
+) -> Result<Option<VirtualAccountConfig>, AppError> {
+    let row = sqlx::query_as::<_, VirtualAccountRow>(
+        r#"
+        SELECT account_id, name, enabled, sources, created_at, updated_at
+        FROM virtual_accounts
+        WHERE account_id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .fetch_optional(db)
+    .await?;
+
+    row.map(VirtualAccountConfig::try_from).transpose()
 }
 
 async fn get_virtual_account_config(
@@ -126,7 +141,7 @@ async fn get_virtual_account_config(
     VirtualAccountConfig::try_from(row)
 }
 
-async fn compose_virtual_account(
+async fn compose_virtual_account_config(
     db: &SqlitePool,
     config: VirtualAccountConfig,
 ) -> Result<AccountInfo, AppError> {

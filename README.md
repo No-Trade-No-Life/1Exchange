@@ -73,10 +73,11 @@ AccountInfo（账户） -> Position（持仓 / 资产） -> Product（规格）
 - `GET /api/credentials`：列出本地 Credential 元信息。
 - `POST /api/credentials`：新增 Credential。
 - `GET /api/accounts?credential_id=...`：按本地 Credential 拉取账户快照。
+- `GET /api/accounts?account_id=...`：按 AccountID 拉取账户快照；真实账户和 Virtual Account 使用同一接口。
 - `GET /api/virtual-accounts`：列出本地虚拟账户配置。
 - `POST /api/virtual-accounts`：创建或更新虚拟账户配置。
-- `GET /api/virtual-accounts/account?account_id=...`：按配置临时查询来源账户并合成一个虚拟账户快照。
 - `GET /api/positions?credential_id=...`：按本地 Credential 拉取账户持仓/资产投影。
+- `GET /api/positions?account_id=...`：按 AccountID 拉取账户持仓/资产投影；真实账户和 Virtual Account 使用同一接口。
 - `GET /api/trades?credential_id=...`：按本地 Credential 拉取最近一批历史成交流水。
 - `GET /api/rates?target=USD`：返回当前汇率图快照，汇率边可多跳换算到目标币种。
 - `GET /api/rates/convert?from=USDC&to=USD`：检查单个币种到目标币种的当前换算路径结果。
@@ -86,7 +87,7 @@ AccountInfo（账户） -> Position（持仓 / 资产） -> Product（规格）
 
 ## Virtual Account
 
-Virtual Account 参考 Yuan Account Composer 的线性组合语义，但在 1Exchange 中是本地按需查询：配置持久化在 SQLite，服务不会订阅、发布或轮询来源账户。只有调用 `GET /api/virtual-accounts/account?account_id=...` 或在 GUI 点击 `Compose now` 时，服务才会临时读取各来源 credential 的账户快照，按系数缩放后合并为一个新的 `AccountInfo`。
+Virtual Account 参考 Yuan Account Composer 的线性组合语义，但在 1Exchange 中是本地按需查询：配置持久化在 SQLite，服务不会订阅、发布或轮询来源账户。Virtual Account 读取与普通 Account 一视同仁，使用 `GET /api/accounts?account_id=...` 或 `GET /api/positions?account_id=...`。调用这些接口或在 GUI 点击 `Compose now` 时，服务才会临时读取各来源 credential 的账户快照，按系数缩放后合并为一个新的 `AccountInfo`。
 
 每个 source 使用 `coefficient` 表达线性运算：`1` 表示加入该账户，`-1` 表示扣减该账户，`2` 表示乘以二，`0.5` 表示除以二。`force_zero` 会保留来源持仓行，但把 volume、free volume、notional 和 floating profit 强制缩放为 0，适合构造只用于平仓/对齐的虚拟账户视图。
 

@@ -108,6 +108,27 @@ pub async fn get_stored_credential(
     })
 }
 
+pub async fn list_stored_credentials(db: &SqlitePool) -> Result<Vec<StoredCredential>, AppError> {
+    let rows = sqlx::query_as::<_, CredentialRow>(
+        r#"
+        SELECT id, exchange, name, payload, created_at, updated_at
+        FROM credentials
+        ORDER BY created_at DESC
+        "#,
+    )
+    .fetch_all(db)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(StoredCredential {
+                exchange: row.exchange,
+                payload: serde_json::from_str(&row.payload)?,
+            })
+        })
+        .collect()
+}
+
 fn validate_payload(exchange: &str, payload: &Value) -> Result<(), AppError> {
     let required_fields = credential_required_fields(exchange)
         .ok_or_else(|| AppError::bad_request("unsupported exchange"))?;
