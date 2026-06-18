@@ -117,6 +117,15 @@ type VirtualAccountConfig = {
   updated_at: string;
 };
 
+type CustomAccountSource = {
+  id: string;
+  name: string;
+  base_url: string;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
 type AccountIds = Record<string, string>;
 
 type Page = 'overview' | 'accounts' | 'portfolio' | 'trade' | 'history' | 'credentials' | 'virtual-accounts' | 'positions' | 'products' | 'exchanges';
@@ -214,65 +223,6 @@ function usePortfolio(credentials: Credential[]) {
   return { accounts, loading };
 }
 
-function useVirtualPortfolio(configs: VirtualAccountConfig[], enabled: boolean) {
-  const [accounts, setAccounts] = useState<PortfolioAccount[]>([]);
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    let alive = true;
-    const activeConfigs = configs.filter((config) => config.enabled);
-    setLoading(enabled && activeConfigs.length > 0);
-    setAccounts([]);
-
-    if (!enabled || activeConfigs.length === 0) {
-      return () => {
-        alive = false;
-      };
-    }
-
-    Promise.all(
-      activeConfigs.map(async (config) => {
-        try {
-          const response = await fetch(`/api/accounts?account_id=${encodeURIComponent(config.account_id)}`);
-          if (!response.ok) {
-            throw new Error(`${response.status} ${response.statusText}`);
-          }
-          const account = ((await response.json()) as AccountInfo[])[0];
-          return {
-            accountId: account.account_id,
-            credential: virtualCredential(config),
-            error: null,
-            positions: account.positions,
-          };
-        } catch (caught) {
-          return {
-            accountId: config.account_id,
-            credential: virtualCredential(config),
-            error: (caught as Error).message,
-            positions: [],
-          };
-        }
-      }),
-    )
-      .then((nextAccounts) => {
-        if (alive) {
-          setAccounts(nextAccounts);
-        }
-      })
-      .finally(() => {
-        if (alive) {
-          setLoading(false);
-        }
-      });
-
-    return () => {
-      alive = false;
-    };
-  }, [configs, enabled]);
-
-  return { accounts, loading };
-}
-
 function useTradeHistory(credentials: Credential[]) {
   const [accounts, setAccounts] = useState<TradeAccount[]>([]);
   const [loading, setLoading] = useState(false);
@@ -335,17 +285,20 @@ function App() {
   const productsPath = page.id === 'trade' || page.id === 'products' ? `/api/products?exchange=${encodeURIComponent(selectedExchangeId)}` : null;
   const accountRegistryPage = page.id === 'accounts' || page.id === 'portfolio';
   const virtualAccountsPath = accountRegistryPage || page.id === 'virtual-accounts' ? '/api/virtual-accounts' : null;
+  const customAccountSourcesPath = page.id === 'accounts' ? '/api/custom-account-sources' : null;
+  const discoveredAccountsPath = accountRegistryPage ? '/api/accounts' : null;
   const virtualAccountPath = page.id === 'virtual-accounts' && selectedVirtualAccountId
     ? `/api/accounts?account_id=${encodeURIComponent(selectedVirtualAccountId)}`
     : null;
   const positions = useJson<Position[]>(positionsPath);
   const products = useJson<Product[]>(productsPath);
   const virtualAccounts = useJson<VirtualAccountConfig[]>(virtualAccountsPath);
+  const customAccountSources = useJson<CustomAccountSource[]>(customAccountSourcesPath);
+  const discoveredAccounts = useJson<AccountInfo[]>(discoveredAccountsPath);
   const virtualAccount = useJson<AccountInfo[]>(virtualAccountPath);
   const portfolio = usePortfolio(credentialList);
   const virtualAccountConfigs = virtualAccounts.data ?? emptyVirtualAccountConfigs;
-  const virtualPortfolio = useVirtualPortfolio(virtualAccountConfigs, accountRegistryPage);
-  const accountRegistry = [...portfolio.accounts, ...virtualPortfolio.accounts];
+  const accountRegistry = (discoveredAccounts.data ?? []).map(accountInfoToPortfolioAccount);
   const tradeHistory = useTradeHistory(credentialList);
   const accountIds = useMemo(
     () => Object.fromEntries(portfolio.accounts.map((account) => [account.credential.id, account.accountId])),
@@ -377,8 +330,8 @@ function App() {
       />
   );
   const rateEdges = rates.data?.edges ?? [];
-  const accountsLoading = portfolio.loading || virtualAccounts.loading || virtualPortfolio.loading;
-  const accountsPage = <AccountsPage accounts={accountRegistry} loading={accountsLoading} rateEdges={rateEdges} />;
+  const accountsLoading = discoveredAccounts.loading || customAccountSources.loading;
+  const accountsPage = <AccountsPage accounts={accountRegistry} customSources={customAccountSources.data ?? []} loading={accountsLoading} rateEdges={rateEdges} />;
   const accountDetailPage = <AccountDetailPage accounts={accountRegistry} loading={accountsLoading} rateEdges={rateEdges} />;
   const portfolioPage = <PortfolioPage accounts={accountRegistry} loading={accountsLoading} rateEdges={rateEdges} />;
   const historyPage = <TradeHistoryPage accountIds={accountIds} accounts={tradeHistory.accounts} loading={tradeHistory.loading} />;
@@ -615,15 +568,18 @@ function PortfolioPage(props: { accounts: PortfolioAccount[]; loading: boolean; 
   );
 }
 
-function AccountsPage(props: { accounts: PortfolioAccount[]; loading: boolean; rateEdges: CurrencyRateEdge[] }) {
+function AccountsPage(props: { accounts: PortfolioAccount[]; customSources: CustomAccountSource[]; loading: boolean; rateEdges: CurrencyRateEdge[] }) {
   return (
     <div className="page-stack">
       <section className="metrics-grid compact" aria-label="Accounts summary">
         <Metric label="Accounts" value={props.accounts.length.toString()} />
         <Metric label="Loaded" value={props.accounts.filter((account) => !account.error).length.toString()} />
         <Metric label="Read errors" value={props.accounts.filter((account) => account.error).length.toString()} tone={props.accounts.some((account) => account.error) ? 'warn' : 'neutral'} />
+        <Metric label="Custom sources" value={props.customSources.length.toString()} />
         <Metric label="Status" value={props.loading ? 'Loading' : 'Ready'} />
       </section>
+
+      <CustomAccountSourcePanel sources={props.customSources} />
 
       <section className="panel">
         <div className="panel-heading">
@@ -652,6 +608,75 @@ function AccountsPage(props: { accounts: PortfolioAccount[]; loading: boolean; r
         />
       </section>
     </div>
+  );
+}
+
+function CustomAccountSourcePanel(props: { sources: CustomAccountSource[] }) {
+  const queryClient = useQueryClient();
+  const [name, setName] = useState('Remote 1Exchange');
+  const [baseUrl, setBaseUrl] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(null);
+    setSaving(true);
+
+    try {
+      const response = await fetch('/api/custom-account-sources', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name, base_url: baseUrl, enabled: true }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null) as { message?: string } | null;
+        throw new Error(body?.message ?? `${response.status} ${response.statusText}`);
+      }
+      await queryClient.invalidateQueries({ queryKey: ['json', '/api/custom-account-sources'] });
+      await queryClient.invalidateQueries({ queryKey: ['json', '/api/accounts'] });
+    } catch (caught) {
+      setError((caught as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="panel credential-create-panel">
+      <div className="panel-heading">
+        <div>
+          <p className="section-label">Custom account source</p>
+          <h2>Register a 1Exchange-compatible BASE URL</h2>
+        </div>
+        <span className="count-chip">{props.sources.length} sources</span>
+      </div>
+      <form className="credential-form" onSubmit={handleSubmit}>
+        <label>
+          Source name
+          <input required value={name} onChange={(event) => setName(event.target.value)} />
+        </label>
+        <label>
+          BASE URL
+          <input required placeholder="http://127.0.0.1:8788" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} />
+        </label>
+        <p className="form-note">The remote server must expose the 1Exchange account API subset: GET /api/accounts and GET /api/accounts?account_id=...</p>
+        <InlineError message={error} />
+        <button className="primary-action" disabled={saving || !name || !baseUrl} type="submit">
+          {saving ? 'Saving...' : 'Register source'}
+        </button>
+      </form>
+      <DataTable
+        empty="No custom account sources registered."
+        headers={['Name', 'BASE URL', 'Status', 'Updated']}
+        rows={props.sources.map((source) => [
+          source.name,
+          <code key="url">{source.base_url}</code>,
+          source.enabled ? 'Enabled' : 'Disabled',
+          source.updated_at,
+        ])}
+      />
+    </section>
   );
 }
 
@@ -1597,14 +1622,24 @@ function fallbackAccountId(credential: Credential) {
   return `${credential.exchange}/local:${credential.id.slice(0, 8)}`;
 }
 
-function virtualCredential(config: VirtualAccountConfig): Credential {
+function accountInfoToPortfolioAccount(account: AccountInfo): PortfolioAccount {
   return {
-    id: config.account_id,
-    exchange: 'VIRTUAL',
-    name: config.name,
+    accountId: account.account_id,
+    credential: accountCredential(account),
+    error: null,
+    positions: account.positions,
+  };
+}
+
+function accountCredential(account: AccountInfo): Credential {
+  const exchange = account.account_id.split('/')[0] || 'ACCOUNT';
+  return {
+    id: account.account_id,
+    exchange,
+    name: account.account_id,
     has_payload: false,
-    created_at: config.created_at,
-    updated_at: config.updated_at,
+    created_at: '',
+    updated_at: '',
   };
 }
 

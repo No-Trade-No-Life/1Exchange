@@ -44,6 +44,12 @@ struct VirtualAccountRow {
 pub async fn list_virtual_accounts(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<VirtualAccountConfig>>, AppError> {
+    Ok(Json(list_virtual_account_configs(&state.db).await?))
+}
+
+pub async fn list_virtual_account_configs(
+    db: &SqlitePool,
+) -> Result<Vec<VirtualAccountConfig>, AppError> {
     let rows = sqlx::query_as::<_, VirtualAccountRow>(
         r#"
         SELECT account_id, name, enabled, sources, created_at, updated_at
@@ -51,13 +57,12 @@ pub async fn list_virtual_accounts(
         ORDER BY created_at DESC
         "#,
     )
-    .fetch_all(&state.db)
+    .fetch_all(db)
     .await?;
 
     rows.into_iter()
         .map(VirtualAccountConfig::try_from)
         .collect::<Result<Vec<_>, _>>()
-        .map(Json)
 }
 
 pub async fn create_virtual_account(

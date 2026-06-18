@@ -72,18 +72,30 @@ AccountInfo（账户） -> Position（持仓 / 资产） -> Product（规格）
 - `GET /api/exchanges`：列出已支持交易所。
 - `GET /api/credentials`：列出本地 Credential 元信息。
 - `POST /api/credentials`：新增 Credential。
+- `GET /api/custom-account-sources`：列出自定义账户来源。
+- `POST /api/custom-account-sources`：注册一个 1Exchange-compatible BASE URL 作为账户来源。
+- `GET /api/accounts`：发现并列出所有账户，包括本地 Credential、Virtual Account 和自定义来源账户。
 - `GET /api/accounts?credential_id=...`：按本地 Credential 拉取账户快照。
-- `GET /api/accounts?account_id=...`：按 AccountID 拉取账户快照；真实账户和 Virtual Account 使用同一接口。
+- `GET /api/accounts?account_id=...`：按 AccountID 拉取账户快照；本地真实账户、Virtual Account 和自定义来源账户使用同一接口。
 - `GET /api/virtual-accounts`：列出本地虚拟账户配置。
 - `POST /api/virtual-accounts`：创建或更新虚拟账户配置。
 - `GET /api/positions?credential_id=...`：按本地 Credential 拉取账户持仓/资产投影。
-- `GET /api/positions?account_id=...`：按 AccountID 拉取账户持仓/资产投影；真实账户和 Virtual Account 使用同一接口。
+- `GET /api/positions?account_id=...`：按 AccountID 拉取账户持仓/资产投影；本地真实账户、Virtual Account 和自定义来源账户使用同一接口。
 - `GET /api/trades?credential_id=...`：按本地 Credential 拉取最近一批历史成交流水。
 - `GET /api/rates?target=USD`：返回当前汇率图快照，汇率边可多跳换算到目标币种。
 - `GET /api/rates/convert?from=USDC&to=USD`：检查单个币种到目标币种的当前换算路径结果。
 - `GET /api/products?exchange=BINANCE`：列出指定交易所的交易产品规格。
 
 当前 `accounts`、`positions`、`products` 已固定标准响应模型，但真实数据拉取仍待交易所 Adapter 接入。
+
+## Custom Account Source
+
+Custom Account Source 允许注册一个 `BASE URL`，让当前实例从远端发现并读取账户。远端可以是另一个 1Exchange 实例，也可以是任何实现了 1Exchange account API 子集的服务。当前需要支持：
+
+- `GET /api/accounts`：返回 `AccountInfo[]`，用于发现账户。
+- `GET /api/accounts?account_id=...`：返回单个 AccountID 对应的 `AccountInfo[]`。
+
+当前实例不会轮询远端来源；只有调用 `GET /api/accounts`、`GET /api/accounts?account_id=...` 或 `GET /api/positions?account_id=...` 时才临时请求远端。
 
 ## Virtual Account
 

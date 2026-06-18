@@ -1,4 +1,5 @@
 mod credentials;
+mod custom_account_sources;
 mod exchanges;
 mod models;
 mod rates;
@@ -102,6 +103,11 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/credentials",
             get(credentials::list_credentials).post(credentials::create_credential),
+        )
+        .route(
+            "/custom-account-sources",
+            get(custom_account_sources::list_custom_account_sources)
+                .post(custom_account_sources::create_custom_account_source),
         )
         .route("/accounts", get(list_accounts))
         .route(
@@ -285,6 +291,21 @@ async fn migrate(db: &SqlitePool) -> anyhow::Result<()> {
     .execute(db)
     .await?;
 
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS custom_account_sources (
+            id TEXT PRIMARY KEY NOT NULL,
+            name TEXT NOT NULL,
+            base_url TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        "#,
+    )
+    .execute(db)
+    .await?;
+
     Ok(())
 }
 
@@ -305,6 +326,10 @@ async fn list_accounts(
     State(state): State<AppState>,
     Query(query): Query<AccountQuery>,
 ) -> Result<Json<Vec<AccountInfo>>, AppError> {
+    if query.credential_id.is_none() && query.account_id.is_none() {
+        return Ok(Json(read_all_accounts(&state.db).await?));
+    }
+
     Ok(Json(vec![read_account(&state.db, query).await?]))
 }
 
@@ -358,9 +383,41 @@ async fn read_account_by_account_id(
         }
     }
 
+    let sources = custom_account_sources::list_custom_account_source_configs(db).await?;
+    if let Some(account) = custom_account_sources::read_account(&sources, account_id).await? {
+        return Ok(account);
+    }
+
     Err(AppError::bad_request(format!(
         "account not found: {account_id}"
     )))
+}
+
+async fn read_all_accounts(db: &SqlitePool) -> Result<Vec<AccountInfo>, AppError> {
+    let mut accounts = Vec::new();
+    for credential in credentials::list_stored_credentials(db).await? {
+        let adapter = exchanges::adapter(&credential.exchange).ok_or_else(|| {
+            AppError::bad_request(format!("unsupported exchange: {}", credential.exchange))
+        })?;
+        accounts.push(adapter.get_account(&credential.payload).await?);
+    }
+
+    for config in virtual_accounts::list_virtual_account_configs(db)
+        .await?
+        .into_iter()
+        .filter(|config| config.enabled)
+    {
+        if let Some(account) =
+            virtual_accounts::compose_virtual_account_by_id(db, &config.account_id).await?
+        {
+            accounts.push(account);
+        }
+    }
+
+    let sources = custom_account_sources::list_custom_account_source_configs(db).await?;
+    accounts.extend(custom_account_sources::discover_accounts(&sources).await?);
+
+    Ok(accounts)
 }
 
 async fn list_trades(
@@ -444,6 +501,15 @@ impl From<anyhow::Error> for AppError {
     fn from(error: anyhow::Error) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: error.to_string(),
+        }
+    }
+}
+
+impl From<reqwest::Error> for AppError {
+    fn from(error: reqwest::Error) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
             message: error.to_string(),
         }
     }
