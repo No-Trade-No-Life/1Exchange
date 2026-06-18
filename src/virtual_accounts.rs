@@ -157,7 +157,10 @@ async fn compose_virtual_account_config(
         let adapter = exchanges::adapter(&credential.exchange).ok_or_else(|| {
             AppError::bad_request(format!("unsupported exchange: {}", credential.exchange))
         })?;
-        let account = adapter.get_account(&credential.payload).await?;
+        let account = adapter
+            .get_account(&credential.payload)
+            .await
+            .map_err(AppError::bad_gateway)?;
         let coefficient = if source.force_zero {
             0.0
         } else {

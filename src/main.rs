@@ -362,7 +362,10 @@ async fn read_credential_account(
         AppError::bad_request(format!("unsupported exchange: {}", credential.exchange))
     })?;
 
-    Ok(adapter.get_account(&credential.payload).await?)
+    adapter
+        .get_account(&credential.payload)
+        .await
+        .map_err(AppError::bad_gateway)
 }
 
 async fn read_account_by_account_id(
@@ -377,7 +380,10 @@ async fn read_account_by_account_id(
         let adapter = exchanges::adapter(&credential.exchange).ok_or_else(|| {
             AppError::bad_request(format!("unsupported exchange: {}", credential.exchange))
         })?;
-        let account = adapter.get_account(&credential.payload).await?;
+        let account = adapter
+            .get_account(&credential.payload)
+            .await
+            .map_err(AppError::bad_gateway)?;
         if account.account_id == account_id {
             return Ok(account);
         }
@@ -399,7 +405,12 @@ async fn read_all_accounts(db: &SqlitePool) -> Result<Vec<AccountInfo>, AppError
         let adapter = exchanges::adapter(&credential.exchange).ok_or_else(|| {
             AppError::bad_request(format!("unsupported exchange: {}", credential.exchange))
         })?;
-        accounts.push(adapter.get_account(&credential.payload).await?);
+        accounts.push(
+            adapter
+                .get_account(&credential.payload)
+                .await
+                .map_err(AppError::bad_gateway)?,
+        );
     }
 
     for config in virtual_accounts::list_virtual_account_configs(db)
@@ -429,7 +440,12 @@ async fn list_trades(
         AppError::bad_request(format!("unsupported exchange: {}", credential.exchange))
     })?;
 
-    Ok(Json(adapter.list_trades(&credential.payload).await?))
+    Ok(Json(
+        adapter
+            .list_trades(&credential.payload)
+            .await
+            .map_err(AppError::bad_gateway)?,
+    ))
 }
 
 async fn list_rates(Query(query): Query<RatesQuery>) -> Json<rates::CurrencyRateSnapshot> {
@@ -450,7 +466,12 @@ async fn list_products(Query(query): Query<ProductsQuery>) -> Result<Json<Vec<Pr
     let adapter = exchanges::adapter(&exchange)
         .ok_or_else(|| AppError::bad_request(format!("unsupported exchange: {exchange}")))?;
 
-    Ok(Json(adapter.list_products().await?))
+    Ok(Json(
+        adapter
+            .list_products()
+            .await
+            .map_err(AppError::bad_gateway)?,
+    ))
 }
 
 impl AppError {
@@ -458,6 +479,13 @@ impl AppError {
         Self {
             status: StatusCode::BAD_REQUEST,
             message: message.into(),
+        }
+    }
+
+    pub fn bad_gateway(error: anyhow::Error) -> Self {
+        Self {
+            status: StatusCode::BAD_GATEWAY,
+            message: error.to_string(),
         }
     }
 }
