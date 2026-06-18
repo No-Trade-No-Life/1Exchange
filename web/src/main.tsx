@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createRoot } from 'react-dom/client';
+import { ErrorBoundary } from 'react-error-boundary';
 import { HashRouter, Link, Navigate, NavLink, Route, Routes, useLocation, useSearchParams } from 'react-router-dom';
 import './styles.css';
 
@@ -267,137 +268,7 @@ function useTradeHistory(credentials: Credential[]) {
 function App() {
   const location = useLocation();
   const page = currentPage(location.pathname);
-  const [credentialsRevision, setCredentialsRevision] = useState(0);
   const health = useJson<Health>('/api/health');
-  const exchanges = useJson<ExchangeInfo[]>('/api/exchanges');
-  const rates = useJson<CurrencyRateSnapshot>('/api/rates?target=USD');
-  const credentials = useJson<Credential[]>(`/api/credentials?refresh=${credentialsRevision}`);
-  const credentialList = credentials.data ?? emptyCredentials;
-  const [selectedCredentialId, setSelectedCredentialId] = useState('');
-  const [selectedExchangeId, setSelectedExchangeId] = useState('BINANCE');
-  const [selectedTradeProductId, setSelectedTradeProductId] = useState('');
-  const [selectedVirtualAccountId, setSelectedVirtualAccountId] = useState('');
-
-  const selectedCredential = credentials.data?.find((item) => item.id === selectedCredentialId);
-  const positionsPath = selectedCredentialId
-    ? `/api/positions?credential_id=${encodeURIComponent(selectedCredentialId)}`
-    : '/api/positions?credential_id=';
-  const productsPath = page.id === 'trade' || page.id === 'products' ? `/api/products?exchange=${encodeURIComponent(selectedExchangeId)}` : null;
-  const accountRegistryPage = page.id === 'accounts' || page.id === 'portfolio';
-  const virtualAccountsPath = accountRegistryPage || page.id === 'virtual-accounts' ? '/api/virtual-accounts' : null;
-  const customAccountSourcesPath = page.id === 'accounts' ? '/api/custom-account-sources' : null;
-  const discoveredAccountsPath = accountRegistryPage ? '/api/accounts' : null;
-  const virtualAccountPath = page.id === 'virtual-accounts' && selectedVirtualAccountId
-    ? `/api/accounts?account_id=${encodeURIComponent(selectedVirtualAccountId)}`
-    : null;
-  const positions = useJson<Position[]>(positionsPath);
-  const products = useJson<Product[]>(productsPath);
-  const virtualAccounts = useJson<VirtualAccountConfig[]>(virtualAccountsPath);
-  const customAccountSources = useJson<CustomAccountSource[]>(customAccountSourcesPath);
-  const discoveredAccounts = useJson<AccountInfo[]>(discoveredAccountsPath);
-  const virtualAccount = useJson<AccountInfo[]>(virtualAccountPath);
-  const portfolio = usePortfolio(credentialList);
-  const virtualAccountConfigs = virtualAccounts.data ?? emptyVirtualAccountConfigs;
-  const accountRegistry = (discoveredAccounts.data ?? []).map(accountInfoToPortfolioAccount);
-  const tradeHistory = useTradeHistory(credentialList);
-  const accountIds = useMemo(
-    () => Object.fromEntries(portfolio.accounts.map((account) => [account.credential.id, account.accountId])),
-    [portfolio.accounts],
-  );
-
-  useEffect(() => {
-    if (!selectedCredentialId && credentials.data?.[0]) {
-      setSelectedCredentialId(credentials.data[0].id);
-    }
-  }, [credentials.data, selectedCredentialId]);
-
-  useEffect(() => {
-    if (products.data?.length && !products.data.some((item) => item.product_id === selectedTradeProductId)) {
-      setSelectedTradeProductId(products.data[0].product_id);
-    }
-  }, [products.data, selectedTradeProductId]);
-
-  const exposure = useMemo(() => summarizePositions(positions.data ?? []), [positions.data]);
-  const overviewPage = (
-      <OverviewPage
-        credentialCount={credentials.data?.length ?? 0}
-        database={health.data?.database ?? '~/.1ex/1ex.sqlite3'}
-        exchangeCount={exchanges.data?.length ?? 0}
-        healthStatus={health.data?.status ?? 'checking'}
-        positionCount={positions.data?.length ?? 0}
-        productCount={products.data?.length ?? 0}
-        selectedCredential={selectedCredential}
-      />
-  );
-  const rateEdges = rates.data?.edges ?? [];
-  const accountsLoading = discoveredAccounts.loading || customAccountSources.loading;
-  const accountsPage = <AccountsPage accounts={accountRegistry} customSources={customAccountSources.data ?? []} loading={accountsLoading} rateEdges={rateEdges} />;
-  const accountDetailPage = <AccountDetailPage accounts={accountRegistry} loading={accountsLoading} rateEdges={rateEdges} />;
-  const portfolioPage = <PortfolioPage accounts={accountRegistry} loading={accountsLoading} rateEdges={rateEdges} />;
-  const historyPage = <TradeHistoryPage accountIds={accountIds} accounts={tradeHistory.accounts} loading={tradeHistory.loading} />;
-  const tradePage = (
-      <TradePage
-        accountIds={accountIds}
-        credentials={credentialList}
-        error={selectedCredentialId ? positions.error : null}
-        exchanges={exchanges.data ?? []}
-        loading={selectedCredentialId ? positions.loading || products.loading : products.loading}
-        positions={selectedCredentialId ? positions.data ?? [] : []}
-        products={products.data ?? []}
-        selectedCredentialId={selectedCredentialId}
-        selectedExchangeId={selectedExchangeId}
-        selectedProductId={selectedTradeProductId}
-        onSelectCredential={setSelectedCredentialId}
-        onSelectExchange={setSelectedExchangeId}
-        onSelectProduct={setSelectedTradeProductId}
-      />
-  );
-  const credentialsPage = (
-    <CredentialsPage
-      accountIds={accountIds}
-      credentials={credentialList}
-      exchanges={exchanges.data ?? []}
-      onCreated={(credential) => {
-        setSelectedCredentialId(credential.id);
-        setCredentialsRevision((value) => value + 1);
-      }}
-    />
-  );
-  const virtualAccountsPage = (
-    <VirtualAccountsPage
-      accountIds={accountIds}
-      accountInfo={virtualAccount.data?.[0] ?? null}
-      configs={virtualAccountConfigs}
-      credentials={credentialList}
-      error={virtualAccounts.error ?? virtualAccount.error}
-      loading={virtualAccounts.loading || virtualAccount.loading}
-      selectedAccountId={selectedVirtualAccountId}
-      onSelectAccount={setSelectedVirtualAccountId}
-    />
-  );
-  const positionsPage = (
-      <PositionsPage
-        accountIds={accountIds}
-        credentials={credentialList}
-        error={selectedCredentialId ? positions.error : null}
-        exposure={exposure}
-        loading={selectedCredentialId ? positions.loading : false}
-        positions={selectedCredentialId ? positions.data ?? [] : []}
-        selectedCredentialId={selectedCredentialId}
-        onSelectCredential={setSelectedCredentialId}
-      />
-  );
-  const productsPage = (
-      <ProductsPage
-        error={products.error}
-        exchanges={exchanges.data ?? []}
-        loading={products.loading}
-        products={products.data ?? []}
-        selectedExchangeId={selectedExchangeId}
-        onSelectExchange={setSelectedExchangeId}
-      />
-  );
-  const exchangesPage = <ExchangesPage exchanges={exchanges.data ?? []} />;
 
   return (
     <div className="app-shell">
@@ -435,22 +306,254 @@ function App() {
         </header>
         <Routes>
           <Route path="/" element={<Navigate replace to="/overview" />} />
-          <Route path="/overview" element={overviewPage} />
-          <Route path="/accounts" element={accountsPage} />
-          <Route path="/accounts/detail" element={accountDetailPage} />
-          <Route path="/portfolio" element={portfolioPage} />
-          <Route path="/trade" element={tradePage} />
-          <Route path="/history" element={historyPage} />
-          <Route path="/credentials" element={credentialsPage} />
-          <Route path="/virtual-accounts" element={virtualAccountsPage} />
-          <Route path="/positions" element={positionsPage} />
-          <Route path="/products" element={productsPage} />
-          <Route path="/exchanges" element={exchangesPage} />
+          <Route path="/overview" element={<PageBoundary><OverviewRoute /></PageBoundary>} />
+          <Route path="/accounts" element={<PageBoundary><AccountsRoute /></PageBoundary>} />
+          <Route path="/accounts/detail" element={<PageBoundary><AccountDetailRoute /></PageBoundary>} />
+          <Route path="/portfolio" element={<PageBoundary><PortfolioRoute /></PageBoundary>} />
+          <Route path="/trade" element={<PageBoundary><TradeRoute /></PageBoundary>} />
+          <Route path="/history" element={<PageBoundary><TradeHistoryRoute /></PageBoundary>} />
+          <Route path="/credentials" element={<PageBoundary><CredentialsRoute /></PageBoundary>} />
+          <Route path="/virtual-accounts" element={<PageBoundary><VirtualAccountsRoute /></PageBoundary>} />
+          <Route path="/positions" element={<PageBoundary><PositionsRoute /></PageBoundary>} />
+          <Route path="/products" element={<PageBoundary><ProductsRoute /></PageBoundary>} />
+          <Route path="/exchanges" element={<PageBoundary><ExchangesRoute /></PageBoundary>} />
           <Route path="*" element={<Navigate replace to="/overview" />} />
         </Routes>
       </main>
     </div>
   );
+}
+
+function PageBoundary(props: { children: React.ReactNode }) {
+  return <ErrorBoundary FallbackComponent={PageErrorFallback}>{props.children}</ErrorBoundary>;
+}
+
+function PageErrorFallback(props: { error: unknown; resetErrorBoundary: () => void }) {
+  const message = props.error instanceof Error ? props.error.message : String(props.error);
+
+  return (
+    <section className="panel empty-detail">
+      <p className="section-label">Page error</p>
+      <h2>Something went wrong</h2>
+      <p className="muted">{message}</p>
+      <button className="secondary-action" type="button" onClick={props.resetErrorBoundary}>Try again</button>
+    </section>
+  );
+}
+
+function OverviewRoute() {
+  const health = useJson<Health>('/api/health');
+  const exchanges = useJson<ExchangeInfo[]>('/api/exchanges');
+  const credentials = useJson<Credential[]>('/api/credentials');
+  const firstCredential = credentials.data?.[0];
+  const positions = useJson<Position[]>(firstCredential ? `/api/positions?credential_id=${encodeURIComponent(firstCredential.id)}` : null);
+  const products = useJson<Product[]>('/api/products?exchange=BINANCE');
+
+  return (
+    <OverviewPage
+      credentialCount={credentials.data?.length ?? 0}
+      database={health.data?.database ?? '~/.1ex/1ex.sqlite3'}
+      exchangeCount={exchanges.data?.length ?? 0}
+      healthStatus={health.data?.status ?? 'checking'}
+      positionCount={positions.data?.length ?? 0}
+      productCount={products.data?.length ?? 0}
+      selectedCredential={firstCredential}
+    />
+  );
+}
+
+function AccountsRoute() {
+  const rates = useJson<CurrencyRateSnapshot>('/api/rates?target=USD');
+  const customAccountSources = useJson<CustomAccountSource[]>('/api/custom-account-sources');
+  const discoveredAccounts = useJson<AccountInfo[]>('/api/accounts');
+  const accounts = (discoveredAccounts.data ?? []).map(accountInfoToPortfolioAccount);
+
+  return (
+    <AccountsPage
+      accounts={accounts}
+      customSources={customAccountSources.data ?? []}
+      loading={discoveredAccounts.loading || customAccountSources.loading}
+      rateEdges={rates.data?.edges ?? []}
+    />
+  );
+}
+
+function AccountDetailRoute() {
+  const [params] = useSearchParams();
+  const accountId = params.get('account_id') ?? '';
+  const rates = useJson<CurrencyRateSnapshot>('/api/rates?target=USD');
+  const account = useJson<AccountInfo[]>(accountId ? `/api/accounts?account_id=${encodeURIComponent(accountId)}` : null);
+  const accounts = (account.data ?? []).map(accountInfoToPortfolioAccount);
+
+  return <AccountDetailPage accounts={accounts} loading={account.loading} rateEdges={rates.data?.edges ?? []} />;
+}
+
+function PortfolioRoute() {
+  const rates = useJson<CurrencyRateSnapshot>('/api/rates?target=USD');
+  const discoveredAccounts = useJson<AccountInfo[]>('/api/accounts');
+  const accounts = (discoveredAccounts.data ?? []).map(accountInfoToPortfolioAccount);
+
+  return <PortfolioPage accounts={accounts} loading={discoveredAccounts.loading} rateEdges={rates.data?.edges ?? []} />;
+}
+
+function TradeRoute() {
+  const exchanges = useJson<ExchangeInfo[]>('/api/exchanges');
+  const credentials = useJson<Credential[]>('/api/credentials');
+  const credentialList = credentials.data ?? emptyCredentials;
+  const portfolio = usePortfolio(credentialList);
+  const accountIds = useMemo(
+    () => Object.fromEntries(portfolio.accounts.map((account) => [account.credential.id, account.accountId])),
+    [portfolio.accounts],
+  );
+  const [selectedCredentialId, setSelectedCredentialId] = useState('');
+  const [selectedExchangeId, setSelectedExchangeId] = useState('BINANCE');
+  const [selectedProductId, setSelectedProductId] = useState('');
+  const positions = useJson<Position[]>(selectedCredentialId ? `/api/positions?credential_id=${encodeURIComponent(selectedCredentialId)}` : null);
+  const products = useJson<Product[]>(`/api/products?exchange=${encodeURIComponent(selectedExchangeId)}`);
+
+  useEffect(() => {
+    if (!selectedCredentialId && credentialList[0]) {
+      setSelectedCredentialId(credentialList[0].id);
+    }
+  }, [credentialList, selectedCredentialId]);
+
+  useEffect(() => {
+    if (products.data?.length && !products.data.some((item) => item.product_id === selectedProductId)) {
+      setSelectedProductId(products.data[0].product_id);
+    }
+  }, [products.data, selectedProductId]);
+
+  return (
+    <TradePage
+      accountIds={accountIds}
+      credentials={credentialList}
+      error={selectedCredentialId ? positions.error : null}
+      exchanges={exchanges.data ?? []}
+      loading={(selectedCredentialId ? positions.loading : false) || products.loading}
+      positions={selectedCredentialId ? positions.data ?? [] : []}
+      products={products.data ?? []}
+      selectedCredentialId={selectedCredentialId}
+      selectedExchangeId={selectedExchangeId}
+      selectedProductId={selectedProductId}
+      onSelectCredential={setSelectedCredentialId}
+      onSelectExchange={setSelectedExchangeId}
+      onSelectProduct={setSelectedProductId}
+    />
+  );
+}
+
+function TradeHistoryRoute() {
+  const credentials = useJson<Credential[]>('/api/credentials');
+  const credentialList = credentials.data ?? emptyCredentials;
+  const portfolio = usePortfolio(credentialList);
+  const tradeHistory = useTradeHistory(credentialList);
+  const accountIds = useMemo(
+    () => Object.fromEntries(portfolio.accounts.map((account) => [account.credential.id, account.accountId])),
+    [portfolio.accounts],
+  );
+
+  return <TradeHistoryPage accountIds={accountIds} accounts={tradeHistory.accounts} loading={tradeHistory.loading} />;
+}
+
+function CredentialsRoute() {
+  const queryClient = useQueryClient();
+  const exchanges = useJson<ExchangeInfo[]>('/api/exchanges');
+  const credentials = useJson<Credential[]>('/api/credentials');
+  const credentialList = credentials.data ?? emptyCredentials;
+  const portfolio = usePortfolio(credentialList);
+  const accountIds = useMemo(
+    () => Object.fromEntries(portfolio.accounts.map((account) => [account.credential.id, account.accountId])),
+    [portfolio.accounts],
+  );
+
+  return (
+    <CredentialsPage
+      accountIds={accountIds}
+      credentials={credentialList}
+      exchanges={exchanges.data ?? []}
+      onCreated={() => queryClient.invalidateQueries({ queryKey: ['json', '/api/credentials'] })}
+    />
+  );
+}
+
+function VirtualAccountsRoute() {
+  const credentials = useJson<Credential[]>('/api/credentials');
+  const virtualAccounts = useJson<VirtualAccountConfig[]>('/api/virtual-accounts');
+  const credentialList = credentials.data ?? emptyCredentials;
+  const portfolio = usePortfolio(credentialList);
+  const accountIds = useMemo(
+    () => Object.fromEntries(portfolio.accounts.map((account) => [account.credential.id, account.accountId])),
+    [portfolio.accounts],
+  );
+  const [selectedAccountId, setSelectedAccountId] = useState('');
+  const virtualAccount = useJson<AccountInfo[]>(selectedAccountId ? `/api/accounts?account_id=${encodeURIComponent(selectedAccountId)}` : null);
+
+  return (
+    <VirtualAccountsPage
+      accountIds={accountIds}
+      accountInfo={virtualAccount.data?.[0] ?? null}
+      configs={virtualAccounts.data ?? emptyVirtualAccountConfigs}
+      credentials={credentialList}
+      error={virtualAccounts.error ?? virtualAccount.error}
+      loading={virtualAccounts.loading || virtualAccount.loading}
+      selectedAccountId={selectedAccountId}
+      onSelectAccount={setSelectedAccountId}
+    />
+  );
+}
+
+function PositionsRoute() {
+  const credentials = useJson<Credential[]>('/api/credentials');
+  const credentialList = credentials.data ?? emptyCredentials;
+  const portfolio = usePortfolio(credentialList);
+  const accountIds = useMemo(
+    () => Object.fromEntries(portfolio.accounts.map((account) => [account.credential.id, account.accountId])),
+    [portfolio.accounts],
+  );
+  const [selectedCredentialId, setSelectedCredentialId] = useState('');
+  const positions = useJson<Position[]>(selectedCredentialId ? `/api/positions?credential_id=${encodeURIComponent(selectedCredentialId)}` : null);
+
+  useEffect(() => {
+    if (!selectedCredentialId && credentialList[0]) {
+      setSelectedCredentialId(credentialList[0].id);
+    }
+  }, [credentialList, selectedCredentialId]);
+
+  return (
+    <PositionsPage
+      accountIds={accountIds}
+      credentials={credentialList}
+      error={selectedCredentialId ? positions.error : null}
+      exposure={summarizePositions(positions.data ?? [])}
+      loading={selectedCredentialId ? positions.loading : false}
+      positions={selectedCredentialId ? positions.data ?? [] : []}
+      selectedCredentialId={selectedCredentialId}
+      onSelectCredential={setSelectedCredentialId}
+    />
+  );
+}
+
+function ProductsRoute() {
+  const exchanges = useJson<ExchangeInfo[]>('/api/exchanges');
+  const [selectedExchangeId, setSelectedExchangeId] = useState('BINANCE');
+  const products = useJson<Product[]>(`/api/products?exchange=${encodeURIComponent(selectedExchangeId)}`);
+
+  return (
+    <ProductsPage
+      error={products.error}
+      exchanges={exchanges.data ?? []}
+      loading={products.loading}
+      products={products.data ?? []}
+      selectedExchangeId={selectedExchangeId}
+      onSelectExchange={setSelectedExchangeId}
+    />
+  );
+}
+
+function ExchangesRoute() {
+  const exchanges = useJson<ExchangeInfo[]>('/api/exchanges');
+
+  return <ExchangesPage exchanges={exchanges.data ?? []} />;
 }
 
 function OverviewPage(props: {
