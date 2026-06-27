@@ -33,6 +33,12 @@ type AccountInfo = {
   positions: Position[];
 };
 
+type AccountRef = {
+  credential_id: string;
+  account_id: string | null;
+  error: string | null;
+};
+
 type Position = {
   position_id: string;
   product_id: string;
@@ -391,8 +397,6 @@ function OverviewRoute() {
   const exchanges = useJson<ExchangeInfo[]>('/api/exchanges');
   const credentials = useJson<Credential[]>('/api/credentials');
   const firstCredential = credentials.data?.[0];
-  const positions = useJson<Position[]>(firstCredential ? `/api/positions?credential_id=${encodeURIComponent(firstCredential.id)}` : null);
-  const products = useJson<Product[]>('/api/products?exchange=BINANCE');
 
   return (
     <OverviewPage
@@ -400,8 +404,6 @@ function OverviewRoute() {
       database={health.data?.database ?? '~/.1ex/1ex.sqlite3'}
       exchangeCount={exchanges.data?.length ?? 0}
       healthStatus={health.data?.status ?? 'checking'}
-      positionCount={positions.data?.length ?? 0}
-      productCount={products.data?.length ?? 0}
       selectedCredential={firstCredential}
     />
   );
@@ -410,14 +412,15 @@ function OverviewRoute() {
 function AccountsRoute() {
   const rates = useJson<CurrencyRateSnapshot>('/api/rates?target=USD');
   const customAccountSources = useJson<CustomAccountSource[]>('/api/custom-account-sources');
-  const discoveredAccounts = useJson<AccountInfo[]>('/api/accounts');
-  const accounts = (discoveredAccounts.data ?? []).map(accountInfoToPortfolioAccount);
+  const credentials = useJson<Credential[]>('/api/credentials');
+  const accountRefs = useJson<AccountRef[]>('/api/account-refs');
+  const accounts = credentialAccounts(credentials.data ?? emptyCredentials, accountRefs.data ?? []);
 
   return (
     <AccountsPage
       accounts={accounts}
       customSources={customAccountSources.data ?? []}
-      loading={discoveredAccounts.loading || customAccountSources.loading}
+      loading={credentials.loading || accountRefs.loading || customAccountSources.loading}
       rateEdges={rates.data?.edges ?? []}
     />
   );
@@ -444,11 +447,11 @@ function PortfolioRoute() {
 function TradeRoute() {
   const exchanges = useJson<ExchangeInfo[]>('/api/exchanges');
   const credentials = useJson<Credential[]>('/api/credentials');
+  const accountRefs = useJson<AccountRef[]>('/api/account-refs');
   const credentialList = credentials.data ?? emptyCredentials;
-  const portfolio = usePortfolio(credentialList);
   const accountIds = useMemo(
-    () => Object.fromEntries(portfolio.accounts.map((account) => [account.credential.id, account.accountId])),
-    [portfolio.accounts],
+    () => accountIdsFromRefs(accountRefs.data ?? []),
+    [accountRefs.data],
   );
   const [selectedCredentialId, setSelectedCredentialId] = useState('');
   const [selectedExchangeId, setSelectedExchangeId] = useState('BINANCE');
@@ -489,12 +492,12 @@ function TradeRoute() {
 
 function TradeHistoryRoute() {
   const credentials = useJson<Credential[]>('/api/credentials');
+  const accountRefs = useJson<AccountRef[]>('/api/account-refs');
   const credentialList = credentials.data ?? emptyCredentials;
-  const portfolio = usePortfolio(credentialList);
   const tradeHistory = useTradeHistory(credentialList);
   const accountIds = useMemo(
-    () => Object.fromEntries(portfolio.accounts.map((account) => [account.credential.id, account.accountId])),
-    [portfolio.accounts],
+    () => accountIdsFromRefs(accountRefs.data ?? []),
+    [accountRefs.data],
   );
 
   return <TradeHistoryPage accountIds={accountIds} accounts={tradeHistory.accounts} loading={tradeHistory.loading} />;
@@ -504,11 +507,11 @@ function CredentialsRoute() {
   const queryClient = useQueryClient();
   const exchanges = useJson<ExchangeInfo[]>('/api/exchanges');
   const credentials = useJson<Credential[]>('/api/credentials');
+  const accountRefs = useJson<AccountRef[]>('/api/account-refs');
   const credentialList = credentials.data ?? emptyCredentials;
-  const portfolio = usePortfolio(credentialList);
   const accountIds = useMemo(
-    () => Object.fromEntries(portfolio.accounts.map((account) => [account.credential.id, account.accountId])),
-    [portfolio.accounts],
+    () => accountIdsFromRefs(accountRefs.data ?? []),
+    [accountRefs.data],
   );
 
   return (
@@ -516,19 +519,22 @@ function CredentialsRoute() {
       accountIds={accountIds}
       credentials={credentialList}
       exchanges={exchanges.data ?? []}
-      onCreated={() => queryClient.invalidateQueries({ queryKey: ['json', '/api/credentials'] })}
+      onCreated={() => {
+        void queryClient.invalidateQueries({ queryKey: ['json', '/api/credentials'] });
+        void queryClient.invalidateQueries({ queryKey: ['json', '/api/account-refs'] });
+      }}
     />
   );
 }
 
 function VirtualAccountsRoute() {
   const credentials = useJson<Credential[]>('/api/credentials');
+  const accountRefs = useJson<AccountRef[]>('/api/account-refs');
   const virtualAccounts = useJson<VirtualAccountConfig[]>('/api/virtual-accounts');
   const credentialList = credentials.data ?? emptyCredentials;
-  const portfolio = usePortfolio(credentialList);
   const accountIds = useMemo(
-    () => Object.fromEntries(portfolio.accounts.map((account) => [account.credential.id, account.accountId])),
-    [portfolio.accounts],
+    () => accountIdsFromRefs(accountRefs.data ?? []),
+    [accountRefs.data],
   );
   const [selectedAccountId, setSelectedAccountId] = useState('');
   const virtualAccount = useJson<AccountInfo[]>(selectedAccountId ? `/api/accounts?account_id=${encodeURIComponent(selectedAccountId)}` : null);
@@ -566,11 +572,11 @@ function FundsRoute() {
 
 function PositionsRoute() {
   const credentials = useJson<Credential[]>('/api/credentials');
+  const accountRefs = useJson<AccountRef[]>('/api/account-refs');
   const credentialList = credentials.data ?? emptyCredentials;
-  const portfolio = usePortfolio(credentialList);
   const accountIds = useMemo(
-    () => Object.fromEntries(portfolio.accounts.map((account) => [account.credential.id, account.accountId])),
-    [portfolio.accounts],
+    () => accountIdsFromRefs(accountRefs.data ?? []),
+    [accountRefs.data],
   );
   const [selectedCredentialId, setSelectedCredentialId] = useState('');
   const positions = useJson<Position[]>(selectedCredentialId ? `/api/positions?credential_id=${encodeURIComponent(selectedCredentialId)}` : null);
@@ -623,8 +629,6 @@ function OverviewPage(props: {
   database: string;
   exchangeCount: number;
   healthStatus: string;
-  positionCount: number;
-  productCount: number;
   selectedCredential?: Credential;
 }) {
   return (
@@ -633,7 +637,7 @@ function OverviewPage(props: {
         <Metric label="API" value={props.healthStatus} tone={props.healthStatus === 'ok' ? 'good' : 'neutral'} />
         <Metric label="Exchanges" value={props.exchangeCount.toString()} />
         <Metric label="Credentials" value={props.credentialCount.toString()} />
-        <Metric label="Loaded positions" value={props.positionCount.toString()} />
+        <Metric label="Live reads" value="On demand" />
       </section>
 
       <section className="panel split-panel">
@@ -653,7 +657,7 @@ function OverviewPage(props: {
           </div>
           <div>
             <dt>Product rows</dt>
-            <dd>{props.productCount}</dd>
+            <dd>On demand</dd>
           </div>
         </dl>
       </section>
@@ -1925,6 +1929,25 @@ function currentPage(pathname: string) {
 
 function accountIdForCredential(credential: Credential, accountIds: AccountIds) {
   return accountIds[credential.id] ?? fallbackAccountId(credential);
+}
+
+function accountIdsFromRefs(refs: AccountRef[]) {
+  return Object.fromEntries(
+    refs.flatMap((accountRef) => (accountRef.account_id ? [[accountRef.credential_id, accountRef.account_id]] : [])),
+  );
+}
+
+function credentialAccounts(credentials: Credential[], refs: AccountRef[]) {
+  const refsByCredential = new Map(refs.map((accountRef) => [accountRef.credential_id, accountRef]));
+  return credentials.map((credential) => {
+    const accountRef = refsByCredential.get(credential.id);
+    return {
+      accountId: accountRef?.account_id ?? fallbackAccountId(credential),
+      credential,
+      error: accountRef?.error ?? null,
+      positions: [],
+    };
+  });
 }
 
 function accountLabel(credential: Credential, accountIds: AccountIds) {

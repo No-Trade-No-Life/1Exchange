@@ -27,6 +27,7 @@ pub struct CredentialMeta {
 }
 
 pub struct StoredCredential {
+    pub id: String,
     pub exchange: String,
     pub payload: Value,
 }
@@ -103,6 +104,7 @@ pub async fn get_stored_credential(
     .await?;
 
     Ok(StoredCredential {
+        id: row.id,
         exchange: row.exchange,
         payload: serde_json::from_str(&row.payload)?,
     })
@@ -122,6 +124,7 @@ pub async fn list_stored_credentials(db: &SqlitePool) -> Result<Vec<StoredCreden
     rows.into_iter()
         .map(|row| {
             Ok(StoredCredential {
+                id: row.id,
                 exchange: row.exchange,
                 payload: serde_json::from_str(&row.payload)?,
             })

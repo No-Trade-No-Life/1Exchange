@@ -40,6 +40,13 @@ struct HealthResponse {
     database: String,
 }
 
+#[derive(Serialize)]
+struct AccountRef {
+    credential_id: String,
+    account_id: Option<String>,
+    error: Option<String>,
+}
+
 #[derive(serde::Deserialize)]
 struct ProductsQuery {
     exchange: Option<String>,
@@ -111,6 +118,7 @@ async fn main() -> anyhow::Result<()> {
             get(custom_account_sources::list_custom_account_sources)
                 .post(custom_account_sources::create_custom_account_source),
         )
+        .route("/account-refs", get(list_account_refs))
         .route("/accounts", get(list_accounts))
         .route(
             "/virtual-accounts",
@@ -379,6 +387,32 @@ async fn list_exchanges() -> Json<Vec<exchanges::ExchangeInfo>> {
     Json(exchanges::list_exchanges())
 }
 
+async fn list_account_refs(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<AccountRef>>, AppError> {
+    let mut refs = Vec::new();
+    for credential in credentials::list_stored_credentials(&state.db).await? {
+        let result = match exchanges::adapter(&credential.exchange) {
+            Some(adapter) => adapter.get_account_id(&credential.payload).await,
+            None => Err(anyhow::anyhow!(
+                "unsupported exchange: {}",
+                credential.exchange
+            )),
+        };
+        let (account_id, error) = match result {
+            Ok(account_id) => (Some(account_id), None),
+            Err(error) => (None, Some(error.to_string())),
+        };
+        refs.push(AccountRef {
+            credential_id: credential.id,
+            account_id,
+            error,
+        });
+    }
+
+    Ok(Json(refs))
+}
+
 async fn list_accounts(
     State(state): State<AppState>,
     Query(query): Query<AccountQuery>,
@@ -438,13 +472,16 @@ async fn read_account_by_account_id(
         let adapter = exchanges::adapter(&credential.exchange).ok_or_else(|| {
             AppError::bad_request(format!("unsupported exchange: {}", credential.exchange))
         })?;
-        let account = adapter
-            .get_account(&credential.payload)
+        let local_account_id = adapter
+            .get_account_id(&credential.payload)
             .await
-            .map(AccountInfo::normalized)
             .map_err(AppError::bad_gateway)?;
-        if account.account_id == account_id {
-            return Ok(account);
+        if local_account_id == account_id {
+            return adapter
+                .get_account(&credential.payload)
+                .await
+                .map(AccountInfo::normalized)
+                .map_err(AppError::bad_gateway);
         }
     }
 
