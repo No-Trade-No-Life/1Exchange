@@ -1,6 +1,13 @@
-use std::collections::{HashMap, VecDeque};
+use std::{
+    collections::{HashMap, VecDeque},
+    time::Duration,
+};
 
-use serde::Serialize;
+use anyhow::Context;
+use serde::{Deserialize, Serialize};
+
+const OKX_TICKER_URL: &str = "https://www.okx.com/api/v5/market/ticker";
+const LIVE_OKX_INSTRUMENTS: &[&str] = &["OKSOL-USDT", "ETH-USDT"];
 
 #[derive(Clone, Debug, Serialize)]
 pub struct CurrencyRateEdge {
@@ -29,6 +36,17 @@ pub fn snapshot(target_currency: &str) -> CurrencyRateSnapshot {
         target_currency: target_currency.to_string(),
         edges: stablecoin_edges(),
     }
+}
+
+pub async fn live_snapshot(target_currency: &str) -> CurrencyRateSnapshot {
+    let mut snapshot = snapshot(target_currency);
+    match live_okx_edges().await {
+        Ok(edges) => snapshot.edges.extend(edges),
+        // RECOVERY: Public market data is optional for the rates endpoint; stablecoin
+        // parity still gives the GUI a useful USD total while operators can retry.
+        Err(error) => eprintln!("failed to fetch live currency rates: {error:#}"),
+    }
+    snapshot
 }
 
 pub fn convert_rate(edges: &[CurrencyRateEdge], from: &str, to: &str) -> Option<f64> {
@@ -87,6 +105,67 @@ fn rate_edge(base: &str, quote: &str, rate: f64, source: &str) -> CurrencyRateEd
     }
 }
 
+async fn live_okx_edges() -> anyhow::Result<Vec<CurrencyRateEdge>> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()?;
+    let mut edges = Vec::new();
+    for inst_id in LIVE_OKX_INSTRUMENTS {
+        edges.push(fetch_okx_edge(&client, inst_id).await?);
+    }
+    Ok(edges)
+}
+
+async fn fetch_okx_edge(
+    client: &reqwest::Client,
+    inst_id: &str,
+) -> anyhow::Result<CurrencyRateEdge> {
+    let response = client
+        .get(OKX_TICKER_URL)
+        .query(&[("instId", inst_id)])
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<OkxTickerResponse>()
+        .await?;
+
+    okx_edge_from_response(inst_id, response)
+}
+
+fn okx_edge_from_response(
+    expected_inst_id: &str,
+    response: OkxTickerResponse,
+) -> anyhow::Result<CurrencyRateEdge> {
+    let ticker = response
+        .data
+        .into_iter()
+        .next()
+        .context("OKX ticker response did not include data")?;
+    let rate = parse_live_rate(&ticker.last)?;
+    let (base, quote) = expected_inst_id
+        .split_once('-')
+        .context("OKX instrument id must contain base and quote")?;
+
+    Ok(CurrencyRateEdge {
+        base_currency: base.to_string(),
+        quote_currency: quote.to_string(),
+        rate,
+        source: format!("okx:{}", ticker.inst_id),
+        updated_at: ticker.ts,
+    })
+}
+
+fn parse_live_rate(value: &str) -> anyhow::Result<f64> {
+    let rate = value
+        .parse::<f64>()
+        .context("OKX ticker last price was not numeric")?;
+    anyhow::ensure!(
+        rate.is_finite() && rate > 0.0,
+        "OKX ticker last price must be positive and finite"
+    );
+    Ok(rate)
+}
+
 fn adjacency(edges: &[CurrencyRateEdge]) -> HashMap<String, Vec<(String, f64)>> {
     let mut graph: HashMap<String, Vec<(String, f64)>> = HashMap::new();
     for edge in edges {
@@ -98,6 +177,19 @@ fn adjacency(edges: &[CurrencyRateEdge]) -> HashMap<String, Vec<(String, f64)>> 
         }
     }
     graph
+}
+
+#[derive(Debug, Deserialize)]
+struct OkxTickerResponse {
+    data: Vec<OkxTicker>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OkxTicker {
+    #[serde(rename = "instId")]
+    inst_id: String,
+    last: String,
+    ts: String,
 }
 
 #[cfg(test)]
@@ -119,5 +211,24 @@ mod tests {
         let edges = stablecoin_edges();
 
         assert_eq!(convert_rate(&edges, "OKSOL", "USD"), None);
+    }
+
+    #[test]
+    fn maps_okx_ticker_to_rate_edge() {
+        let response = OkxTickerResponse {
+            data: vec![OkxTicker {
+                inst_id: "OKSOL-USDT".to_string(),
+                last: "71.16".to_string(),
+                ts: "1782600000000".to_string(),
+            }],
+        };
+
+        let edge = okx_edge_from_response("OKSOL-USDT", response).unwrap();
+
+        assert_eq!(edge.base_currency, "OKSOL");
+        assert_eq!(edge.quote_currency, "USDT");
+        assert_eq!(edge.rate, 71.16);
+        assert_eq!(edge.source, "okx:OKSOL-USDT");
+        assert_eq!(edge.updated_at, "1782600000000");
     }
 }

@@ -551,12 +551,12 @@ async fn list_trades(
 }
 
 async fn list_rates(Query(query): Query<RatesQuery>) -> Json<rates::CurrencyRateSnapshot> {
-    Json(rates::snapshot(query.target.as_deref().unwrap_or("USD")))
+    Json(rates::live_snapshot(query.target.as_deref().unwrap_or("USD")).await)
 }
 
 async fn convert_rate(Query(query): Query<ConvertRateQuery>) -> Json<rates::CurrencyConversion> {
     let target = query.to.as_deref().unwrap_or("USD");
-    let snapshot = rates::snapshot(target);
+    let snapshot = rates::live_snapshot(target).await;
 
     Json(rates::conversion(&snapshot.edges, &query.from, target))
 }
