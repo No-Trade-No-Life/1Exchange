@@ -2,6 +2,7 @@ mod aster;
 mod binance;
 mod bitget;
 mod common;
+mod earnbyai;
 mod gate;
 mod htx;
 mod hyperliquid;
@@ -55,6 +56,7 @@ pub fn credential_required_fields(exchange: &str) -> Option<&'static [&'static s
         bitget::ID => Some(bitget::REQUIRED_FIELDS),
         hyperliquid::ID => Some(hyperliquid::REQUIRED_FIELDS),
         aster::ID => Some(aster::REQUIRED_FIELDS),
+        earnbyai::ID => Some(earnbyai::REQUIRED_FIELDS),
         _ => None,
     }
 }
@@ -74,5 +76,6 @@ fn registered_adapters() -> Vec<Box<dyn ExchangeAdapter>> {
         Box::new(bitget::Adapter),
         Box::new(hyperliquid::Adapter),
         Box::new(aster::Adapter),
+        Box::new(earnbyai::Adapter),
     ]
 }
