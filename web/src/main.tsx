@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createRoot } from 'react-dom/client';
 import { ErrorBoundary } from 'react-error-boundary';
@@ -176,6 +176,18 @@ type CustomAccountSource = {
 };
 
 type AccountIds = Record<string, string>;
+type JsonResource = {
+  error: string | null;
+  loading: boolean;
+  refresh: () => Promise<unknown>;
+  refreshing: boolean;
+};
+
+type BatchLoadState = {
+  loaded: number;
+  loading: boolean;
+  total: number;
+};
 
 type Page = 'overview' | 'accounts' | 'portfolio' | 'trade' | 'history' | 'credentials' | 'virtual-accounts' | 'funds' | 'positions' | 'products' | 'exchanges';
 
@@ -219,72 +231,85 @@ function useJson<T>(path: string | null) {
     },
   });
 
-  return { data: query.data ?? null, error: query.error?.message ?? null, loading: query.isLoading };
+  const refresh = useCallback(() => {
+    if (path === null) {
+      return Promise.resolve(null);
+    }
+    return query.refetch();
+  }, [path, query.refetch]);
+
+  return {
+    data: query.data ?? null,
+    error: query.error?.message ?? null,
+    loading: query.isLoading,
+    refresh,
+    refreshing: query.isFetching && !query.isLoading,
+  };
 }
 
-function usePortfolio(credentials: Credential[]) {
+function usePortfolio(credentials: Credential[], refreshToken: number) {
   const [accounts, setAccounts] = useState<PortfolioAccount[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loadState, setLoadState] = useState<BatchLoadState>({ loaded: 0, loading: false, total: 0 });
 
   useEffect(() => {
     let alive = true;
-    setLoading(credentials.length > 0);
+    setLoadState({ loaded: 0, loading: credentials.length > 0, total: credentials.length });
     setAccounts([]);
 
-    Promise.all(
-      credentials.map(async (credential) => {
-        try {
-          const response = await fetch(`/api/accounts?credential_id=${encodeURIComponent(credential.id)}`);
-          if (!response.ok) {
-            throw new Error(`${response.status} ${response.statusText}`);
-          }
-          const account = ((await response.json()) as AccountInfo[])[0];
-          return {
-            accountId: account?.account_id ?? fallbackAccountId(credential),
-            credential,
-            error: null,
-            positions: account?.positions ?? [],
-          };
-        } catch (caught) {
-          return {
-            accountId: fallbackAccountId(credential),
-            credential,
-            error: (caught as Error).message,
-            positions: [],
-          };
+    async function readCredential(credential: Credential) {
+      try {
+        const response = await fetch(`/api/accounts?credential_id=${encodeURIComponent(credential.id)}`);
+        if (!response.ok) {
+          throw new Error(`${response.status} ${response.statusText}`);
         }
-      }),
-    )
-      .then((nextAccounts) => {
-        if (alive) {
-          setAccounts(nextAccounts);
+        const account = ((await response.json()) as AccountInfo[])[0];
+        return {
+          accountId: account?.account_id ?? fallbackAccountId(credential),
+          credential,
+          error: null,
+          positions: account?.positions ?? [],
+        };
+      } catch (caught) {
+        return {
+          accountId: fallbackAccountId(credential),
+          credential,
+          error: (caught as Error).message,
+          positions: [],
+        };
+      }
+    }
+
+    credentials.forEach((credential) => {
+      void readCredential(credential).then((account) => {
+        if (!alive) {
+          return;
         }
-      })
-      .finally(() => {
-        if (alive) {
-          setLoading(false);
-        }
+        setAccounts((current) => [...current, account]);
+        setLoadState((current) => {
+          const loaded = current.loaded + 1;
+          return { ...current, loaded, loading: loaded < current.total };
+        });
       });
+    });
 
     return () => {
       alive = false;
     };
-  }, [credentials]);
+  }, [credentials, refreshToken]);
 
-  return { accounts, loading };
+  return { accounts, ...loadState };
 }
 
-function useTradeHistory(credentials: Credential[]) {
+function useTradeHistory(credentials: Credential[], refreshToken: number) {
   const [accounts, setAccounts] = useState<TradeAccount[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loadState, setLoadState] = useState<BatchLoadState>({ loaded: 0, loading: false, total: 0 });
 
   useEffect(() => {
     let alive = true;
-    setLoading(credentials.length > 0);
+    setLoadState({ loaded: 0, loading: credentials.length > 0, total: credentials.length });
     setAccounts([]);
 
-    Promise.all(
-      credentials.map(async (credential) => {
+    async function readCredential(credential: Credential) {
         try {
           const response = await fetch(`/api/trades?credential_id=${encodeURIComponent(credential.id)}`);
           if (!response.ok) {
@@ -294,25 +319,27 @@ function useTradeHistory(credentials: Credential[]) {
         } catch (caught) {
           return { credential, error: (caught as Error).message, trades: [] };
         }
-      }),
-    )
-      .then((nextAccounts) => {
-        if (alive) {
-          setAccounts(nextAccounts);
+    }
+
+    credentials.forEach((credential) => {
+      void readCredential(credential).then((account) => {
+        if (!alive) {
+          return;
         }
-      })
-      .finally(() => {
-        if (alive) {
-          setLoading(false);
-        }
+        setAccounts((current) => [...current, account]);
+        setLoadState((current) => {
+          const loaded = current.loaded + 1;
+          return { ...current, loaded, loading: loaded < current.total };
+        });
       });
+    });
 
     return () => {
       alive = false;
     };
-  }, [credentials]);
+  }, [credentials, refreshToken]);
 
-  return { accounts, loading };
+  return { accounts, ...loadState };
 }
 
 function App() {
@@ -392,6 +419,66 @@ function PageErrorFallback(props: { error: unknown; resetErrorBoundary: () => vo
   );
 }
 
+function RefreshScope(props: {
+  batch?: BatchLoadState & { refresh: () => void };
+  children: React.ReactNode;
+  resources: JsonResource[];
+}) {
+  const queryClient = useQueryClient();
+  const loading = props.resources.some((resource) => resource.loading) || Boolean(props.batch?.loading);
+  const refreshing = props.resources.some((resource) => resource.refreshing);
+  const status = refreshStatusLabel(loading, refreshing, props.batch);
+
+  async function refreshPage() {
+    props.batch?.refresh();
+    await Promise.all(props.resources.map((resource) => resource.refresh()));
+  }
+
+  async function refreshAll() {
+    props.batch?.refresh();
+    await queryClient.invalidateQueries({ queryKey: ['json'] });
+  }
+
+  return (
+    <div className="page-stack">
+      <section className="refresh-bar" aria-label="Refresh controls">
+        <LoadingStatus active={loading || refreshing} label={status} />
+        <div className="refresh-actions">
+          <button className="secondary-action" disabled={loading || refreshing} type="button" onClick={() => void refreshPage()}>
+            Refresh page
+          </button>
+          <button className="secondary-action" disabled={loading || refreshing} type="button" onClick={() => void refreshAll()}>
+            Refresh all
+          </button>
+        </div>
+      </section>
+      {props.children}
+    </div>
+  );
+}
+
+function LoadingStatus(props: { active: boolean; label: string }) {
+  return (
+    <span className="loading-status" data-active={props.active ? 'true' : 'false'}>
+      {props.active ? <span className="spinner" aria-hidden="true" /> : <span className="ready-dot" aria-hidden="true" />}
+      {props.label}
+    </span>
+  );
+}
+
+function refreshStatusLabel(loading: boolean, refreshing: boolean, batch?: BatchLoadState) {
+  if (batch?.loading) {
+    return 'Loading ' + batch.loaded + '/' + batch.total;
+  }
+  if (loading) {
+    return 'Loading data';
+  }
+  if (refreshing) {
+    return 'Refreshing';
+  }
+  return 'Ready';
+}
+
 function OverviewRoute() {
   const health = useJson<Health>('/api/health');
   const exchanges = useJson<ExchangeInfo[]>('/api/exchanges');
@@ -399,13 +486,15 @@ function OverviewRoute() {
   const firstCredential = credentials.data?.[0];
 
   return (
-    <OverviewPage
-      credentialCount={credentials.data?.length ?? 0}
-      database={health.data?.database ?? '~/.1ex/1ex.sqlite3'}
-      exchangeCount={exchanges.data?.length ?? 0}
-      healthStatus={health.data?.status ?? 'checking'}
-      selectedCredential={firstCredential}
-    />
+    <RefreshScope resources={[health, exchanges, credentials]}>
+      <OverviewPage
+        credentialCount={credentials.data?.length ?? 0}
+        database={health.data?.database ?? '~/.1ex/1ex.sqlite3'}
+        exchangeCount={exchanges.data?.length ?? 0}
+        healthStatus={health.data?.status ?? 'checking'}
+        selectedCredential={firstCredential}
+      />
+    </RefreshScope>
   );
 }
 
@@ -417,12 +506,14 @@ function AccountsRoute() {
   const accounts = credentialAccounts(credentials.data ?? emptyCredentials, accountRefs.data ?? []);
 
   return (
-    <AccountsPage
-      accounts={accounts}
-      customSources={customAccountSources.data ?? []}
-      loading={credentials.loading || accountRefs.loading || customAccountSources.loading}
-      rateEdges={rates.data?.edges ?? []}
-    />
+    <RefreshScope resources={[rates, customAccountSources, credentials, accountRefs]}>
+      <AccountsPage
+        accounts={accounts}
+        customSources={customAccountSources.data ?? []}
+        loading={credentials.loading || accountRefs.loading || customAccountSources.loading}
+        rateEdges={rates.data?.edges ?? []}
+      />
+    </RefreshScope>
   );
 }
 
@@ -433,15 +524,30 @@ function AccountDetailRoute() {
   const account = useJson<AccountInfo[]>(accountId ? `/api/accounts?account_id=${encodeURIComponent(accountId)}` : null);
   const accounts = (account.data ?? []).map(accountInfoToPortfolioAccount);
 
-  return <AccountDetailPage accounts={accounts} loading={account.loading} rateEdges={rates.data?.edges ?? []} />;
+  return (
+    <RefreshScope resources={[rates, account]}>
+      <AccountDetailPage accounts={accounts} loading={account.loading} rateEdges={rates.data?.edges ?? []} />
+    </RefreshScope>
+  );
 }
 
 function PortfolioRoute() {
   const rates = useJson<CurrencyRateSnapshot>('/api/rates?target=USD');
-  const discoveredAccounts = useJson<AccountInfo[]>('/api/accounts');
-  const accounts = (discoveredAccounts.data ?? []).map(accountInfoToPortfolioAccount);
+  const credentials = useJson<Credential[]>('/api/credentials');
+  const [refreshToken, setRefreshToken] = useState(0);
+  const portfolio = usePortfolio(credentials.data ?? emptyCredentials, refreshToken);
+  const batch = { ...portfolio, refresh: () => setRefreshToken((value) => value + 1) };
 
-  return <PortfolioPage accounts={accounts} loading={discoveredAccounts.loading} rateEdges={rates.data?.edges ?? []} />;
+  return (
+    <RefreshScope batch={batch} resources={[rates, credentials]}>
+      <PortfolioPage
+        accounts={portfolio.accounts}
+        loading={portfolio.loading || credentials.loading}
+        loadState={portfolio}
+        rateEdges={rates.data?.edges ?? []}
+      />
+    </RefreshScope>
+  );
 }
 
 function TradeRoute() {
@@ -472,21 +578,23 @@ function TradeRoute() {
   }, [products.data, selectedProductId]);
 
   return (
-    <TradePage
-      accountIds={accountIds}
-      credentials={credentialList}
-      error={selectedCredentialId ? positions.error : null}
-      exchanges={exchanges.data ?? []}
-      loading={(selectedCredentialId ? positions.loading : false) || products.loading}
-      positions={selectedCredentialId ? positions.data ?? [] : []}
-      products={products.data ?? []}
-      selectedCredentialId={selectedCredentialId}
-      selectedExchangeId={selectedExchangeId}
-      selectedProductId={selectedProductId}
-      onSelectCredential={setSelectedCredentialId}
-      onSelectExchange={setSelectedExchangeId}
-      onSelectProduct={setSelectedProductId}
-    />
+    <RefreshScope resources={[exchanges, credentials, accountRefs, positions, products]}>
+      <TradePage
+        accountIds={accountIds}
+        credentials={credentialList}
+        error={selectedCredentialId ? positions.error : null}
+        exchanges={exchanges.data ?? []}
+        loading={(selectedCredentialId ? positions.loading : false) || products.loading}
+        positions={selectedCredentialId ? positions.data ?? [] : []}
+        products={products.data ?? []}
+        selectedCredentialId={selectedCredentialId}
+        selectedExchangeId={selectedExchangeId}
+        selectedProductId={selectedProductId}
+        onSelectCredential={setSelectedCredentialId}
+        onSelectExchange={setSelectedExchangeId}
+        onSelectProduct={setSelectedProductId}
+      />
+    </RefreshScope>
   );
 }
 
@@ -494,13 +602,19 @@ function TradeHistoryRoute() {
   const credentials = useJson<Credential[]>('/api/credentials');
   const accountRefs = useJson<AccountRef[]>('/api/account-refs');
   const credentialList = credentials.data ?? emptyCredentials;
-  const tradeHistory = useTradeHistory(credentialList);
+  const [refreshToken, setRefreshToken] = useState(0);
+  const tradeHistory = useTradeHistory(credentialList, refreshToken);
+  const batch = { ...tradeHistory, refresh: () => setRefreshToken((value) => value + 1) };
   const accountIds = useMemo(
     () => accountIdsFromRefs(accountRefs.data ?? []),
     [accountRefs.data],
   );
 
-  return <TradeHistoryPage accountIds={accountIds} accounts={tradeHistory.accounts} loading={tradeHistory.loading} />;
+  return (
+    <RefreshScope batch={batch} resources={[credentials, accountRefs]}>
+      <TradeHistoryPage accountIds={accountIds} accounts={tradeHistory.accounts} loading={tradeHistory.loading} loadState={tradeHistory} />
+    </RefreshScope>
+  );
 }
 
 function CredentialsRoute() {
@@ -515,15 +629,17 @@ function CredentialsRoute() {
   );
 
   return (
-    <CredentialsPage
-      accountIds={accountIds}
-      credentials={credentialList}
-      exchanges={exchanges.data ?? []}
-      onCreated={() => {
-        void queryClient.invalidateQueries({ queryKey: ['json', '/api/credentials'] });
-        void queryClient.invalidateQueries({ queryKey: ['json', '/api/account-refs'] });
-      }}
-    />
+    <RefreshScope resources={[exchanges, credentials, accountRefs]}>
+      <CredentialsPage
+        accountIds={accountIds}
+        credentials={credentialList}
+        exchanges={exchanges.data ?? []}
+        onCreated={() => {
+          void queryClient.invalidateQueries({ queryKey: ['json', '/api/credentials'] });
+          void queryClient.invalidateQueries({ queryKey: ['json', '/api/account-refs'] });
+        }}
+      />
+    </RefreshScope>
   );
 }
 
@@ -540,16 +656,18 @@ function VirtualAccountsRoute() {
   const virtualAccount = useJson<AccountInfo[]>(selectedAccountId ? `/api/accounts?account_id=${encodeURIComponent(selectedAccountId)}` : null);
 
   return (
-    <VirtualAccountsPage
-      accountIds={accountIds}
-      accountInfo={virtualAccount.data?.[0] ?? null}
-      configs={virtualAccounts.data ?? emptyVirtualAccountConfigs}
-      credentials={credentialList}
-      error={virtualAccounts.error ?? virtualAccount.error}
-      loading={virtualAccounts.loading || virtualAccount.loading}
-      selectedAccountId={selectedAccountId}
-      onSelectAccount={setSelectedAccountId}
-    />
+    <RefreshScope resources={[credentials, accountRefs, virtualAccounts, virtualAccount]}>
+      <VirtualAccountsPage
+        accountIds={accountIds}
+        accountInfo={virtualAccount.data?.[0] ?? null}
+        configs={virtualAccounts.data ?? emptyVirtualAccountConfigs}
+        credentials={credentialList}
+        error={virtualAccounts.error ?? virtualAccount.error}
+        loading={virtualAccounts.loading || virtualAccount.loading}
+        selectedAccountId={selectedAccountId}
+        onSelectAccount={setSelectedAccountId}
+      />
+    </RefreshScope>
   );
 }
 
@@ -560,13 +678,15 @@ function FundsRoute() {
   const nav = useJson<FundNavSnapshot[]>(selectedFundId ? `/api/fund-nav?fund_id=${encodeURIComponent(selectedFundId)}&limit=25` : null);
 
   return (
-    <FundsPage
-      configs={funds.data ?? emptyFundConfigs}
-      error={funds.error ?? virtualAccounts.error ?? nav.error}
-      loading={funds.loading || virtualAccounts.loading || nav.loading}
-      snapshots={nav.data ?? []}
-      virtualAccounts={virtualAccounts.data ?? emptyVirtualAccountConfigs}
-    />
+    <RefreshScope resources={[funds, virtualAccounts, nav]}>
+      <FundsPage
+        configs={funds.data ?? emptyFundConfigs}
+        error={funds.error ?? virtualAccounts.error ?? nav.error}
+        loading={funds.loading || virtualAccounts.loading || nav.loading}
+        snapshots={nav.data ?? []}
+        virtualAccounts={virtualAccounts.data ?? emptyVirtualAccountConfigs}
+      />
+    </RefreshScope>
   );
 }
 
@@ -588,16 +708,18 @@ function PositionsRoute() {
   }, [credentialList, selectedCredentialId]);
 
   return (
-    <PositionsPage
-      accountIds={accountIds}
-      credentials={credentialList}
-      error={selectedCredentialId ? positions.error : null}
-      exposure={summarizePositions(positions.data ?? [])}
-      loading={selectedCredentialId ? positions.loading : false}
-      positions={selectedCredentialId ? positions.data ?? [] : []}
-      selectedCredentialId={selectedCredentialId}
-      onSelectCredential={setSelectedCredentialId}
-    />
+    <RefreshScope resources={[credentials, accountRefs, positions]}>
+      <PositionsPage
+        accountIds={accountIds}
+        credentials={credentialList}
+        error={selectedCredentialId ? positions.error : null}
+        exposure={summarizePositions(positions.data ?? [])}
+        loading={selectedCredentialId ? positions.loading : false}
+        positions={selectedCredentialId ? positions.data ?? [] : []}
+        selectedCredentialId={selectedCredentialId}
+        onSelectCredential={setSelectedCredentialId}
+      />
+    </RefreshScope>
   );
 }
 
@@ -607,21 +729,27 @@ function ProductsRoute() {
   const products = useJson<Product[]>(`/api/products?exchange=${encodeURIComponent(selectedExchangeId)}`);
 
   return (
-    <ProductsPage
-      error={products.error}
-      exchanges={exchanges.data ?? []}
-      loading={products.loading}
-      products={products.data ?? []}
-      selectedExchangeId={selectedExchangeId}
-      onSelectExchange={setSelectedExchangeId}
-    />
+    <RefreshScope resources={[exchanges, products]}>
+      <ProductsPage
+        error={products.error}
+        exchanges={exchanges.data ?? []}
+        loading={products.loading}
+        products={products.data ?? []}
+        selectedExchangeId={selectedExchangeId}
+        onSelectExchange={setSelectedExchangeId}
+      />
+    </RefreshScope>
   );
 }
 
 function ExchangesRoute() {
   const exchanges = useJson<ExchangeInfo[]>('/api/exchanges');
 
-  return <ExchangesPage exchanges={exchanges.data ?? []} />;
+  return (
+    <RefreshScope resources={[exchanges]}>
+      <ExchangesPage exchanges={exchanges.data ?? []} />
+    </RefreshScope>
+  );
 }
 
 function OverviewPage(props: {
@@ -665,7 +793,7 @@ function OverviewPage(props: {
   );
 }
 
-function PortfolioPage(props: { accounts: PortfolioAccount[]; loading: boolean; rateEdges: CurrencyRateEdge[] }) {
+function PortfolioPage(props: { accounts: PortfolioAccount[]; loading: boolean; loadState: BatchLoadState; rateEdges: CurrencyRateEdge[] }) {
   const summary = summarizePortfolio(props.accounts);
   const assetRows = summarizePortfolioAssets(props.accounts);
   const usdValue = convertCurrencyTotals(summary.notionalByCurrency, 'USD', props.rateEdges);
@@ -687,7 +815,10 @@ function PortfolioPage(props: { accounts: PortfolioAccount[]; loading: boolean; 
             <p className="section-label">By account</p>
             <h2>Account summary</h2>
           </div>
-          <span className="count-chip">{props.loading ? 'Loading' : `${props.accounts.length} accounts`}</span>
+          <LoadingStatus
+            active={props.loading}
+            label={props.loading ? `Loading ${props.loadState.loaded}/${props.loadState.total}` : `${props.accounts.length} accounts`}
+          />
         </div>
         <DataTable
           empty="No credentials yet. Add credentials before loading a portfolio summary."
@@ -716,7 +847,7 @@ function PortfolioPage(props: { accounts: PortfolioAccount[]; loading: boolean; 
             <p className="section-label">By product</p>
             <h2>Asset exposure</h2>
           </div>
-          <span className="count-chip">{assetRows.length} products</span>
+          <LoadingStatus active={props.loading} label={props.loading ? `Loading ${props.loadState.loaded}/${props.loadState.total}` : `${assetRows.length} products`} />
         </div>
         <DataTable
           empty="No positions were loaded from saved credentials."
@@ -756,7 +887,7 @@ function AccountsPage(props: { accounts: PortfolioAccount[]; customSources: Cust
             <p className="section-label">Account registry</p>
             <h2>Accounts</h2>
           </div>
-          <span className="count-chip">{props.loading ? 'Loading' : `${props.accounts.length} accounts`}</span>
+          <LoadingStatus active={props.loading} label={props.loading ? 'Loading' : `${props.accounts.length} accounts`} />
         </div>
         <DataTable
           empty="No accounts loaded yet. Add credentials first, then the account registry will appear here."
@@ -954,7 +1085,7 @@ function AccountIdLink(props: { accountId: string }) {
   );
 }
 
-function TradeHistoryPage(props: { accountIds: AccountIds; accounts: TradeAccount[]; loading: boolean }) {
+function TradeHistoryPage(props: { accountIds: AccountIds; accounts: TradeAccount[]; loading: boolean; loadState: BatchLoadState }) {
   const trades = props.accounts.flatMap((account) =>
     account.trades.map((trade) => ({ ...trade, accountId: accountIdForCredential(account.credential, props.accountIds) })),
   );
@@ -975,7 +1106,10 @@ function TradeHistoryPage(props: { accountIds: AccountIds; accounts: TradeAccoun
             <p className="section-label">Recent fills</p>
             <h2>Historical trade flow</h2>
           </div>
-          <span className="count-chip">{props.loading ? 'Loading' : `${trades.length} fills`}</span>
+          <LoadingStatus
+            active={props.loading}
+            label={props.loading ? `Loading ${props.loadState.loaded}/${props.loadState.total}` : `${trades.length} fills`}
+          />
         </div>
         <DataTable
           empty="No trade fills returned. Some exchanges need trade-history permissions or a recent activity window."
@@ -1771,7 +1905,7 @@ function PositionsPage(props: {
             <p className="section-label">Live read</p>
             <h2>Positions</h2>
           </div>
-          {props.loading ? <span className="count-chip">Loading</span> : <span className="count-chip">{props.positions.length} rows</span>}
+          <LoadingStatus active={props.loading} label={props.loading ? 'Loading' : `${props.positions.length} rows`} />
         </div>
         <InlineError message={props.error} />
         <DataTable
@@ -1825,7 +1959,7 @@ function ProductsPage(props: {
             <p className="section-label">Public specs</p>
             <h2>Products</h2>
           </div>
-          {props.loading ? <span className="count-chip">Loading</span> : <span className="count-chip">{props.products.length} rows</span>}
+          <LoadingStatus active={props.loading} label={props.loading ? 'Loading' : `${props.products.length} rows`} />
         </div>
         <InlineError message={props.error} />
         <DataTable
