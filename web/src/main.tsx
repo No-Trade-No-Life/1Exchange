@@ -3,6 +3,14 @@ import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tan
 import { createRoot } from 'react-dom/client';
 import { ErrorBoundary } from 'react-error-boundary';
 import { HashRouter, Link, Navigate, NavLink, Route, Routes, useLocation, useSearchParams } from 'react-router-dom';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Badge as UiBadge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Input } from '@/components/ui/input';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { cn } from '@/lib/utils';
 import './styles.css';
 
 type Health = {
@@ -347,38 +355,41 @@ function App() {
   const health = useJson<Health>('/api/health');
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar" aria-label="Primary navigation">
-        <div className="brand-block">
-          <span className="brand-mark">1E</span>
+    <div className="flex min-h-screen bg-muted/30 max-md:block">
+      <aside className="sticky top-0 flex h-screen w-72 shrink-0 flex-col gap-7 border-r bg-sidebar p-6 text-sidebar-foreground max-md:static max-md:h-auto max-md:w-full" aria-label="Primary navigation">
+        <div className="flex items-center gap-3">
+          <span className="grid size-10 place-items-center rounded-lg bg-sidebar-primary text-sm font-semibold text-sidebar-primary-foreground">1E</span>
           <div>
-            <strong>1Exchange</strong>
-            <span>Local account console</span>
+            <strong className="block">1Exchange</strong>
+            <span className="block text-sm text-muted-foreground">Local account console</span>
           </div>
         </div>
-        <nav className="nav-list">
+        <nav className="flex flex-col gap-1">
           {pages.map((item) => (
             <NavLink
-              className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
+              className={({ isActive }) =>
+                cn(
+                  'rounded-lg px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50',
+                  isActive && 'bg-sidebar-accent text-sidebar-accent-foreground',
+                )
+              }
               key={item.id}
               to={item.path}
             >
-              <span>{item.label}</span>
-              <small>{item.hint}</small>
+              <span className="block font-medium text-foreground">{item.label}</span>
+              <small className="block text-xs text-muted-foreground">{item.hint}</small>
             </NavLink>
           ))}
         </nav>
       </aside>
 
-      <main className="workspace">
-        <header className="topbar">
+      <main className="min-w-0 flex-1 p-7 max-md:p-4">
+        <header className="mb-6 flex items-start justify-between gap-5 max-md:flex-col">
           <div>
-            <p className="section-label">{page.label}</p>
-            <h1>{page.hint}</h1>
+            <SectionLabel>{page.label}</SectionLabel>
+            <h1 className="text-2xl font-semibold leading-tight">{page.hint}</h1>
           </div>
-          <div className="status-pill" data-state={health.data?.status === 'ok' ? 'ok' : 'pending'}>
-            <span /> API {health.data?.status ?? 'checking'}
-          </div>
+          <UiBadge variant={health.data?.status === 'ok' ? 'secondary' : 'outline'}>API {health.data?.status ?? 'checking'}</UiBadge>
         </header>
         <Routes>
           <Route path="/" element={<Navigate replace to="/overview" />} />
@@ -408,12 +419,16 @@ function PageErrorFallback(props: { error: unknown; resetErrorBoundary: () => vo
   const message = props.error instanceof Error ? props.error.message : String(props.error);
 
   return (
-    <section className="panel empty-detail">
-      <p className="section-label">Page error</p>
-      <h2>Something went wrong</h2>
-      <p className="muted">{message}</p>
-      <button className="secondary-action" type="button" onClick={props.resetErrorBoundary}>Try again</button>
-    </section>
+    <Card>
+      <CardHeader>
+        <SectionLabel>Page error</SectionLabel>
+        <CardTitle>Something went wrong</CardTitle>
+        <CardDescription>{message}</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <Button variant="outline" type="button" onClick={props.resetErrorBoundary}>Try again</Button>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -439,17 +454,19 @@ function RefreshScope(props: {
 
   return (
     <div className="page-stack">
-      <section className="refresh-bar" aria-label="Refresh controls">
+      <Card className="py-3" aria-label="Refresh controls">
+        <CardContent className="flex items-center justify-between gap-3 max-md:flex-col max-md:items-stretch">
         <LoadingStatus active={loading || refreshing} label={status} />
-        <div className="refresh-actions">
-          <button className="secondary-action" disabled={loading || refreshing} type="button" onClick={() => void refreshPage()}>
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button variant="outline" disabled={loading || refreshing} type="button" onClick={() => void refreshPage()}>
             Refresh page
-          </button>
-          <button className="secondary-action" disabled={loading || refreshing} type="button" onClick={() => void refreshAll()}>
+          </Button>
+          <Button variant="outline" disabled={loading || refreshing} type="button" onClick={() => void refreshAll()}>
             Refresh all
-          </button>
+          </Button>
         </div>
-      </section>
+        </CardContent>
+      </Card>
       {props.children}
     </div>
   );
@@ -457,8 +474,8 @@ function RefreshScope(props: {
 
 function LoadingStatus(props: { active: boolean; label: string }) {
   return (
-    <span className="loading-status" data-active={props.active ? 'true' : 'false'}>
-      {props.active ? <span className="spinner" aria-hidden="true" /> : <span className="ready-dot" aria-hidden="true" />}
+    <span className={cn('inline-flex w-fit items-center gap-2 text-xs font-medium text-muted-foreground', props.active && 'text-foreground')}>
+      {props.active ? <span className="size-3 animate-spin rounded-full border-2 border-muted border-t-primary" aria-hidden="true" /> : <span className="size-3 rounded-full bg-primary" aria-hidden="true" />}
       {props.label}
     </span>
   );
@@ -904,17 +921,17 @@ function CustomAccountSourcePanel(props: { sources: CustomAccountSource[] }) {
       <form className="credential-form" onSubmit={handleSubmit}>
         <label>
           Source name
-          <input required value={name} onChange={(event) => setName(event.target.value)} />
+          <Input required value={name} onChange={(event) => setName(event.target.value)} />
         </label>
         <label>
           BASE URL
-          <input required placeholder="http://127.0.0.1:8788" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} />
+          <Input required placeholder="http://127.0.0.1:8788" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} />
         </label>
         <p className="form-note">The remote server must expose the 1Exchange account API subset: GET /api/accounts and GET /api/accounts?account_id=...</p>
         <InlineError message={error} />
-        <button className="primary-action" disabled={saving || !name || !baseUrl} type="submit">
+        <Button disabled={saving || !name || !baseUrl} type="submit">
           {saving ? 'Saving...' : 'Register source'}
-        </button>
+        </Button>
       </form>
       <DataTable
         empty="No custom account sources registered."
@@ -1172,37 +1189,20 @@ function VirtualAccountsPage(props: {
       <section className="panel">
         <PanelTitle label="Virtual account configs" title="Local linear compositions" action={`${props.configs.length} configs`} />
         <InlineError message={props.error} />
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Account</th>
-                <th>Name</th>
-                <th>Status</th>
-                <th>Sources</th>
-                <th>Updated</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {props.configs.map((config) => (
-                <tr key={config.account_id}>
-                  <td>{config.account_id}</td>
-                  <td>{config.name}</td>
-                  <td>{config.enabled ? 'Enabled' : 'Disabled'}</td>
-                  <td>{config.sources.filter((source) => source.enabled).length}/{config.sources.length}</td>
-                  <td>{config.updated_at}</td>
-                  <td>
-                    <button className="secondary-action" disabled={!config.enabled} type="button" onClick={() => props.onSelectAccount(config.account_id)}>
-                      Compose now
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {!props.configs.length ? <div className="empty-state">No virtual account configs yet.</div> : null}
-        </div>
+        <DataTable
+          empty="No virtual account configs yet."
+          headers={['Account', 'Name', 'Status', 'Sources', 'Updated', 'Action']}
+          rows={props.configs.map((config) => [
+            <code key="account">{config.account_id}</code>,
+            config.name,
+            config.enabled ? 'Enabled' : 'Disabled',
+            config.sources.filter((source) => source.enabled).length + '/' + config.sources.length,
+            config.updated_at,
+            <Button variant="outline" disabled={!config.enabled} key="action" type="button" onClick={() => props.onSelectAccount(config.account_id)}>
+              Compose now
+            </Button>,
+          ])}
+        />
       </section>
 
       <section className="panel">
@@ -1284,11 +1284,11 @@ function VirtualAccountCreatePanel(props: { accountIds: AccountIds; credentials:
       <form className="credential-form" onSubmit={handleSubmit}>
         <label>
           Virtual account ID
-          <input required value={accountId} onChange={(event) => setAccountId(event.target.value)} />
+          <Input required value={accountId} onChange={(event) => setAccountId(event.target.value)} />
         </label>
         <label>
           Name
-          <input required value={name} onChange={(event) => setName(event.target.value)} />
+          <Input required value={name} onChange={(event) => setName(event.target.value)} />
         </label>
         <p className="form-note">Coefficient expresses add/subtract/multiply/divide: 1 adds, -1 subtracts, 2 multiplies, 0.5 divides by 2. The account is composed only when queried.</p>
         <div className="schema-grid">
@@ -1299,20 +1299,20 @@ function VirtualAccountCreatePanel(props: { accountIds: AccountIds; credentials:
                   <option key={credential.id} value={credential.id}>{accountLabel(credential, props.accountIds)}</option>
                 ))}
               </select>
-              <input inputMode="decimal" value={source.coefficient} onChange={(event) => setSourceAt(sources, setSources, index, { ...source, coefficient: Number(event.target.value) })} />
+              <Input inputMode="decimal" value={source.coefficient} onChange={(event) => setSourceAt(sources, setSources, index, { ...source, coefficient: Number(event.target.value) })} />
               <label className="inline-check">
-                <input checked={source.force_zero} type="checkbox" onChange={(event) => setSourceAt(sources, setSources, index, { ...source, force_zero: event.target.checked })} />
+                <Checkbox checked={source.force_zero} onCheckedChange={(checked) => setSourceAt(sources, setSources, index, { ...source, force_zero: checked === true })} />
                 Force zero
               </label>
-              <button className="secondary-action" type="button" onClick={() => setSources(sources.filter((_, sourceIndex) => sourceIndex !== index))}>Remove</button>
+              <Button variant="outline" type="button" onClick={() => setSources(sources.filter((_, sourceIndex) => sourceIndex !== index))}>Remove</Button>
             </div>
           ))}
         </div>
-        <button className="secondary-action" type="button" onClick={() => setSources([...sources, { credential_id: props.credentials[0]?.id ?? '', coefficient: 1, enabled: true, force_zero: false }])}>Add source</button>
+        <Button variant="outline" type="button" onClick={() => setSources([...sources, { credential_id: props.credentials[0]?.id ?? '', coefficient: 1, enabled: true, force_zero: false }])}>Add source</Button>
         <InlineError message={error} />
-        <button className="primary-action" disabled={saving || !props.credentials.length || !sources.length} type="submit">
+        <Button disabled={saving || !props.credentials.length || !sources.length} type="submit">
           {saving ? 'Saving...' : 'Save virtual account'}
-        </button>
+        </Button>
       </form>
     </section>
   );
@@ -1360,9 +1360,9 @@ function FundsPage(props: {
             fund.poll_interval_seconds + 's',
             fund.last_sampled_at ?? '-',
             fund.enabled ? 'Enabled' : 'Disabled',
-            <button className="secondary-action" key="sample" type="button" onClick={() => void sampleFund(fund.id)}>
+            <Button variant="outline" key="sample" type="button" onClick={() => void sampleFund(fund.id)}>
               Sample now
-            </button>,
+            </Button>,
           ])}
         />
       </section>
@@ -1441,7 +1441,7 @@ function FundCreatePanel(props: { virtualAccounts: VirtualAccountConfig[] }) {
       <form className="credential-form" onSubmit={handleSubmit}>
         <label>
           Fund name
-          <input required value={name} onChange={(event) => setName(event.target.value)} />
+          <Input required value={name} onChange={(event) => setName(event.target.value)} />
         </label>
         <label>
           Virtual account
@@ -1454,16 +1454,16 @@ function FundCreatePanel(props: { virtualAccounts: VirtualAccountConfig[] }) {
         </label>
         <label>
           Target currency
-          <input required value={targetCurrency} onChange={(event) => setTargetCurrency(event.target.value.toUpperCase())} />
+          <Input required value={targetCurrency} onChange={(event) => setTargetCurrency(event.target.value.toUpperCase())} />
         </label>
         <label>
           Poll interval seconds
-          <input min={60} inputMode="numeric" type="number" value={intervalSeconds} onChange={(event) => setIntervalSeconds(Number(event.target.value))} />
+          <Input min={60} inputMode="numeric" type="number" value={intervalSeconds} onChange={(event) => setIntervalSeconds(Number(event.target.value))} />
         </label>
         <InlineError message={error} />
-        <button className="primary-action" disabled={saving || !props.virtualAccounts.length} type="submit">
+        <Button disabled={saving || !props.virtualAccounts.length} type="submit">
           {saving ? 'Saving...' : 'Save fund'}
-        </button>
+        </Button>
       </form>
     </section>
   );
@@ -1535,7 +1535,7 @@ function CredentialCreatePanel(props: { exchanges: ExchangeInfo[]; onCreated: (c
         </label>
         <label>
           Credential name
-          <input required placeholder="readonly-main" value={name} onChange={(event) => setName(event.target.value)} />
+          <Input required placeholder="readonly-main" value={name} onChange={(event) => setName(event.target.value)} />
         </label>
         <div className="credential-field-grid">
           {fields.map((field) => (
@@ -1553,9 +1553,9 @@ function CredentialCreatePanel(props: { exchanges: ExchangeInfo[]; onCreated: (c
         </div>
         <InlineError message={error} />
         {createdName ? <p className="success-note">Saved {createdName}. Payload is stored server-side and hidden from this page.</p> : null}
-        <button className="primary-action" disabled={saving || !exchangeId || !name} type="submit">
+        <Button disabled={saving || !exchangeId || !name} type="submit">
           {saving ? 'Saving...' : 'Save credential'}
-        </button>
+        </Button>
       </form>
     </section>
   );
@@ -1757,55 +1757,71 @@ function ExchangesPage(props: { exchanges: ExchangeInfo[] }) {
   );
 }
 
+function SectionLabel(props: { children: React.ReactNode }) {
+  return <p className="mb-1 text-xs font-semibold uppercase tracking-normal text-muted-foreground">{props.children}</p>;
+}
+
 function Metric(props: { label: string; value: string; tone?: 'neutral' | 'good' | 'warn' }) {
+  const valueClassName = props.tone === 'warn' ? 'text-destructive' : props.tone === 'good' ? 'text-primary' : 'text-foreground';
+
   return (
-    <div className="metric" data-tone={props.tone ?? 'neutral'}>
-      <span>{props.label}</span>
-      <strong>{props.value}</strong>
-    </div>
+    <Card size="sm">
+      <CardHeader>
+        <CardDescription>{props.label}</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <strong className={cn('break-words text-2xl font-semibold leading-tight', valueClassName)}>{props.value}</strong>
+      </CardContent>
+    </Card>
   );
 }
 
 function DataTable(props: { empty: string; headers: string[]; rows: React.ReactNode[][] }) {
   if (props.rows.length === 0) {
-    return <div className="empty-state">{props.empty}</div>;
+    return (
+      <Alert className="m-4">
+        <AlertDescription>{props.empty}</AlertDescription>
+      </Alert>
+    );
   }
 
   return (
-    <div className="table-wrap">
-      <table>
-        <thead>
-          <tr>
+    <Table>
+      <TableHeader>
+        <TableRow>
             {props.headers.map((header) => (
-              <th key={header}>{header}</th>
+            <TableHead key={header}>{header}</TableHead>
             ))}
-          </tr>
-        </thead>
-        <tbody>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
           {props.rows.map((row, rowIndex) => (
-            <tr key={rowIndex}>
+          <TableRow key={rowIndex}>
               {row.map((cell, cellIndex) => (
-                <td key={cellIndex}>{cell}</td>
+              <TableCell key={cellIndex}>{cell}</TableCell>
               ))}
-            </tr>
+          </TableRow>
           ))}
-        </tbody>
-      </table>
-    </div>
+      </TableBody>
+    </Table>
   );
 }
 
 function Badge(props: { children: React.ReactNode }) {
-  return <span className="badge">{props.children}</span>;
+  return <UiBadge variant="secondary">{props.children}</UiBadge>;
 }
 
 function InlineError(props: { message: string | null }) {
-  return props.message ? <div className="inline-error">{props.message}</div> : null;
+  return props.message ? (
+    <Alert className="m-4" variant="destructive">
+      <AlertTitle>Request failed</AlertTitle>
+      <AlertDescription>{props.message}</AlertDescription>
+    </Alert>
+  ) : null;
 }
 
 function Value(props: { value: number }) {
-  const tone = props.value > 0 ? 'positive' : props.value < 0 ? 'negative' : 'flat';
-  return <span className="value" data-tone={tone}>{formatNumber(props.value)}</span>;
+  return <span className={cn('font-medium', props.value < 0 && 'text-destructive')}>{formatNumber(props.value)}</span>;
 }
 
 function currentPage(pathname: string) {
