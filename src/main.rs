@@ -365,6 +365,7 @@ async fn read_credential_account(
     adapter
         .get_account(&credential.payload)
         .await
+        .map(AccountInfo::normalized)
         .map_err(AppError::bad_gateway)
 }
 
@@ -383,6 +384,7 @@ async fn read_account_by_account_id(
         let account = adapter
             .get_account(&credential.payload)
             .await
+            .map(AccountInfo::normalized)
             .map_err(AppError::bad_gateway)?;
         if account.account_id == account_id {
             return Ok(account);
@@ -409,6 +411,7 @@ async fn read_all_accounts(db: &SqlitePool) -> Result<Vec<AccountInfo>, AppError
             adapter
                 .get_account(&credential.payload)
                 .await
+                .map(AccountInfo::normalized)
                 .map_err(AppError::bad_gateway)?,
         );
     }
@@ -426,7 +429,12 @@ async fn read_all_accounts(db: &SqlitePool) -> Result<Vec<AccountInfo>, AppError
     }
 
     let sources = custom_account_sources::list_custom_account_source_configs(db).await?;
-    accounts.extend(custom_account_sources::discover_accounts(&sources).await?);
+    accounts.extend(
+        custom_account_sources::discover_accounts(&sources)
+            .await?
+            .into_iter()
+            .map(AccountInfo::normalized),
+    );
 
     Ok(accounts)
 }

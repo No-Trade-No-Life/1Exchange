@@ -273,6 +273,7 @@ fn map_perp_asset(row: Value, prices: &Value) -> Option<Position> {
         notional_currency: Some("USDT".to_string()),
         floating_profit: common::f64_value(&row, "unrealizedProfit"),
         comment: None,
+        ..Position::default()
     })
 }
 
@@ -311,6 +312,7 @@ fn map_perp_position(row: Value) -> Option<Position> {
         notional_currency: Some("USDT".to_string()),
         floating_profit: common::f64_value(&row, "unRealizedProfit"),
         comment: None,
+        ..Position::default()
     })
 }
 

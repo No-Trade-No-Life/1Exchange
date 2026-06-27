@@ -362,6 +362,7 @@ fn map_spot_position(row: Value) -> Option<Position> {
         notional_currency: Some("USDT".to_string()),
         floating_profit: 0.0,
         comment: None,
+        ..Position::default()
     })
 }
 
@@ -391,6 +392,7 @@ fn map_union_swap_asset(row: Value) -> Option<Position> {
         notional_currency: Some(currency),
         floating_profit: common::f64_value(&row, "profit_unreal"),
         comment: None,
+        ..Position::default()
     })
 }
 
@@ -423,6 +425,7 @@ fn map_swap_position(row: Value) -> Option<Position> {
         notional_currency: Some("USDT".to_string()),
         floating_profit: common::f64_value(&row, "profit_unreal"),
         comment: None,
+        ..Position::default()
     })
 }
 

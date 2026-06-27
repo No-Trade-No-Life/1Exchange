@@ -149,7 +149,12 @@ async fn fetch_remote_accounts(url: &str) -> Result<Vec<AccountInfo>, AppError> 
         )));
     }
 
-    Ok(response.json::<Vec<AccountInfo>>().await?)
+    Ok(response
+        .json::<Vec<AccountInfo>>()
+        .await?
+        .into_iter()
+        .map(AccountInfo::normalized)
+        .collect())
 }
 
 fn validate_request(request: &CreateCustomAccountSourceRequest) -> Result<(), AppError> {

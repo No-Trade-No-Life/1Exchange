@@ -270,6 +270,7 @@ fn map_asset_position(row: Value) -> Option<Position> {
         notional_currency: Some(coin),
         floating_profit: 0.0,
         comment: None,
+        ..Position::default()
     })
 }
 
@@ -300,6 +301,7 @@ fn map_derivative_position(category: &str, row: Value) -> Option<Position> {
         notional_currency: Some(bitget_notional_currency(category).to_string()),
         floating_profit: common::f64_value(&row, "unrealisedPnl"),
         comment: None,
+        ..Position::default()
     })
 }
 

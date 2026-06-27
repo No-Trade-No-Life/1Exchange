@@ -199,6 +199,7 @@ fn map_spot_position(row: Value) -> Option<Position> {
         notional_currency: Some("USDT".to_string()),
         floating_profit: 0.0,
         comment: None,
+        ..Position::default()
     })
 }
 
@@ -224,6 +225,7 @@ fn map_unified_position(row: Value) -> Option<Position> {
         notional_currency: Some("USDT".to_string()),
         floating_profit: 0.0,
         comment: None,
+        ..Position::default()
     })
 }
 
@@ -250,6 +252,7 @@ fn map_earn_position(row: Value) -> Option<Position> {
         notional_currency: Some("USDT".to_string()),
         floating_profit: 0.0,
         comment: None,
+        ..Position::default()
     })
 }
 
@@ -293,6 +296,7 @@ fn map_future_position(row: Value) -> Option<Position> {
         notional_currency: Some("USDT".to_string()),
         floating_profit: common::f64_value(&row, "unrealised_pnl"),
         comment: None,
+        ..Position::default()
     })
 }
 

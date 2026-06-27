@@ -167,14 +167,18 @@ async fn compose_virtual_account_config(
             source.coefficient
         };
 
-        positions.extend(account.positions.into_iter().map(|mut position| {
-            position.position_id = format!("{}:{}", account.account_id, position.position_id);
-            position.volume *= coefficient;
-            position.free_volume *= coefficient;
-            position.notional_value *= coefficient;
-            position.floating_profit *= coefficient;
-            position
-        }));
+        let source_account_id = account.account_id.clone();
+        positions.extend(
+            account
+                .normalized()
+                .positions
+                .into_iter()
+                .map(|mut position| {
+                    position.position_id = format!("{source_account_id}:{}", position.position_id);
+                    position.scale(coefficient);
+                    position
+                }),
+        );
     }
 
     Ok(AccountInfo {
@@ -182,7 +186,8 @@ async fn compose_virtual_account_config(
         positions,
         orders: Vec::new(),
         timestamp_in_us: Utc::now().timestamp_micros(),
-    })
+    }
+    .normalized())
 }
 
 fn validate_request(request: &CreateVirtualAccountRequest) -> Result<(), AppError> {

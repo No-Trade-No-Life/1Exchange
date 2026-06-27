@@ -248,6 +248,7 @@ fn map_spot_balance(balance: SpotBalance) -> Option<Position> {
         notional_currency: Some("USDT".to_string()),
         floating_profit: 0.0,
         comment: None,
+        ..Position::default()
     })
 }
 
@@ -280,6 +281,7 @@ fn map_futures_asset(asset: FuturesAsset) -> Option<Position> {
         notional_currency: Some("USDT".to_string()),
         floating_profit: 0.0,
         comment: None,
+        ..Position::default()
     })
 }
 
@@ -309,6 +311,7 @@ fn map_futures_position(position: FuturesPosition) -> Option<Position> {
         notional_currency: Some("USDT".to_string()),
         floating_profit,
         comment: None,
+        ..Position::default()
     })
 }
 

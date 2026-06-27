@@ -39,14 +39,29 @@ type Position = {
   base_currency: string | null;
   quote_currency: string | null;
   direction: 'LONG' | 'SHORT' | null;
+  datasource_id?: string | null;
+  account_id?: string | null;
+  size?: string | null;
+  free_size?: string | null;
   volume: number;
   free_volume: number;
+  liquidation_price?: string | null;
   position_price: number;
   closable_price: number;
   notional_value: number;
   notional_currency: string | null;
+  valuation?: number;
   floating_profit: number;
   comment: string | null;
+  settlement_interval?: number | null;
+  settlement_scheduled_at?: number | null;
+  interest_to_settle?: number | null;
+  margin?: number | null;
+  realized_pnl?: number | null;
+  total_opened_volume?: number | null;
+  total_closed_volume?: number | null;
+  created_at?: number | null;
+  updated_at?: number | null;
 };
 
 type Product = {
@@ -1795,7 +1810,7 @@ function summarizePortfolio(accounts: PortfolioAccount[]) {
 function summarizeAccountPositions(positions: Position[]) {
   return positions.reduce(
     (summary, item) => {
-      addCurrencyTotal(summary.notionalByCurrency, item.notional_currency, item.notional_value);
+      addCurrencyTotal(summary.notionalByCurrency, item.notional_currency, notionalValue(item));
       return {
         total: summary.total + 1,
         assets: summary.assets + (item.direction ? 0 : 1),
@@ -1832,7 +1847,7 @@ function summarizePortfolioAssets(accounts: PortfolioAccount[]) {
       current.rows += 1;
       current.volume += finiteNumber(position.volume);
       current.freeVolume += finiteNumber(position.free_volume);
-      current.notionalValue += finiteNumber(position.notional_value);
+      current.notionalValue += finiteNumber(notionalValue(position));
       current.pnl += finiteNumber(position.floating_profit);
       rows.set(rowKey, current);
     }
@@ -1844,7 +1859,7 @@ function summarizePortfolioAssets(accounts: PortfolioAccount[]) {
 }
 
 function notionalValue(position: Position) {
-  return position.notional_value;
+  return position.valuation ?? position.notional_value;
 }
 
 function formatPositionNotional(position: Position) {

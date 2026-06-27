@@ -224,6 +224,7 @@ fn map_perp_position(row: Value) -> Option<Position> {
         notional_currency: Some("USD".to_string()),
         floating_profit: common::f64_value(position, "unrealizedPnl"),
         comment: None,
+        ..Position::default()
     })
 }
 
@@ -257,6 +258,7 @@ fn map_spot_position(row: Value, mids: &Value) -> Option<Position> {
         notional_currency: Some("USDC".to_string()),
         floating_profit: 0.0,
         comment: None,
+        ..Position::default()
     })
 }
 

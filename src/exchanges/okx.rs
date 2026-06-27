@@ -238,6 +238,7 @@ fn map_balance_position(row: Value) -> Option<Position> {
         notional_currency: Some("USDT".to_string()),
         floating_profit: 0.0,
         comment: None,
+        ..Position::default()
     })
 }
 
@@ -293,6 +294,7 @@ fn map_loan_position(row: Value) -> Option<Position> {
         notional_currency: Some(currency),
         floating_profit: 0.0,
         comment: None,
+        ..Position::default()
     })
 }
 
@@ -331,6 +333,7 @@ fn asset_position(
         notional_currency: Some(currency),
         floating_profit: 0.0,
         comment: None,
+        ..Position::default()
     }
 }
 
@@ -365,6 +368,7 @@ fn map_derivative_position(row: Value) -> Option<Position> {
         notional_currency: okx_quote_currency(&inst_id),
         floating_profit: common::f64_value(&row, "upl"),
         comment: None,
+        ..Position::default()
     })
 }
 
