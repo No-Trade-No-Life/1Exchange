@@ -1,6 +1,7 @@
 mod credentials;
 mod custom_account_sources;
 mod exchanges;
+mod funds;
 mod models;
 mod rates;
 mod virtual_accounts;
@@ -18,7 +19,7 @@ use axum::{
     extract::{OriginalUri, Query, State},
     http::StatusCode,
     response::{IntoResponse, Redirect, Response},
-    routing::get,
+    routing::{get, post},
 };
 use models::{AccountInfo, Position, Product, TradeFill};
 use serde::{Serialize, ser::SerializeStruct};
@@ -97,6 +98,7 @@ async fn main() -> anyhow::Result<()> {
             .as_ref()
             .map(|server| format!("http://{}", server.addr)),
     };
+    funds::spawn_fund_polling(state.clone());
     let api = Router::new()
         .route("/health", get(health))
         .route("/exchanges", get(list_exchanges))
@@ -116,6 +118,9 @@ async fn main() -> anyhow::Result<()> {
                 .post(virtual_accounts::create_virtual_account),
         )
         .route("/positions", get(list_positions))
+        .route("/funds", get(funds::list_funds).post(funds::create_fund))
+        .route("/funds/sample", post(funds::sample_fund_now))
+        .route("/fund-nav", get(funds::list_fund_nav))
         .route("/trades", get(list_trades))
         .route("/rates", get(list_rates))
         .route("/rates/convert", get(convert_rate))
@@ -301,6 +306,58 @@ async fn migrate(db: &SqlitePool) -> anyhow::Result<()> {
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
+        "#,
+    )
+    .execute(db)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS funds (
+            id TEXT PRIMARY KEY NOT NULL,
+            name TEXT NOT NULL,
+            account_id TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            target_currency TEXT NOT NULL DEFAULT 'USD',
+            poll_interval_seconds INTEGER NOT NULL DEFAULT 600,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        "#,
+    )
+    .execute(db)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_funds_account_id
+        ON funds (account_id)
+        "#,
+    )
+    .execute(db)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS fund_nav_snapshots (
+            id TEXT PRIMARY KEY NOT NULL,
+            fund_id TEXT NOT NULL,
+            account_id TEXT NOT NULL,
+            equity REAL NOT NULL,
+            target_currency TEXT NOT NULL,
+            positions_count INTEGER NOT NULL,
+            unpriced_positions INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        "#,
+    )
+    .execute(db)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_fund_nav_snapshots_fund_created
+        ON fund_nav_snapshots (fund_id, created_at DESC)
         "#,
     )
     .execute(db)

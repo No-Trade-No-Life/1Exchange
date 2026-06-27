@@ -137,6 +137,29 @@ type VirtualAccountConfig = {
   updated_at: string;
 };
 
+type FundConfig = {
+  id: string;
+  name: string;
+  account_id: string;
+  enabled: boolean;
+  target_currency: string;
+  poll_interval_seconds: number;
+  created_at: string;
+  updated_at: string;
+  last_sampled_at: string | null;
+};
+
+type FundNavSnapshot = {
+  id: string;
+  fund_id: string;
+  account_id: string;
+  equity: number;
+  target_currency: string;
+  positions_count: number;
+  unpriced_positions: number;
+  created_at: string;
+};
+
 type CustomAccountSource = {
   id: string;
   name: string;
@@ -148,7 +171,7 @@ type CustomAccountSource = {
 
 type AccountIds = Record<string, string>;
 
-type Page = 'overview' | 'accounts' | 'portfolio' | 'trade' | 'history' | 'credentials' | 'virtual-accounts' | 'positions' | 'products' | 'exchanges';
+type Page = 'overview' | 'accounts' | 'portfolio' | 'trade' | 'history' | 'credentials' | 'virtual-accounts' | 'funds' | 'positions' | 'products' | 'exchanges';
 
 const pages: Array<{ id: Page; label: string; hint: string; path: string }> = [
   { id: 'overview', label: 'Overview', hint: 'Service and adapter status', path: '/overview' },
@@ -158,6 +181,7 @@ const pages: Array<{ id: Page; label: string; hint: string; path: string }> = [
   { id: 'history', label: 'History', hint: 'Trade fills', path: '/history' },
   { id: 'credentials', label: 'Credentials', hint: 'Saved local metadata', path: '/credentials' },
   { id: 'virtual-accounts', label: 'Virtual Accounts', hint: 'Linear account composition', path: '/virtual-accounts' },
+  { id: 'funds', label: 'Funds', hint: 'Virtual account NAV records', path: '/funds' },
   { id: 'positions', label: 'Positions', hint: 'Assets and open exposure', path: '/positions' },
   { id: 'products', label: 'Products', hint: 'Exchange product specs', path: '/products' },
   { id: 'exchanges', label: 'Exchanges', hint: 'Schemas and capabilities', path: '/exchanges' },
@@ -165,6 +189,7 @@ const pages: Array<{ id: Page; label: string; hint: string; path: string }> = [
 
 const emptyCredentials: Credential[] = [];
 const emptyVirtualAccountConfigs: VirtualAccountConfig[] = [];
+const emptyFundConfigs: FundConfig[] = [];
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -333,6 +358,7 @@ function App() {
           <Route path="/history" element={<PageBoundary><TradeHistoryRoute /></PageBoundary>} />
           <Route path="/credentials" element={<PageBoundary><CredentialsRoute /></PageBoundary>} />
           <Route path="/virtual-accounts" element={<PageBoundary><VirtualAccountsRoute /></PageBoundary>} />
+          <Route path="/funds" element={<PageBoundary><FundsRoute /></PageBoundary>} />
           <Route path="/positions" element={<PageBoundary><PositionsRoute /></PageBoundary>} />
           <Route path="/products" element={<PageBoundary><ProductsRoute /></PageBoundary>} />
           <Route path="/exchanges" element={<PageBoundary><ExchangesRoute /></PageBoundary>} />
@@ -517,6 +543,23 @@ function VirtualAccountsRoute() {
       loading={virtualAccounts.loading || virtualAccount.loading}
       selectedAccountId={selectedAccountId}
       onSelectAccount={setSelectedAccountId}
+    />
+  );
+}
+
+function FundsRoute() {
+  const funds = useJson<FundConfig[]>('/api/funds');
+  const virtualAccounts = useJson<VirtualAccountConfig[]>('/api/virtual-accounts');
+  const selectedFundId = funds.data?.[0]?.id ?? '';
+  const nav = useJson<FundNavSnapshot[]>(selectedFundId ? `/api/fund-nav?fund_id=${encodeURIComponent(selectedFundId)}&limit=25` : null);
+
+  return (
+    <FundsPage
+      configs={funds.data ?? emptyFundConfigs}
+      error={funds.error ?? virtualAccounts.error ?? nav.error}
+      loading={funds.loading || virtualAccounts.loading || nav.loading}
+      snapshots={nav.data ?? []}
+      virtualAccounts={virtualAccounts.data ?? emptyVirtualAccountConfigs}
     />
   );
 }
@@ -1380,6 +1423,157 @@ function VirtualAccountCreatePanel(props: { accountIds: AccountIds; credentials:
         <InlineError message={error} />
         <button className="primary-action" disabled={saving || !props.credentials.length || !sources.length} type="submit">
           {saving ? 'Saving...' : 'Save virtual account'}
+        </button>
+      </form>
+    </section>
+  );
+}
+
+function FundsPage(props: {
+  configs: FundConfig[];
+  error: string | null;
+  loading: boolean;
+  snapshots: FundNavSnapshot[];
+  virtualAccounts: VirtualAccountConfig[];
+}) {
+  const queryClient = useQueryClient();
+
+  async function sampleFund(fundId: string) {
+    const response = await fetch('/api/funds/sample?fund_id=' + encodeURIComponent(fundId), { method: 'POST' });
+    if (!response.ok) {
+      const body = await response.json().catch(() => null) as { message?: string } | null;
+      throw new Error(body?.message ?? String(response.status) + ' ' + response.statusText);
+    }
+    await queryClient.invalidateQueries({ queryKey: ['json'] });
+  }
+
+  return (
+    <div className="page-stack">
+      <FundCreatePanel virtualAccounts={props.virtualAccounts} />
+
+      <section className="metrics-grid compact" aria-label="Fund summary">
+        <Metric label="Funds" value={props.configs.length.toString()} />
+        <Metric label="Enabled" value={props.configs.filter((fund) => fund.enabled).length.toString()} />
+        <Metric label="Snapshots loaded" value={props.snapshots.length.toString()} />
+        <Metric label="Status" value={props.loading ? 'Loading' : 'Ready'} />
+      </section>
+
+      <section className="panel">
+        <PanelTitle label="Fund configs" title="Virtual account NAV polling" action={props.configs.length + ' funds'} />
+        <InlineError message={props.error} />
+        <DataTable
+          empty="No funds yet. Create a virtual account first, then bind a fund to it."
+          headers={['Fund', 'Virtual account', 'Target', 'Interval', 'Last sample', 'Status', 'Action']}
+          rows={props.configs.map((fund) => [
+            fund.name,
+            <AccountIdLink accountId={fund.account_id} key="account" />,
+            fund.target_currency,
+            fund.poll_interval_seconds + 's',
+            fund.last_sampled_at ?? '-',
+            fund.enabled ? 'Enabled' : 'Disabled',
+            <button className="secondary-action" key="sample" type="button" onClick={() => void sampleFund(fund.id)}>
+              Sample now
+            </button>,
+          ])}
+        />
+      </section>
+
+      <section className="panel">
+        <PanelTitle label="Recent NAV" title={props.configs[0]?.name ?? 'No fund selected'} action={props.snapshots.length + ' rows'} />
+        <DataTable
+          empty="No NAV snapshots recorded yet. The poller records enabled funds automatically."
+          headers={['Time', 'Equity', 'Currency', 'Positions', 'Unpriced']}
+          rows={props.snapshots.map((snapshot) => [
+            snapshot.created_at,
+            formatNumber(snapshot.equity),
+            snapshot.target_currency,
+            snapshot.positions_count.toString(),
+            snapshot.unpriced_positions.toString(),
+          ])}
+        />
+      </section>
+    </div>
+  );
+}
+
+function FundCreatePanel(props: { virtualAccounts: VirtualAccountConfig[] }) {
+  const queryClient = useQueryClient();
+  const [name, setName] = useState('Local fund');
+  const [accountId, setAccountId] = useState(props.virtualAccounts[0]?.account_id ?? '');
+  const [targetCurrency, setTargetCurrency] = useState('USD');
+  const [intervalSeconds, setIntervalSeconds] = useState(600);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!accountId && props.virtualAccounts[0]) {
+      setAccountId(props.virtualAccounts[0].account_id);
+    }
+  }, [accountId, props.virtualAccounts]);
+
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(null);
+    setSaving(true);
+
+    try {
+      const response = await fetch('/api/funds', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name,
+          account_id: accountId,
+          enabled: true,
+          target_currency: targetCurrency,
+          poll_interval_seconds: intervalSeconds,
+        }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null) as { message?: string } | null;
+        throw new Error(body?.message ?? String(response.status) + ' ' + response.statusText);
+      }
+      await queryClient.invalidateQueries({ queryKey: ['json', '/api/funds'] });
+    } catch (caught) {
+      setError((caught as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="panel credential-create-panel">
+      <div className="panel-heading">
+        <div>
+          <p className="section-label">Create fund</p>
+          <h2>Bind a virtual account</h2>
+        </div>
+        <span className="count-chip">Auto NAV</span>
+      </div>
+      <form className="credential-form" onSubmit={handleSubmit}>
+        <label>
+          Fund name
+          <input required value={name} onChange={(event) => setName(event.target.value)} />
+        </label>
+        <label>
+          Virtual account
+          <select required value={accountId} onChange={(event) => setAccountId(event.target.value)}>
+            <option value="">Select a virtual account</option>
+            {props.virtualAccounts.map((account) => (
+              <option key={account.account_id} value={account.account_id}>{account.account_id} · {account.name}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Target currency
+          <input required value={targetCurrency} onChange={(event) => setTargetCurrency(event.target.value.toUpperCase())} />
+        </label>
+        <label>
+          Poll interval seconds
+          <input min={60} inputMode="numeric" type="number" value={intervalSeconds} onChange={(event) => setIntervalSeconds(Number(event.target.value))} />
+        </label>
+        <InlineError message={error} />
+        <button className="primary-action" disabled={saving || !props.virtualAccounts.length} type="submit">
+          {saving ? 'Saving...' : 'Save fund'}
         </button>
       </form>
     </section>
