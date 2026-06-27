@@ -157,6 +157,8 @@ fn map_spot_product(row: Value) -> Product {
         max_volume: None,
         allow_long: Some(true),
         allow_short: Some(false),
+        market_id: Some(format!("{ID}/SPOT")),
+        no_interest_rate: Some(true),
         spread: None,
     }
 }
@@ -188,6 +190,8 @@ fn map_perp_product(row: Value) -> Product {
         max_volume: None,
         allow_long: Some(true),
         allow_short: Some(true),
+        market_id: Some(format!("{ID}/PERPETUAL")),
+        no_interest_rate: Some(false),
         spread: None,
     }
 }

@@ -24,7 +24,7 @@
 
 Rust 版本会保留这些语义，但使用 Rust 类型、SQLite 表结构和 HTTP JSON API 表达。
 
-账户持仓响应对齐 1Earn 当前使用的 Yuants IPosition 字段：除原有 volume、free_volume、notional_value 外，也返回 account_id、datasource_id、size、free_size、valuation 以及资金结算相关可选字段。notional_value 作为 1Exchange 旧字段保留，valuation 作为 1Earn/Yuants 标准字段供组合账户、配对模式和外部来源消费。
+账户持仓响应对齐 Yuan / 1Earn 当前使用的 Yuants IPosition 字段：除原有 volume、free_volume、notional_value 外，也返回 account_id、datasource_id、size、free_size、current_price、notional、valuation 以及资金结算相关可选字段。notional_value 作为 1Exchange 旧字段保留，valuation 和有符号 notional 作为 Yuan/Yuants 标准字段供组合账户、配对模式和外部来源消费。产品响应也保留 Yuan IProduct 的 market_id 和 no_interest_rate 字段。
 
 资产结构固定为：
 

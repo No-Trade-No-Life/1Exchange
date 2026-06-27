@@ -495,6 +495,8 @@ fn map_swap_product(row: Value) -> Product {
         max_volume: None,
         allow_long: Some(true),
         allow_short: Some(true),
+        market_id: Some(ID.to_string()),
+        no_interest_rate: Some(false),
         spread: None,
     }
 }
@@ -521,6 +523,8 @@ fn map_spot_product(row: Value) -> Product {
         max_volume: None,
         allow_long: Some(true),
         allow_short: Some(false),
+        market_id: Some(format!("{ID}/SPOT")),
+        no_interest_rate: Some(true),
         spread: None,
     }
 }

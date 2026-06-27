@@ -48,8 +48,10 @@ type Position = {
   liquidation_price?: string | null;
   position_price: number;
   closable_price: number;
+  current_price?: string | null;
   notional_value: number;
   notional_currency: string | null;
+  notional?: string | null;
   valuation?: number;
   floating_profit: number;
   comment: string | null;
@@ -74,6 +76,8 @@ type Product = {
   volume_step: number | null;
   allow_long: boolean | null;
   allow_short: boolean | null;
+  market_id?: string | null;
+  no_interest_rate?: boolean | null;
 };
 
 type CurrencyRateEdge = {
@@ -1628,15 +1632,17 @@ function ProductsPage(props: {
         <InlineError message={props.error} />
         <DataTable
           empty="No products returned for this exchange."
-          headers={['Product', 'Name', 'Base', 'Quote', 'Price step', 'Volume step', 'Sides']}
+          headers={['Product', 'Market', 'Name', 'Base', 'Quote', 'Price step', 'Volume step', 'Sides', 'Funding']}
           rows={props.products.slice(0, 250).map((item) => [
             <code key="product">{item.product_id}</code>,
+            item.market_id ?? item.datasource_id,
             item.name ?? '-',
             item.base_currency ?? '-',
             item.quote_currency ?? '-',
             formatOptionalNumber(item.price_step),
             formatOptionalNumber(item.volume_step),
             sideLabel(item),
+            item.no_interest_rate == null ? '-' : item.no_interest_rate ? 'No' : 'Yes',
           ])}
         />
       </section>
@@ -1859,6 +1865,10 @@ function summarizePortfolioAssets(accounts: PortfolioAccount[]) {
 }
 
 function notionalValue(position: Position) {
+  if (position.notional != null) {
+    return finiteNumber(Number(position.notional));
+  }
+
   return position.valuation ?? position.notional_value;
 }
 

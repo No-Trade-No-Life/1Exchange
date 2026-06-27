@@ -50,8 +50,14 @@ pub struct Position {
     pub liquidation_price: Option<String>,
     pub position_price: f64,
     pub closable_price: f64,
+    /// Yuan replacement for closable_price; serialized as string for IPosition compatibility.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_price: Option<String>,
     pub notional_value: f64,
     pub notional_currency: Option<String>,
+    /// Yuan signed notional. Long positions are positive, shorts are negative.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notional: Option<String>,
     /// 1Earn/Yuants field name for the position valuation, in account/notional currency.
     #[serde(default)]
     pub valuation: f64,
@@ -97,6 +103,12 @@ impl Position {
         if self.free_size.is_none() {
             self.free_size = Some(format_position_size(self.signed_free_volume()));
         }
+        if self.current_price.is_none() {
+            self.current_price = Some(format_position_size(self.closable_price));
+        }
+        if self.notional.is_none() {
+            self.notional = Some(format_position_size(self.signed_notional()));
+        }
 
         self
     }
@@ -114,6 +126,7 @@ impl Position {
         self.interest_to_settle = self.interest_to_settle.map(|value| value * coefficient);
         self.size = Some(format_position_size(signed_volume));
         self.free_size = Some(format_position_size(signed_free_volume));
+        self.notional = Some(format_position_size(self.signed_notional()));
     }
 
     fn signed_volume(&self) -> f64 {
@@ -129,6 +142,34 @@ impl Position {
             _ => self.free_volume,
         }
     }
+
+    fn signed_notional(&self) -> f64 {
+        let price = self
+            .current_price
+            .as_deref()
+            .and_then(parse_finite_f64)
+            .unwrap_or(self.closable_price);
+        if let Some(size) = self.size.as_deref().and_then(parse_finite_f64) {
+            if price != 0.0 {
+                return size * price;
+            }
+        }
+        if self.notional_value < 0.0 {
+            return self.notional_value;
+        }
+        if self.notional_value > 0.0 {
+            return match self.direction {
+                Some(PositionDirection::Short) => -self.notional_value.abs(),
+                _ => self.notional_value,
+            };
+        }
+
+        self.signed_volume() * self.closable_price
+    }
+}
+
+fn parse_finite_f64(value: &str) -> Option<f64> {
+    value.parse::<f64>().ok().filter(|value| value.is_finite())
 }
 
 impl Default for Position {
@@ -148,8 +189,10 @@ impl Default for Position {
             liquidation_price: None,
             position_price: 0.0,
             closable_price: 0.0,
+            current_price: None,
             notional_value: 0.0,
             notional_currency: None,
+            notional: None,
             valuation: 0.0,
             floating_profit: 0.0,
             comment: None,
@@ -195,6 +238,8 @@ mod tests {
         assert_eq!(position.datasource_id.as_deref(), Some("BINANCE"));
         assert_eq!(position.size.as_deref(), Some("2"));
         assert_eq!(position.free_size.as_deref(), Some("1.5"));
+        assert_eq!(position.current_price.as_deref(), Some("0"));
+        assert_eq!(position.notional.as_deref(), Some("100000"));
         assert_eq!(position.valuation, 100_000.0);
     }
 
@@ -217,10 +262,28 @@ mod tests {
         assert_eq!(position.free_volume, 4.0);
         assert_eq!(position.size.as_deref(), Some("-6"));
         assert_eq!(position.free_size.as_deref(), Some("-4"));
+        assert_eq!(position.notional.as_deref(), Some("-60"));
         assert_eq!(position.valuation, -60.0);
         assert_eq!(position.notional_value, -60.0);
         assert_eq!(position.floating_profit, -2.0);
         assert_eq!(position.interest_to_settle, Some(-1.0));
+    }
+
+    #[test]
+    fn normalizes_short_position_with_signed_notional() {
+        let position = Position {
+            direction: Some(PositionDirection::Short),
+            volume: 2.0,
+            free_volume: 1.0,
+            closable_price: 50.0,
+            notional_value: 100.0,
+            valuation: 100.0,
+            ..Position::default()
+        }
+        .normalized("ACCOUNT");
+
+        assert_eq!(position.size.as_deref(), Some("-2"));
+        assert_eq!(position.notional.as_deref(), Some("-100"));
     }
 }
 
@@ -272,7 +335,7 @@ pub enum OrderStatus {
     Rejected,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Product {
     pub datasource_id: String,
     /// Exchange-native product id. Do not normalize it before adapter-specific handling.
@@ -293,5 +356,7 @@ pub struct Product {
     pub max_volume: Option<f64>,
     pub allow_long: Option<bool>,
     pub allow_short: Option<bool>,
+    pub market_id: Option<String>,
+    pub no_interest_rate: Option<bool>,
     pub spread: Option<f64>,
 }

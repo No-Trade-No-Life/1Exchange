@@ -392,6 +392,8 @@ fn map_product(category: &str, row: &Value) -> Product {
         max_volume: None,
         allow_long: Some(true),
         allow_short: Some(category != "SPOT"),
+        market_id: Some(format!("{ID}/{category}")),
+        no_interest_rate: Some(category == "SPOT"),
         spread: None,
     }
 }

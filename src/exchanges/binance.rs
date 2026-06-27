@@ -366,6 +366,8 @@ fn map_product(symbol: BinanceSymbol, market: &str, allow_short: bool) -> Produc
         max_volume: None,
         allow_long: Some(true),
         allow_short: Some(allow_short),
+        market_id: Some(format!("{ID}/{market}")),
+        no_interest_rate: Some(market == "SPOT"),
         spread: None,
     }
 }

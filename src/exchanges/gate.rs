@@ -366,6 +366,8 @@ fn map_future_product(row: Value) -> Product {
         max_volume: None,
         allow_long: Some(true),
         allow_short: Some(true),
+        market_id: Some(format!("{ID}/USDT-FUTURE")),
+        no_interest_rate: Some(false),
         spread: None,
     }
 }
@@ -389,6 +391,8 @@ fn map_spot_product(row: Value) -> Product {
         max_volume: None,
         allow_long: Some(true),
         allow_short: Some(false),
+        market_id: Some(format!("{ID}/USDT-SPOT")),
+        no_interest_rate: Some(false),
         spread: None,
     }
 }

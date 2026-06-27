@@ -447,6 +447,8 @@ fn map_product(inst_type: &str, row: &Value) -> Product {
         max_volume: None,
         allow_long: Some(true),
         allow_short: Some(inst_type != "SPOT"),
+        market_id: Some(ID.to_string()),
+        no_interest_rate: Some(inst_type == "SPOT"),
         spread: None,
     }
 }
