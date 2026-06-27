@@ -533,248 +533,13 @@ h2 {
   font-weight: 700;
 }
 
-.trade-board {
-  display: grid;
-  grid-template-columns: minmax(0, 1.7fr) minmax(280px, 0.58fr);
-  grid-template-areas:
-    "toolbar toolbar"
-    "chart book"
-    "account manual"
-    "account profit";
-  gap: 14px;
-}
-
-.trade-toolbar {
-  grid-area: toolbar;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  padding: 12px;
-  background: var(--surface);
-}
-
-.trade-toolbar label,
-.trade-form label {
-  display: grid;
-  gap: 7px;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 750;
-}
-
-.trade-toolbar .wide-control {
-  flex: 1;
-}
-
-.trade-toolbar .wide-control select {
-  width: 100%;
-}
-
-.trade-panel {
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  background: var(--surface);
-  overflow: hidden;
-}
-
-.chart-panel {
-  grid-area: chart;
-  min-height: 420px;
-}
-
-.book-panel {
-  grid-area: book;
-}
-
-.account-panel {
-  grid-area: account;
-}
-
-.manual-panel {
-  grid-area: manual;
-}
-
-.profit-panel {
-  grid-area: profit;
-}
-
-.trade-panel-title {
+.panel-title {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 14px;
   border-bottom: 1px solid var(--line);
   padding: 14px 16px;
-}
-
-.chart-shell {
-  position: relative;
-  min-height: 360px;
-  overflow: hidden;
-  background:
-    linear-gradient(to right, oklch(89% 0.012 252deg) 1px, transparent 1px),
-    linear-gradient(to bottom, oklch(89% 0.012 252deg) 1px, transparent 1px),
-    oklch(98% 0.006 252deg);
-  background-size: 64px 64px;
-}
-
-.chart-gridlines {
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(180deg, transparent, oklch(96% 0.018 248deg));
-}
-
-.price-line {
-  position: absolute;
-  inset: 70px 22px 58px;
-  width: calc(100% - 44px);
-  height: calc(100% - 128px);
-}
-
-.price-line path {
-  fill: none;
-  stroke: var(--accent);
-  stroke-linecap: round;
-  stroke-width: 3;
-}
-
-.chart-readout {
-  position: absolute;
-  left: 18px;
-  top: 18px;
-  display: grid;
-  gap: 5px;
-}
-
-.chart-readout span,
-.chart-readout small {
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.chart-readout strong {
-  color: var(--ink);
-  font-size: 32px;
-  letter-spacing: -0.03em;
-}
-
-.order-book-preview {
-  display: grid;
-  gap: 6px;
-  padding: 10px;
-}
-
-.book-header,
-.book-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
-  gap: 8px;
-  align-items: center;
-}
-
-.book-header {
-  padding: 0 6px 6px;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 750;
-}
-
-.book-header span:not(:first-child),
-.book-row span:not(:first-child) {
-  text-align: right;
-}
-
-.book-side {
-  display: grid;
-  gap: 3px;
-}
-
-.book-row {
-  position: relative;
-  min-height: 24px;
-  border-radius: 7px;
-  padding: 4px 6px;
-  overflow: hidden;
-  color: var(--ink);
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  font-size: 12px;
-}
-
-.book-row::before {
-  position: absolute;
-  inset: 0 0 0 38%;
-  content: "";
-  opacity: 0.48;
-}
-
-.book-row[data-side="ask"]::before {
-  background: oklch(92% 0.045 28deg);
-}
-
-.book-row[data-side="bid"]::before {
-  background: oklch(92% 0.045 158deg);
-}
-
-.book-row span {
-  position: relative;
-}
-
-.book-row[data-side="ask"] span:first-child {
-  color: var(--bad);
-}
-
-.book-row[data-side="bid"] span:first-child {
-  color: var(--good);
-}
-
-.book-spread {
-  border-block: 1px solid var(--line);
-  padding: 8px 6px;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 750;
-  text-align: center;
-}
-
-.trade-form {
-  display: grid;
-  gap: 12px;
-  padding: 14px;
-}
-
-.segmented-control {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
-  border-radius: 12px;
-  padding: 4px;
-  background: var(--surface-2);
-}
-
-.segmented-control:nth-of-type(2) {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.segmented-control button,
-.trade-actions button {
-  border: 0;
-  border-radius: 9px;
-  padding: 9px 10px;
-  cursor: pointer;
-  font: inherit;
-  font-weight: 750;
-}
-
-.segmented-control button {
-  background: transparent;
-  color: var(--muted);
-}
-
-.segmented-control button.active {
-  background: var(--surface);
-  color: var(--ink);
 }
 
 input {
@@ -792,30 +557,8 @@ input:disabled {
 }
 
 input:focus-visible,
-.segmented-control button:focus-visible,
-.trade-actions button:focus-visible {
+button:focus-visible {
   outline: 3px solid var(--accent-soft);
-}
-
-.trade-actions {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.buy-action {
-  background: var(--good);
-  color: white;
-}
-
-.sell-action {
-  background: var(--bad);
-  color: white;
-}
-
-.trade-actions button:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
 }
 
 .form-note {
@@ -823,24 +566,6 @@ input:focus-visible,
   color: var(--muted);
   font-size: 12px;
   line-height: 1.5;
-}
-
-.risk-list {
-  display: grid;
-  margin: 0;
-}
-
-.risk-list div {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  border-bottom: 1px solid var(--line);
-  padding: 12px 14px;
-}
-
-.risk-list div:last-child {
-  border-bottom: 0;
 }
 
 select {
@@ -1016,25 +741,13 @@ dd {
   .account-detail-head,
   .split-panel,
   .toolbar-panel,
-  .trade-toolbar,
   .schema-row {
     align-items: stretch;
     flex-direction: column;
   }
 
-  .credential-manager,
-  .trade-board {
+  .credential-manager {
     grid-template-columns: 1fr;
-  }
-
-  .trade-board {
-    grid-template-areas:
-      "toolbar"
-      "chart"
-      "book"
-      "manual"
-      "profit"
-      "account";
   }
 
   select {
