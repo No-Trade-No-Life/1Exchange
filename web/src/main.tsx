@@ -556,14 +556,18 @@ function AccountsRoute() {
   const customAccountSources = useJson<CustomAccountSource[]>('/api/custom-account-sources');
   const credentials = useJson<Credential[]>('/api/credentials');
   const accountRefs = useJson<AccountRef[]>('/api/account-refs');
-  const accounts = credentialAccounts(credentials.data ?? emptyCredentials, accountRefs.data ?? []);
+  const virtualAccounts = useJson<VirtualAccountConfig[]>('/api/virtual-accounts');
+  const accounts = [
+    ...credentialAccounts(credentials.data ?? emptyCredentials, accountRefs.data ?? []),
+    ...virtualAccountSnapshots(virtualAccounts.data ?? emptyVirtualAccountConfigs),
+  ];
 
   return (
-    <RefreshScope resources={[rates, customAccountSources, credentials, accountRefs]}>
+    <RefreshScope resources={[rates, customAccountSources, credentials, accountRefs, virtualAccounts]}>
       <AccountsPage
         accounts={accounts}
         customSources={customAccountSources.data ?? []}
-        loading={credentials.loading || accountRefs.loading || customAccountSources.loading}
+        loading={credentials.loading || accountRefs.loading || customAccountSources.loading || virtualAccounts.loading}
         rateEdges={rates.data?.edges ?? []}
       />
     </RefreshScope>
@@ -1819,6 +1823,28 @@ function credentialAccounts(credentials: Credential[], refs: AccountRef[]) {
       positions: [],
     };
   });
+}
+
+function virtualAccountSnapshots(configs: VirtualAccountConfig[]) {
+  return configs
+    .filter((config) => config.enabled)
+    .map((config) => ({
+      accountId: config.account_id,
+      credential: virtualAccountCredential(config),
+      error: null,
+      positions: [],
+    }));
+}
+
+function virtualAccountCredential(config: VirtualAccountConfig): Credential {
+  return {
+    id: config.account_id,
+    exchange: 'VIRTUAL',
+    name: config.name,
+    has_payload: false,
+    created_at: config.created_at,
+    updated_at: config.updated_at,
+  };
 }
 
 function accountLabel(credential: Credential, accountIds: AccountIds) {
