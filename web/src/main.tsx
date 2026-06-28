@@ -23,7 +23,6 @@ import { cn } from '@/lib/utils';
 import {
   BadgeCheck,
   BarChart3,
-  ChartNoAxesCombined,
   ChevronDown,
   Combine,
   History,
@@ -131,7 +130,7 @@ type CurrencyRateSnapshot = {
   edges: CurrencyRateEdge[];
 };
 
-type PortfolioAccount = {
+type AccountSnapshot = {
   accountId: string;
   credential: Credential;
   error: string | null;
@@ -221,13 +220,12 @@ type BatchLoadState = {
   total: number;
 };
 
-type Page = 'overview' | 'accounts' | 'portfolio' | 'history' | 'credentials' | 'virtual-accounts' | 'funds' | 'positions' | 'products' | 'exchanges';
+type Page = 'overview' | 'accounts' | 'history' | 'credentials' | 'virtual-accounts' | 'funds' | 'positions' | 'products' | 'exchanges';
 type PageConfig = { id: Page; label: string; hint: string; path: string; icon: LucideIcon; primary?: boolean };
 
 const pages: PageConfig[] = [
   { id: 'overview', label: 'Overview', hint: 'Service and adapter status', path: '/overview', icon: LayoutDashboard, primary: true },
   { id: 'accounts', label: 'Accounts', hint: 'Account identities and detail', path: '/accounts', icon: WalletCards, primary: true },
-  { id: 'portfolio', label: 'Portfolio', hint: 'All credential assets', path: '/portfolio', icon: ChartNoAxesCombined, primary: true },
   { id: 'history', label: 'Audit', hint: 'Read-only fill history', path: '/history', icon: History },
   { id: 'credentials', label: 'Credentials', hint: 'Saved local metadata', path: '/credentials', icon: KeyRound },
   { id: 'virtual-accounts', label: 'Virtual Accounts', hint: 'Linear account composition', path: '/virtual-accounts', icon: Combine },
@@ -278,59 +276,6 @@ function useJson<T>(path: string | null) {
     refresh,
     refreshing: query.isFetching && !query.isLoading,
   };
-}
-
-function usePortfolio(credentials: Credential[], refreshToken: number) {
-  const [accounts, setAccounts] = useState<PortfolioAccount[]>([]);
-  const [loadState, setLoadState] = useState<BatchLoadState>({ loaded: 0, loading: false, total: 0 });
-
-  useEffect(() => {
-    let alive = true;
-    setLoadState({ loaded: 0, loading: credentials.length > 0, total: credentials.length });
-    setAccounts([]);
-
-    async function readCredential(credential: Credential) {
-      try {
-        const response = await fetch(`/api/accounts?credential_id=${encodeURIComponent(credential.id)}`);
-        if (!response.ok) {
-          throw new Error(`${response.status} ${response.statusText}`);
-        }
-        const account = ((await response.json()) as AccountInfo[])[0];
-        return {
-          accountId: account?.account_id ?? fallbackAccountId(credential),
-          credential,
-          error: null,
-          positions: account?.positions ?? [],
-        };
-      } catch (caught) {
-        return {
-          accountId: fallbackAccountId(credential),
-          credential,
-          error: (caught as Error).message,
-          positions: [],
-        };
-      }
-    }
-
-    credentials.forEach((credential) => {
-      void readCredential(credential).then((account) => {
-        if (!alive) {
-          return;
-        }
-        setAccounts((current) => [...current, account]);
-        setLoadState((current) => {
-          const loaded = current.loaded + 1;
-          return { ...current, loaded, loading: loaded < current.total };
-        });
-      });
-    });
-
-    return () => {
-      alive = false;
-    };
-  }, [credentials, refreshToken]);
-
-  return { accounts, ...loadState };
 }
 
 function useTradeHistory(credentials: Credential[], refreshToken: number) {
@@ -390,7 +335,6 @@ function App() {
           <Route path="/overview" element={<PageBoundary><OverviewRoute /></PageBoundary>} />
           <Route path="/accounts" element={<PageBoundary><AccountsRoute /></PageBoundary>} />
           <Route path="/accounts/detail" element={<PageBoundary><AccountDetailRoute /></PageBoundary>} />
-          <Route path="/portfolio" element={<PageBoundary><PortfolioRoute /></PageBoundary>} />
           <Route path="/history" element={<PageBoundary><TradeHistoryRoute /></PageBoundary>} />
           <Route path="/credentials" element={<PageBoundary><CredentialsRoute /></PageBoundary>} />
           <Route path="/virtual-accounts" element={<PageBoundary><VirtualAccountsRoute /></PageBoundary>} />
@@ -631,30 +575,11 @@ function AccountDetailRoute() {
   const accountId = params.get('account_id') ?? '';
   const rates = useJson<CurrencyRateSnapshot>('/api/rates?target=USD');
   const account = useJson<AccountInfo[]>(accountId ? `/api/accounts?account_id=${encodeURIComponent(accountId)}` : null);
-  const accounts = (account.data ?? []).map(accountInfoToPortfolioAccount);
+  const accounts = (account.data ?? []).map(accountInfoToAccountSnapshot);
 
   return (
     <RefreshScope resources={[rates, account]}>
       <AccountDetailPage accounts={accounts} loading={account.loading} rateEdges={rates.data?.edges ?? []} />
-    </RefreshScope>
-  );
-}
-
-function PortfolioRoute() {
-  const rates = useJson<CurrencyRateSnapshot>('/api/rates?target=USD');
-  const credentials = useJson<Credential[]>('/api/credentials');
-  const [refreshToken, setRefreshToken] = useState(0);
-  const portfolio = usePortfolio(credentials.data ?? emptyCredentials, refreshToken);
-  const batch = { ...portfolio, refresh: () => setRefreshToken((value) => value + 1) };
-
-  return (
-    <RefreshScope batch={batch} resources={[rates, credentials]}>
-      <PortfolioPage
-        accounts={portfolio.accounts}
-        loading={portfolio.loading || credentials.loading}
-        loadState={portfolio}
-        rateEdges={rates.data?.edges ?? []}
-      />
     </RefreshScope>
   );
 }
@@ -854,82 +779,7 @@ function OverviewPage(props: {
   );
 }
 
-function PortfolioPage(props: { accounts: PortfolioAccount[]; loading: boolean; loadState: BatchLoadState; rateEdges: CurrencyRateEdge[] }) {
-  const summary = summarizePortfolio(props.accounts);
-  const assetRows = summarizePortfolioAssets(props.accounts);
-  const usdValue = convertCurrencyTotals(summary.notionalByCurrency, 'USD', props.rateEdges);
-
-  return (
-    <div className="page-stack">
-      <section className="metrics-grid compact" aria-label="Portfolio summary">
-        <Metric label="Credentials" value={summary.credentials.toString()} />
-        <Metric label="Loaded positions" value={summary.positions.toString()} />
-        <Metric label="Notional value" value={formatNotionalBreakdown(summary.notionalByCurrency)} />
-        <Metric label="USD converted" value={formatConvertedValue(usdValue, 'USD')} tone={usdValue.unconverted.length > 0 ? 'warn' : 'neutral'} />
-        <Metric label="Floating P/L" value={formatNumber(summary.pnl)} tone={summary.pnl < 0 ? 'warn' : 'good'} />
-        <Metric label="Read errors" value={summary.errors.toString()} tone={summary.errors > 0 ? 'warn' : 'neutral'} />
-      </section>
-
-      <section className="panel">
-        <div className="panel-heading">
-          <div>
-            <p className="section-label">By account</p>
-            <h2>Account summary</h2>
-          </div>
-          <LoadingStatus
-            active={props.loading}
-            label={props.loading ? `Loading ${props.loadState.loaded}/${props.loadState.total}` : `${props.accounts.length} accounts`}
-          />
-        </div>
-        <DataTable
-          empty="No credentials yet. Add credentials before loading a portfolio summary."
-          headers={['AccountID', 'Credential', 'Exchange', 'Positions', 'Assets', 'Long', 'Short', 'Notional value', 'Floating P/L', 'Status']}
-          rows={props.accounts.map((account) => {
-            const accountSummary = summarizeAccountPositions(account.positions);
-            return [
-              <AccountIdLink accountId={account.accountId} key="account" />,
-              account.credential.name,
-              <Badge key="exchange">{account.credential.exchange}</Badge>,
-              accountSummary.total.toString(),
-              accountSummary.assets.toString(),
-              accountSummary.long.toString(),
-              accountSummary.short.toString(),
-              formatNotionalBreakdown(accountSummary.notionalByCurrency),
-              <Value key="pnl" value={accountSummary.pnl} />,
-              account.error ? <span className="status-text bad" key="status">{account.error}</span> : <span className="status-text good" key="status">Loaded</span>,
-            ];
-          })}
-        />
-      </section>
-
-      <section className="panel">
-        <div className="panel-heading">
-          <div>
-            <p className="section-label">By product</p>
-            <h2>Asset exposure</h2>
-          </div>
-          <LoadingStatus active={props.loading} label={props.loading ? `Loading ${props.loadState.loaded}/${props.loadState.total}` : `${assetRows.length} products`} />
-        </div>
-        <DataTable
-          empty="No positions were loaded from saved credentials."
-          headers={['Product', 'Currency', 'Credentials', 'Rows', 'Volume', 'Free', 'Notional value', 'Floating P/L']}
-          rows={assetRows.map((row) => [
-            <code key="product">{row.productId}</code>,
-            row.currency,
-            row.credentials.toString(),
-            row.rows.toString(),
-            formatNumber(row.volume),
-            formatNumber(row.freeVolume),
-            formatNumber(row.notionalValue),
-            <Value key="pnl" value={row.pnl} />,
-          ])}
-        />
-      </section>
-    </div>
-  );
-}
-
-function AccountsPage(props: { accounts: PortfolioAccount[]; customSources: CustomAccountSource[]; loading: boolean; rateEdges: CurrencyRateEdge[] }) {
+function AccountsPage(props: { accounts: AccountSnapshot[]; customSources: CustomAccountSource[]; loading: boolean; rateEdges: CurrencyRateEdge[] }) {
   return (
     <div className="page-stack">
       <section className="metrics-grid compact" aria-label="Accounts summary">
@@ -1041,11 +891,13 @@ function CustomAccountSourcePanel(props: { sources: CustomAccountSource[] }) {
   );
 }
 
-function AccountDetailPage(props: { accounts: PortfolioAccount[]; loading: boolean; rateEdges: CurrencyRateEdge[] }) {
+function AccountDetailPage(props: { accounts: AccountSnapshot[]; loading: boolean; rateEdges: CurrencyRateEdge[] }) {
   const [params] = useSearchParams();
   const accountId = params.get('account_id') ?? '';
   const account = props.accounts.find((item) => item.accountId === accountId);
-  const summary = summarizeAccountPositions(account?.positions ?? []);
+  const positions = account?.positions ?? [];
+  const summary = summarizeAccountPositions(positions);
+  const assetRows = summarizeAccountAssets(positions);
   const usdValue = convertCurrencyTotals(summary.notionalByCurrency, 'USD', props.rateEdges);
 
   if (!accountId) {
@@ -1085,6 +937,30 @@ function AccountDetailPage(props: { accounts: PortfolioAccount[]; loading: boole
           <DetailItem label="Created" value={formatDate(account.credential.created_at)} />
           <DetailItem label="Updated" value={formatDate(account.credential.updated_at)} />
         </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-heading">
+          <div>
+            <p className="section-label">Account portfolio</p>
+            <h2>Asset exposure</h2>
+          </div>
+          <span className="count-chip">{assetRows.length} products</span>
+        </div>
+        <InlineError message={account.error} />
+        <DataTable
+          empty="This account returned no asset exposure."
+          headers={['Product', 'Currency', 'Rows', 'Volume', 'Free', 'Notional value', 'Floating P/L']}
+          rows={assetRows.map((row) => [
+            <code key="product">{row.productId}</code>,
+            row.currency,
+            row.rows.toString(),
+            formatNumber(row.volume),
+            formatNumber(row.freeVolume),
+            formatNumber(row.notionalValue),
+            <Value key="pnl" value={row.pnl} />,
+          ])}
+        />
       </section>
 
       <section className="panel">
@@ -1677,7 +1553,7 @@ function CredentialSecurityPanel() {
           </div>
           <div>
             <dt>Next check</dt>
-            <dd>Open Portfolio or Positions to validate that the key can read live data.</dd>
+            <dd>Open Accounts or Positions to validate that the key can read live data.</dd>
           </div>
         </dl>
       </div>
@@ -1958,7 +1834,7 @@ function fallbackAccountId(credential: Credential) {
   return `${credential.exchange}/local:${credential.id.slice(0, 8)}`;
 }
 
-function accountInfoToPortfolioAccount(account: AccountInfo): PortfolioAccount {
+function accountInfoToAccountSnapshot(account: AccountInfo): AccountSnapshot {
   return {
     accountId: account.account_id,
     credential: accountCredential(account),
@@ -2008,23 +1884,6 @@ function summarizePositions(positions: Position[]) {
   );
 }
 
-function summarizePortfolio(accounts: PortfolioAccount[]) {
-  return accounts.reduce(
-    (summary, account) => {
-      const accountSummary = summarizeAccountPositions(account.positions);
-      mergeCurrencyTotals(summary.notionalByCurrency, accountSummary.notionalByCurrency);
-      return {
-        credentials: summary.credentials + 1,
-        errors: summary.errors + (account.error ? 1 : 0),
-        positions: summary.positions + accountSummary.total,
-        notionalByCurrency: summary.notionalByCurrency,
-        pnl: summary.pnl + accountSummary.pnl,
-      };
-    },
-    { credentials: 0, errors: 0, positions: 0, notionalByCurrency: new Map<string, number>(), pnl: 0 },
-  );
-}
-
 function summarizeAccountPositions(positions: Position[]) {
   return positions.reduce(
     (summary, item) => {
@@ -2042,37 +1901,32 @@ function summarizeAccountPositions(positions: Position[]) {
   );
 }
 
-function summarizePortfolioAssets(accounts: PortfolioAccount[]) {
+function summarizeAccountAssets(positions: Position[]) {
   const rows = new Map<
     string,
-    { credentialIds: Set<string>; currency: string; freeVolume: number; notionalValue: number; pnl: number; productId: string; rows: number; volume: number }
+    { currency: string; freeVolume: number; notionalValue: number; pnl: number; productId: string; rows: number; volume: number }
   >();
-  for (const account of accounts) {
-    for (const position of account.positions) {
-      const currency = position.notional_currency ?? 'UNKNOWN';
-      const rowKey = `${position.product_id}\u0000${currency}`;
-      const current = rows.get(rowKey) ?? {
-        credentialIds: new Set<string>(),
-        currency,
-        freeVolume: 0,
-        notionalValue: 0,
-        pnl: 0,
-        productId: position.product_id,
-        rows: 0,
-        volume: 0,
-      };
-      current.credentialIds.add(account.credential.id);
-      current.rows += 1;
-      current.volume += finiteNumber(position.volume);
-      current.freeVolume += finiteNumber(position.free_volume);
-      current.notionalValue += finiteNumber(notionalValue(position));
-      current.pnl += finiteNumber(position.floating_profit);
-      rows.set(rowKey, current);
-    }
+  for (const position of positions) {
+    const currency = position.notional_currency ?? 'UNKNOWN';
+    const rowKey = `${position.product_id}\u0000${currency}`;
+    const current = rows.get(rowKey) ?? {
+      currency,
+      freeVolume: 0,
+      notionalValue: 0,
+      pnl: 0,
+      productId: position.product_id,
+      rows: 0,
+      volume: 0,
+    };
+    current.rows += 1;
+    current.volume += finiteNumber(position.volume);
+    current.freeVolume += finiteNumber(position.free_volume);
+    current.notionalValue += finiteNumber(notionalValue(position));
+    current.pnl += finiteNumber(position.floating_profit);
+    rows.set(rowKey, current);
   }
 
   return Array.from(rows.values())
-    .map((row) => ({ ...row, credentials: row.credentialIds.size }))
     .sort((a, b) => Math.abs(b.notionalValue) - Math.abs(a.notionalValue));
 }
 
@@ -2091,12 +1945,6 @@ function formatPositionNotional(position: Position) {
 function addCurrencyTotal(totals: Map<string, number>, currency: string | null, value: number) {
   const key = currency ?? 'UNKNOWN';
   totals.set(key, (totals.get(key) ?? 0) + finiteNumber(value));
-}
-
-function mergeCurrencyTotals(target: Map<string, number>, source: Map<string, number>) {
-  for (const [currency, value] of source.entries()) {
-    addCurrencyTotal(target, currency, value);
-  }
 }
 
 function formatNotionalBreakdown(totals: Map<string, number>) {
