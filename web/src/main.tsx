@@ -24,9 +24,7 @@ import {
   BadgeCheck,
   BarChart3,
   ChevronDown,
-  Combine,
   History,
-  KeyRound,
   LayoutDashboard,
   LineChart,
   Menu,
@@ -135,7 +133,11 @@ type AccountSnapshot = {
   credential: Credential;
   error: string | null;
   positions: Position[];
+  sourceLabel: string;
+  sourceType: AccountSourceType;
 };
+
+type AccountSourceType = 'credential' | 'virtual' | 'custom';
 
 type TradeFill = {
   exchange: string;
@@ -220,15 +222,13 @@ type BatchLoadState = {
   total: number;
 };
 
-type Page = 'overview' | 'accounts' | 'history' | 'credentials' | 'virtual-accounts' | 'funds' | 'positions' | 'products' | 'exchanges';
+type Page = 'overview' | 'accounts' | 'history' | 'funds' | 'positions' | 'products' | 'exchanges';
 type PageConfig = { id: Page; label: string; hint: string; path: string; icon: LucideIcon; primary?: boolean };
 
 const pages: PageConfig[] = [
   { id: 'overview', label: 'Overview', hint: 'Service and adapter status', path: '/overview', icon: LayoutDashboard, primary: true },
   { id: 'accounts', label: 'Accounts', hint: 'Account identities and detail', path: '/accounts', icon: WalletCards, primary: true },
   { id: 'history', label: 'Audit', hint: 'Read-only fill history', path: '/history', icon: History },
-  { id: 'credentials', label: 'Credentials', hint: 'Saved local metadata', path: '/credentials', icon: KeyRound },
-  { id: 'virtual-accounts', label: 'Virtual Accounts', hint: 'Linear account composition', path: '/virtual-accounts', icon: Combine },
   { id: 'funds', label: 'Funds', hint: 'Virtual account NAV records', path: '/funds', icon: LineChart, primary: true },
   { id: 'positions', label: 'Positions', hint: 'Assets and open exposure', path: '/positions', icon: BarChart3, primary: true },
   { id: 'products', label: 'Products', hint: 'Exchange product specs', path: '/products', icon: PackageSearch },
@@ -336,8 +336,8 @@ function App() {
           <Route path="/accounts" element={<PageBoundary><AccountsRoute /></PageBoundary>} />
           <Route path="/accounts/detail" element={<PageBoundary><AccountDetailRoute /></PageBoundary>} />
           <Route path="/history" element={<PageBoundary><TradeHistoryRoute /></PageBoundary>} />
-          <Route path="/credentials" element={<PageBoundary><CredentialsRoute /></PageBoundary>} />
-          <Route path="/virtual-accounts" element={<PageBoundary><VirtualAccountsRoute /></PageBoundary>} />
+          <Route path="/credentials" element={<Navigate replace to="/accounts" />} />
+          <Route path="/virtual-accounts" element={<Navigate replace to="/accounts" />} />
           <Route path="/funds" element={<PageBoundary><FundsRoute /></PageBoundary>} />
           <Route path="/positions" element={<PageBoundary><PositionsRoute /></PageBoundary>} />
           <Route path="/products" element={<PageBoundary><ProductsRoute /></PageBoundary>} />
@@ -552,23 +552,38 @@ function OverviewRoute() {
 }
 
 function AccountsRoute() {
+  const queryClient = useQueryClient();
   const rates = useJson<CurrencyRateSnapshot>('/api/rates?target=USD');
   const customAccountSources = useJson<CustomAccountSource[]>('/api/custom-account-sources');
   const credentials = useJson<Credential[]>('/api/credentials');
+  const exchanges = useJson<ExchangeInfo[]>('/api/exchanges');
   const accountRefs = useJson<AccountRef[]>('/api/account-refs');
   const virtualAccounts = useJson<VirtualAccountConfig[]>('/api/virtual-accounts');
+  const credentialList = credentials.data ?? emptyCredentials;
+  const accountIds = useMemo(
+    () => accountIdsFromRefs(accountRefs.data ?? []),
+    [accountRefs.data],
+  );
   const accounts = [
-    ...credentialAccounts(credentials.data ?? emptyCredentials, accountRefs.data ?? []),
+    ...credentialAccounts(credentialList, accountRefs.data ?? []),
     ...virtualAccountSnapshots(virtualAccounts.data ?? emptyVirtualAccountConfigs),
   ];
 
   return (
-    <RefreshScope resources={[rates, customAccountSources, credentials, accountRefs, virtualAccounts]}>
+    <RefreshScope resources={[rates, customAccountSources, credentials, exchanges, accountRefs, virtualAccounts]}>
       <AccountsPage
+        accountIds={accountIds}
         accounts={accounts}
+        credentials={credentialList}
         customSources={customAccountSources.data ?? []}
-        loading={credentials.loading || accountRefs.loading || customAccountSources.loading || virtualAccounts.loading}
+        exchanges={exchanges.data ?? []}
+        loading={credentials.loading || accountRefs.loading || customAccountSources.loading || exchanges.loading || virtualAccounts.loading}
         rateEdges={rates.data?.edges ?? []}
+        virtualAccounts={virtualAccounts.data ?? emptyVirtualAccountConfigs}
+        onCredentialCreated={() => {
+          void queryClient.invalidateQueries({ queryKey: ['json', '/api/credentials'] });
+          void queryClient.invalidateQueries({ queryKey: ['json', '/api/account-refs'] });
+        }}
       />
     </RefreshScope>
   );
@@ -603,60 +618,6 @@ function TradeHistoryRoute() {
   return (
     <RefreshScope batch={batch} resources={[credentials, accountRefs]}>
       <TradeHistoryPage accountIds={accountIds} accounts={tradeHistory.accounts} loading={tradeHistory.loading} loadState={tradeHistory} />
-    </RefreshScope>
-  );
-}
-
-function CredentialsRoute() {
-  const queryClient = useQueryClient();
-  const exchanges = useJson<ExchangeInfo[]>('/api/exchanges');
-  const credentials = useJson<Credential[]>('/api/credentials');
-  const accountRefs = useJson<AccountRef[]>('/api/account-refs');
-  const credentialList = credentials.data ?? emptyCredentials;
-  const accountIds = useMemo(
-    () => accountIdsFromRefs(accountRefs.data ?? []),
-    [accountRefs.data],
-  );
-
-  return (
-    <RefreshScope resources={[exchanges, credentials, accountRefs]}>
-      <CredentialsPage
-        accountIds={accountIds}
-        credentials={credentialList}
-        exchanges={exchanges.data ?? []}
-        onCreated={() => {
-          void queryClient.invalidateQueries({ queryKey: ['json', '/api/credentials'] });
-          void queryClient.invalidateQueries({ queryKey: ['json', '/api/account-refs'] });
-        }}
-      />
-    </RefreshScope>
-  );
-}
-
-function VirtualAccountsRoute() {
-  const credentials = useJson<Credential[]>('/api/credentials');
-  const accountRefs = useJson<AccountRef[]>('/api/account-refs');
-  const virtualAccounts = useJson<VirtualAccountConfig[]>('/api/virtual-accounts');
-  const credentialList = credentials.data ?? emptyCredentials;
-  const accountIds = useMemo(
-    () => accountIdsFromRefs(accountRefs.data ?? []),
-    [accountRefs.data],
-  );
-  const [selectedAccountId, setSelectedAccountId] = useState('');
-  const virtualAccount = useJson<AccountInfo[]>(selectedAccountId ? `/api/accounts?account_id=${encodeURIComponent(selectedAccountId)}` : null);
-
-  return (
-    <RefreshScope resources={[credentials, accountRefs, virtualAccounts, virtualAccount]}>
-      <VirtualAccountsPage
-        accountIds={accountIds}
-        accountInfo={virtualAccount.data?.[0] ?? null}
-        configs={virtualAccounts.data ?? emptyVirtualAccountConfigs}
-        credentials={credentialList}
-        error={virtualAccounts.error ?? virtualAccount.error}
-        loading={virtualAccounts.loading || virtualAccount.loading}
-        selectedAccountId={selectedAccountId}
-        onSelectAccount={setSelectedAccountId}
-      />
     </RefreshScope>
   );
 }
@@ -783,20 +744,30 @@ function OverviewPage(props: {
   );
 }
 
-function AccountsPage(props: { accounts: AccountSnapshot[]; customSources: CustomAccountSource[]; loading: boolean; rateEdges: CurrencyRateEdge[] }) {
+function AccountsPage(props: {
+  accountIds: AccountIds;
+  accounts: AccountSnapshot[];
+  credentials: Credential[];
+  customSources: CustomAccountSource[];
+  exchanges: ExchangeInfo[];
+  loading: boolean;
+  rateEdges: CurrencyRateEdge[];
+  virtualAccounts: VirtualAccountConfig[];
+  onCredentialCreated: (credential: Credential) => void;
+}) {
   return (
     <div className="page-stack">
       <section className="metrics-grid compact" aria-label="Accounts summary">
         <Metric label="Accounts" value={props.accounts.length.toString()} />
+        <Metric label="EX credentials" value={props.credentials.length.toString()} />
+        <Metric label="Virtual accounts" value={props.virtualAccounts.length.toString()} />
+        <Metric label="Custom sources" value={props.customSources.length.toString()} />
         <Metric label="Loaded" value={props.accounts.filter((account) => !account.error).length.toString()} />
         <Metric label="Read errors" value={props.accounts.filter((account) => account.error).length.toString()} tone={props.accounts.some((account) => account.error) ? 'warn' : 'neutral'} />
-        <Metric label="Custom sources" value={props.customSources.length.toString()} />
         <Metric label="Status" value={props.loading ? 'Loading' : 'Ready'} />
       </section>
 
-      <CustomAccountSourcePanel sources={props.customSources} />
-
-      <section className="panel">
+      <section className="panel" id="account-registry">
         <div className="panel-heading">
           <div>
             <p className="section-label">Account registry</p>
@@ -805,23 +776,48 @@ function AccountsPage(props: { accounts: AccountSnapshot[]; customSources: Custo
           <LoadingStatus active={props.loading} label={props.loading ? 'Loading' : `${props.accounts.length} accounts`} />
         </div>
         <DataTable
-          empty="No accounts loaded yet. Add credentials first, then the account registry will appear here."
-          headers={['AccountID', 'Credential', 'Exchange', 'Positions', 'Assets', 'USD converted', 'Floating P/L', 'Status']}
+          empty="No accounts loaded yet. Add a credential, virtual account, or custom account source below."
+          headers={['AccountID', 'Source type', 'Name', 'Protocol', 'Positions', 'Assets', 'USD converted', 'Floating P/L', 'Status', 'Action']}
           rows={props.accounts.map((account) => {
             const summary = summarizeAccountPositions(account.positions);
             return [
               <AccountIdLink accountId={account.accountId} key="account" />,
+              sourceTypeLabel(account.sourceType),
               account.credential.name,
-              <Badge key="exchange">{account.credential.exchange}</Badge>,
+              <Badge key="protocol">{account.sourceLabel}</Badge>,
               summary.total.toString(),
               summary.assets.toString(),
               formatConvertedValue(convertCurrencyTotals(summary.notionalByCurrency, 'USD', props.rateEdges), 'USD'),
               <Value key="pnl" value={summary.pnl} />,
               account.error ? <span className="status-text bad" key="status">{account.error}</span> : <span className="status-text good" key="status">Loaded</span>,
+              <Button key="action" variant="outline" type="button" onClick={() => scrollToAccountSource(account.sourceType)}>
+                Edit
+              </Button>,
             ];
           })}
         />
       </section>
+
+      <div className="account-source-section" id="account-source-credential">
+        <PanelTitle label="Account source" title="Real EX credentials" action={props.credentials.length + ' saved'} />
+        <div className="credential-manager">
+          <CredentialCreatePanel exchanges={props.exchanges} onCreated={props.onCredentialCreated} />
+          <CredentialSecurityPanel />
+        </div>
+        <CredentialInventory accountIds={props.accountIds} credentials={props.credentials} />
+        <CredentialSchemaPanel exchanges={props.exchanges} />
+      </div>
+
+      <div className="account-source-section" id="account-source-virtual">
+        <PanelTitle label="Account source" title="Virtual accounts" action={props.virtualAccounts.length + ' configs'} />
+        <VirtualAccountCreatePanel accountIds={props.accountIds} credentials={props.credentials} />
+        <VirtualAccountInventory configs={props.virtualAccounts} />
+      </div>
+
+      <div className="account-source-section" id="account-source-custom">
+        <PanelTitle label="Account source" title="Custom account sources" action={props.customSources.length + ' sources'} />
+        <CustomAccountSourcePanel sources={props.customSources} />
+      </div>
     </div>
   );
 }
@@ -1108,102 +1104,44 @@ function PanelTitle(props: { action?: string; label: string; title: string }) {
   );
 }
 
-function CredentialsPage(props: {
-  accountIds: AccountIds;
-  credentials: Credential[];
-  exchanges: ExchangeInfo[];
-  onCreated: (credential: Credential) => void;
-}) {
+function CredentialSchemaPanel(props: { exchanges: ExchangeInfo[] }) {
   return (
-    <div className="page-stack">
-      <div className="credential-manager">
-        <CredentialCreatePanel exchanges={props.exchanges} onCreated={props.onCreated} />
-        <CredentialSecurityPanel />
+    <section className="panel">
+      <div className="panel-heading">
+        <div>
+          <p className="section-label">Required payload fields</p>
+          <h2>Credential schemas</h2>
+        </div>
       </div>
-
-      <CredentialInventory accountIds={props.accountIds} credentials={props.credentials} />
-
-      <section className="panel">
-        <div className="panel-heading">
-          <div>
-            <p className="section-label">Required payload fields</p>
-            <h2>Credential schemas</h2>
+      <div className="schema-grid">
+        {props.exchanges.map((exchange) => (
+          <div className="schema-row" key={exchange.id}>
+            <strong>{exchange.id}</strong>
+            <span>{exchange.credential_schema.required?.join(', ') || 'No required fields'}</span>
           </div>
-        </div>
-        <div className="schema-grid">
-          {props.exchanges.map((exchange) => (
-            <div className="schema-row" key={exchange.id}>
-              <strong>{exchange.id}</strong>
-              <span>{exchange.credential_schema.required?.join(', ') || 'No required fields'}</span>
-            </div>
-          ))}
-        </div>
-      </section>
-    </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
-function VirtualAccountsPage(props: {
-  accountIds: AccountIds;
-  accountInfo: AccountInfo | null;
-  configs: VirtualAccountConfig[];
-  credentials: Credential[];
-  error: string | null;
-  loading: boolean;
-  selectedAccountId: string;
-  onSelectAccount: (accountId: string) => void;
-}) {
-  const positions = props.accountInfo?.positions ?? [];
-  const exposure = summarizeAccountPositions(positions);
-
+function VirtualAccountInventory(props: { configs: VirtualAccountConfig[] }) {
   return (
-    <div className="page-stack">
-      <VirtualAccountCreatePanel accountIds={props.accountIds} credentials={props.credentials} />
-
-      <section className="panel">
-        <PanelTitle label="Virtual account configs" title="Local linear compositions" action={`${props.configs.length} configs`} />
-        <InlineError message={props.error} />
-        <DataTable
-          empty="No virtual account configs yet."
-          headers={['Account', 'Name', 'Status', 'Sources', 'Updated', 'Action']}
-          rows={props.configs.map((config) => [
-            <code key="account">{config.account_id}</code>,
-            config.name,
-            config.enabled ? 'Enabled' : 'Disabled',
-            config.sources.filter((source) => source.enabled).length + '/' + config.sources.length,
-            config.updated_at,
-            <Button variant="outline" disabled={!config.enabled} key="action" type="button" onClick={() => props.onSelectAccount(config.account_id)}>
-              Compose now
-            </Button>,
-          ])}
-        />
-      </section>
-
-      <section className="panel">
-        <PanelTitle label="Temporary result" title={props.selectedAccountId || 'No virtual account selected'} action={props.loading ? 'Loading' : `${positions.length} positions`} />
-        <section className="metrics-grid" aria-label="Virtual account summary">
-          <Metric label="Assets" value={exposure.assets.toString()} />
-          <Metric label="Long" value={exposure.long.toString()} />
-          <Metric label="Short" value={exposure.short.toString()} />
-          <Metric label="Notional groups" value={exposure.notionalByCurrency.size.toString()} />
-        </section>
-        <DataTable
-          empty="Compose a virtual account to preview its temporary positions."
-          headers={['Product', 'Base', 'Quote', 'Direction', 'Volume', 'Free', 'Price', 'Notional', 'PnL']}
-          rows={positions.map((position) => [
-            position.product_id,
-            position.base_currency ?? '-',
-            position.quote_currency ?? '-',
-            position.direction ?? 'ASSET',
-            formatNumber(position.volume),
-            formatNumber(position.free_volume),
-            formatNumber(position.position_price),
-            formatPositionNotional(position),
-            <Value value={position.floating_profit} />,
-          ])}
-        />
-      </section>
-    </div>
+    <section className="panel">
+      <PanelTitle label="Virtual account configs" title="Local linear compositions" action={props.configs.length + ' configs'} />
+      <DataTable
+        empty="No virtual account configs yet."
+        headers={['Account', 'Name', 'Status', 'Sources', 'Updated', 'Action']}
+        rows={props.configs.map((config) => [
+          <code key="account">{config.account_id}</code>,
+          config.name,
+          config.enabled ? 'Enabled' : 'Disabled',
+          config.sources.filter((source) => source.enabled).length + '/' + config.sources.length,
+          config.updated_at,
+          config.enabled ? <AccountIdLink accountId={config.account_id} key="action" /> : '-',
+        ])}
+      />
+    </section>
   );
 }
 
@@ -1515,7 +1453,7 @@ function CredentialCreatePanel(props: { exchanges: ExchangeInfo[]; onCreated: (c
           {fields.map((field) => (
             <label key={field}>
               {field}
-              <input
+              <Input
                 autoComplete="off"
                 required
                 type={isSecretCredentialField(field) ? 'password' : 'text'}
@@ -1802,6 +1740,20 @@ function currentPage(pathname: string) {
   return pages.find((item) => item.path === pathname) ?? pages.find((item) => pathname.startsWith(`${item.path}/`)) ?? pages[0];
 }
 
+function sourceTypeLabel(sourceType: AccountSourceType) {
+  if (sourceType === 'credential') {
+    return 'Real EX credential';
+  }
+  if (sourceType === 'virtual') {
+    return 'Virtual account';
+  }
+  return 'Custom account source';
+}
+
+function scrollToAccountSource(sourceType: AccountSourceType) {
+  document.getElementById('account-source-' + sourceType)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
 function accountIdForCredential(credential: Credential, accountIds: AccountIds) {
   return accountIds[credential.id] ?? fallbackAccountId(credential);
 }
@@ -1821,6 +1773,8 @@ function credentialAccounts(credentials: Credential[], refs: AccountRef[]) {
       credential,
       error: accountRef?.error ?? null,
       positions: [],
+      sourceLabel: credential.exchange,
+      sourceType: 'credential' as const,
     };
   });
 }
@@ -1833,6 +1787,8 @@ function virtualAccountSnapshots(configs: VirtualAccountConfig[]) {
       credential: virtualAccountCredential(config),
       error: null,
       positions: [],
+      sourceLabel: 'Linear composer',
+      sourceType: 'virtual' as const,
     }));
 }
 
@@ -1866,6 +1822,8 @@ function accountInfoToAccountSnapshot(account: AccountInfo): AccountSnapshot {
     credential: accountCredential(account),
     error: null,
     positions: account.positions,
+    sourceLabel: 'Live read',
+    sourceType: 'credential',
   };
 }
 
