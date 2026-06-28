@@ -8,9 +8,33 @@ import { Badge as UiBadge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { cn } from '@/lib/utils';
+import {
+  BadgeCheck,
+  BarChart3,
+  ChartNoAxesCombined,
+  ChevronDown,
+  Combine,
+  History,
+  KeyRound,
+  LayoutDashboard,
+  LineChart,
+  Menu,
+  PackageSearch,
+  WalletCards,
+  type LucideIcon,
+} from 'lucide-react';
 import './styles.css';
 
 type Health = {
@@ -198,19 +222,21 @@ type BatchLoadState = {
 };
 
 type Page = 'overview' | 'accounts' | 'portfolio' | 'history' | 'credentials' | 'virtual-accounts' | 'funds' | 'positions' | 'products' | 'exchanges';
+type PageConfig = { id: Page; label: string; hint: string; path: string; icon: LucideIcon; primary?: boolean };
 
-const pages: Array<{ id: Page; label: string; hint: string; path: string }> = [
-  { id: 'overview', label: 'Overview', hint: 'Service and adapter status', path: '/overview' },
-  { id: 'accounts', label: 'Accounts', hint: 'Account identities and detail', path: '/accounts' },
-  { id: 'portfolio', label: 'Portfolio', hint: 'All credential assets', path: '/portfolio' },
-  { id: 'history', label: 'Audit', hint: 'Read-only fill history', path: '/history' },
-  { id: 'credentials', label: 'Credentials', hint: 'Saved local metadata', path: '/credentials' },
-  { id: 'virtual-accounts', label: 'Virtual Accounts', hint: 'Linear account composition', path: '/virtual-accounts' },
-  { id: 'funds', label: 'Funds', hint: 'Virtual account NAV records', path: '/funds' },
-  { id: 'positions', label: 'Positions', hint: 'Assets and open exposure', path: '/positions' },
-  { id: 'products', label: 'Products', hint: 'Exchange product specs', path: '/products' },
-  { id: 'exchanges', label: 'Exchanges', hint: 'Schemas and capabilities', path: '/exchanges' },
+const pages: PageConfig[] = [
+  { id: 'overview', label: 'Overview', hint: 'Service and adapter status', path: '/overview', icon: LayoutDashboard, primary: true },
+  { id: 'accounts', label: 'Accounts', hint: 'Account identities and detail', path: '/accounts', icon: WalletCards, primary: true },
+  { id: 'portfolio', label: 'Portfolio', hint: 'All credential assets', path: '/portfolio', icon: ChartNoAxesCombined, primary: true },
+  { id: 'history', label: 'Audit', hint: 'Read-only fill history', path: '/history', icon: History },
+  { id: 'credentials', label: 'Credentials', hint: 'Saved local metadata', path: '/credentials', icon: KeyRound },
+  { id: 'virtual-accounts', label: 'Virtual Accounts', hint: 'Linear account composition', path: '/virtual-accounts', icon: Combine },
+  { id: 'funds', label: 'Funds', hint: 'Virtual account NAV records', path: '/funds', icon: LineChart, primary: true },
+  { id: 'positions', label: 'Positions', hint: 'Assets and open exposure', path: '/positions', icon: BarChart3, primary: true },
+  { id: 'products', label: 'Products', hint: 'Exchange product specs', path: '/products', icon: PackageSearch },
+  { id: 'exchanges', label: 'Exchanges', hint: 'Schemas and capabilities', path: '/exchanges', icon: BadgeCheck },
 ];
+const primaryPages = pages.filter((item) => item.primary);
 
 const emptyCredentials: Credential[] = [];
 const emptyVirtualAccountConfigs: VirtualAccountConfig[] = [];
@@ -355,42 +381,10 @@ function App() {
   const health = useJson<Health>('/api/health');
 
   return (
-    <div className="flex min-h-screen bg-muted/30 max-md:block">
-      <aside className="sticky top-0 flex h-screen w-72 shrink-0 flex-col gap-7 border-r bg-sidebar p-6 text-sidebar-foreground max-md:static max-md:h-auto max-md:w-full" aria-label="Primary navigation">
-        <div className="flex items-center gap-3">
-          <span className="grid size-10 place-items-center rounded-lg bg-sidebar-primary text-sm font-semibold text-sidebar-primary-foreground">1E</span>
-          <div>
-            <strong className="block">1Exchange</strong>
-            <span className="block text-sm text-muted-foreground">Local account console</span>
-          </div>
-        </div>
-        <nav className="flex flex-col gap-1">
-          {pages.map((item) => (
-            <NavLink
-              className={({ isActive }) =>
-                cn(
-                  'rounded-lg px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50',
-                  isActive && 'bg-sidebar-accent text-sidebar-accent-foreground',
-                )
-              }
-              key={item.id}
-              to={item.path}
-            >
-              <span className="block font-medium text-foreground">{item.label}</span>
-              <small className="block text-xs text-muted-foreground">{item.hint}</small>
-            </NavLink>
-          ))}
-        </nav>
-      </aside>
+    <div className="min-h-screen bg-muted/30">
+      <AppHeader healthStatus={health.data?.status ?? 'checking'} page={page} />
 
-      <main className="min-w-0 flex-1 p-7 max-md:p-4">
-        <header className="mb-6 flex items-start justify-between gap-5 max-md:flex-col">
-          <div>
-            <SectionLabel>{page.label}</SectionLabel>
-            <h1 className="text-2xl font-semibold leading-tight">{page.hint}</h1>
-          </div>
-          <UiBadge variant={health.data?.status === 'ok' ? 'secondary' : 'outline'}>API {health.data?.status ?? 'checking'}</UiBadge>
-        </header>
+      <main className="mx-auto w-full max-w-[1600px] px-7 py-6 max-md:px-4">
         <Routes>
           <Route path="/" element={<Navigate replace to="/overview" />} />
           <Route path="/overview" element={<PageBoundary><OverviewRoute /></PageBoundary>} />
@@ -408,6 +402,106 @@ function App() {
         </Routes>
       </main>
     </div>
+  );
+}
+
+function AppHeader(props: { healthStatus: string; page: PageConfig }) {
+  const CurrentIcon = props.page.icon;
+
+  return (
+    <header className="sticky top-0 z-40 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+      <div className="mx-auto flex w-full max-w-[1600px] items-center gap-5 px-7 py-3 max-md:px-4">
+        <Link className="flex min-w-0 items-center gap-3 rounded-lg focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50" to="/overview">
+          <span className="grid size-9 place-items-center rounded-lg bg-primary text-sm font-semibold text-primary-foreground">1E</span>
+          <span className="min-w-0">
+            <strong className="block leading-tight">1Exchange</strong>
+            <span className="block truncate text-xs text-muted-foreground">Local account console</span>
+          </span>
+        </Link>
+
+        <nav className="hidden items-center gap-1 lg:flex" aria-label="Primary navigation">
+          {primaryPages.map((item) => (
+            <TopNavLink item={item} key={item.id} />
+          ))}
+        </nav>
+
+        <div className="ml-auto flex items-center gap-2">
+          <UiBadge className="hidden sm:inline-flex" variant={props.healthStatus === 'ok' ? 'secondary' : 'outline'}>API {props.healthStatus}</UiBadge>
+          <DropdownNavigation currentPage={props.page} />
+        </div>
+      </div>
+
+      <div className="mx-auto flex w-full max-w-[1600px] items-center gap-2 px-7 pb-4 max-md:px-4">
+        <span className="text-muted-foreground">
+          <CurrentIcon />
+        </span>
+        <div className="min-w-0">
+          <SectionLabel>{props.page.label}</SectionLabel>
+          <h1 className="truncate text-2xl font-semibold leading-tight">{props.page.hint}</h1>
+        </div>
+      </div>
+    </header>
+  );
+}
+
+function TopNavLink(props: { item: PageConfig }) {
+  const Icon = props.item.icon;
+
+  return (
+    <NavLink
+      className={({ isActive }) =>
+        cn(
+          'inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50',
+          isActive && 'bg-muted text-foreground',
+        )
+      }
+      to={props.item.path}
+    >
+      <Icon />
+      {props.item.label}
+    </NavLink>
+  );
+}
+
+function DropdownNavigation(props: { currentPage: PageConfig }) {
+  const CurrentIcon = props.currentPage.icon;
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger render={
+        <Button variant="outline">
+          <Menu data-icon="inline-start" />
+          <span className="hidden sm:inline">Menu</span>
+          <ChevronDown data-icon="inline-end" />
+        </Button>
+      } />
+      <DropdownMenuContent align="end" className="w-72">
+        <DropdownMenuGroup>
+          <DropdownMenuLabel>Navigation</DropdownMenuLabel>
+          {pages.map((item) => {
+            const Icon = item.icon;
+            return (
+              <DropdownMenuItem
+                className={cn(item.id === props.currentPage.id && 'bg-muted text-foreground')}
+                key={item.id}
+                render={<Link to={item.path} />}
+              >
+                <Icon />
+                <span className="flex min-w-0 flex-col">
+                  <span className="font-medium">{item.label}</span>
+                  <span className="truncate text-xs text-muted-foreground">{item.hint}</span>
+                </span>
+              </DropdownMenuItem>
+            );
+          })}
+        </DropdownMenuGroup>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem disabled>
+          <CurrentIcon />
+          <span>Current: {props.currentPage.label}</span>
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
