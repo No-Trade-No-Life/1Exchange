@@ -148,11 +148,11 @@
   }
 
   .metrics-grid {
-    @apply grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3;
+    @apply grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-3;
   }
 
   .metrics-grid.compact {
-    @apply grid-cols-[repeat(auto-fit,minmax(140px,1fr))];
+    @apply grid-cols-[repeat(auto-fit,minmax(240px,1fr))];
   }
 
   .panel,

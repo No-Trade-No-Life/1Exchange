@@ -1765,12 +1765,12 @@ function Metric(props: { label: string; value: string; tone?: 'neutral' | 'good'
   const valueClassName = props.tone === 'warn' ? 'text-destructive' : props.tone === 'good' ? 'text-primary' : 'text-foreground';
 
   return (
-    <Card size="sm">
+    <Card className="min-w-0" size="sm">
       <CardHeader>
         <CardDescription>{props.label}</CardDescription>
       </CardHeader>
-      <CardContent>
-        <strong className={cn('break-words text-2xl font-semibold leading-tight', valueClassName)}>{props.value}</strong>
+      <CardContent className="min-w-0">
+        <strong className={cn('block text-xl font-semibold leading-snug [overflow-wrap:anywhere]', valueClassName)}>{props.value}</strong>
       </CardContent>
     </Card>
   );
