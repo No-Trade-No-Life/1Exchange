@@ -2147,11 +2147,16 @@ fn summarize_investor_taxes(investors: &[FundInvestorSettlement]) -> Vec<FundInv
 }
 
 fn summarize_referrer_rebates(investors: &[FundInvestorSettlement]) -> Vec<FundReferrerRebate> {
+    let investor_names = investors
+        .iter()
+        .map(|investor| investor.name.as_str())
+        .collect::<Vec<_>>();
     let mut rebates = HashMap::<String, f64>::new();
 
     for investor in investors {
         if let Some(referrer) = &investor.referrer {
-            if investor.referrer_rebate > 0.0 {
+            if investor.referrer_rebate > 0.0 && investor_names.iter().any(|name| *name == referrer)
+            {
                 *rebates.entry(referrer.clone()).or_default() += investor.referrer_rebate;
             }
         }
@@ -2780,16 +2785,15 @@ mod tests {
         let rows = summarize_referrer_rebates(&[
             investor_rebate("Alice", Some("Carol"), 3.0),
             investor_rebate("Bob", Some("Carol"), 5.0),
+            investor_rebate("Carol", None, 0.0),
             investor_rebate("Dan", Some("Eve"), 0.0),
             investor_rebate("Finn", Some("Grace"), 7.0),
             investor_rebate("Heidi", None, 11.0),
         ]);
 
-        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].referrer, "Carol");
         assert_close(rows[0].rebate, 8.0);
-        assert_eq!(rows[1].referrer, "Grace");
-        assert_close(rows[1].rebate, 7.0);
     }
 
     #[test]
