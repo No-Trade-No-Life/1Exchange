@@ -1724,7 +1724,7 @@ function FundDetailPage(props: {
         />
         <Metric label="Capped units" value={statement ? formatNumber(statement.totals.capped_units) : '-'} />
         <Metric label="Capped cash" value={statement ? formatNumber(statement.totals.capped_cash_amount) : '-'} />
-        <Metric label="Legacy equity" value={statement?.latest_equity ? formatNumber(statement.latest_equity.equity) : '-'} />
+        <Metric label="Statement equity" value={statement?.latest_equity ? formatNumber(statement.latest_equity.equity) : '-'} />
         <Metric label="Tax modes" value={statement ? statement.totals.tax_modes.toString() : '-'} />
         <Metric label="Event unit price" value={statement ? formatNumber(statement.event_state.unit_price) : '-'} />
         <Metric label="Event taxed" value={statement ? formatNumber(statement.event_state.total_taxed) : '-'} />
@@ -1743,7 +1743,7 @@ function FundDetailPage(props: {
           value={statement?.reconciliation?.delta_rate == null ? '-' : formatPercent(statement.reconciliation.delta_rate)}
           tone={statement?.reconciliation?.delta_rate && Math.abs(statement.reconciliation.delta_rate) > 0.0001 ? 'warn' : 'neutral'}
         />
-        <Metric label="Legacy time" value={statement?.reconciliation ? formatDate(statement.reconciliation.legacy_updated_at) : '-'} />
+        <Metric label="Statement time" value={statement?.reconciliation ? formatDate(statement.reconciliation.legacy_updated_at) : '-'} />
         <Metric label="NAV time" value={statement?.reconciliation ? formatDate(statement.reconciliation.nav_created_at) : '-'} />
       </section>
 
@@ -1908,13 +1908,13 @@ function FundDetailPage(props: {
 
       <section className="panel">
         <PanelTitle
-          label="Legacy statement"
+          label="Statement history"
           title="Event-state investors"
           action={statement ? statement.event_state.investors.length + ' investors' : undefined}
         />
         <InlineError message={props.statementError} />
         <DataTable
-          empty="No folded legacy event state is available for this fund."
+          empty="No folded statement state is available for this fund."
           headers={['Investor', 'Referrer', 'After-tax assets', 'Share', 'Share %', 'Tax due', 'Taxed', 'Tax threshold', 'Rebate claimed', 'Deposit']}
           rows={(statement?.event_state.investors ?? []).map((investor) => [
             investor.name,
@@ -1933,13 +1933,13 @@ function FundDetailPage(props: {
 
       <section className="panel">
         <PanelTitle
-          label="Legacy statement"
+          label="Statement history"
           title="Investor cash and units"
           action={statement ? statement.investor_ledger.length + ' investors' : undefined}
         />
         <InlineError message={props.statementError} />
         <DataTable
-          empty="No legacy investor cash ledger is available for this fund."
+          empty="No statement cash ledger is available for this fund."
           headers={['Investor', 'Net cash', 'Effective cash', 'Inflows', 'Outflows', 'Capped cash', 'Units', 'Flows', 'Last flow']}
           rows={(statement?.investor_ledger ?? []).map((investor) => [
             investor.investor_name,
@@ -1957,13 +1957,13 @@ function FundDetailPage(props: {
 
       <section className="panel">
         <PanelTitle
-          label="Legacy statement"
+          label="Statement history"
           title="Investor ledger"
           action={statement ? statement.investors.length + ' investors' : undefined}
         />
         <InlineError message={props.statementError} />
         <DataTable
-          empty="No legacy statement investors are available for this fund."
+          empty="No statement investors are available for this fund."
           headers={['Investor', 'Referrer', 'Tax rate', 'Rebate rate', 'Tax threshold', 'Updated']}
           rows={(statement?.investors ?? []).map((investor) => [
             investor.name,
@@ -1978,7 +1978,7 @@ function FundDetailPage(props: {
 
       <section className="panel">
         <PanelTitle
-          label="Legacy statement"
+          label="Statement history"
           title="Tax threshold adjustments"
           action={statement ? statement.tax_threshold_adjustments.length + ' adjustments' : undefined}
         />
@@ -1997,12 +1997,12 @@ function FundDetailPage(props: {
 
       <section className="panel">
         <PanelTitle
-          label="Legacy statement"
+          label="Statement history"
           title="Recent cash flows"
           action={statement ? statement.recent_orders.length + ' flows' : undefined}
         />
         <DataTable
-          empty="No legacy statement cash flows are available for this fund."
+          empty="No statement cash flows are available for this fund."
           headers={['Time', 'Investor', 'Direction', 'Amount', 'Effective amount', 'Capped cash', 'NAV/unit', 'Requested units', 'Unit delta', 'Capped units', 'Investor units', 'Fund units', 'Event']}
           rows={(statement?.recent_orders ?? []).map((order) => [
             formatDate(order.updated_at),
@@ -2024,12 +2024,12 @@ function FundDetailPage(props: {
 
       <section className="panel">
         <PanelTitle
-          label="Legacy statement"
+          label="Statement history"
           title="Tax modes"
           action={statement ? statement.tax_modes.length + ' markers' : undefined}
         />
         <DataTable
-          empty="No legacy tax mode markers are available for this fund."
+          empty="No statement tax mode markers are available for this fund."
           headers={['Time', 'Mode', 'Comment', 'Event']}
           rows={(statement?.tax_modes ?? []).map((mode) => [
             formatDate(mode.updated_at),
@@ -2784,7 +2784,7 @@ function settlementBasisLabel(source: string) {
     return 'Live NAV';
   }
   if (source === 'legacy_statement') {
-    return 'Legacy statement';
+    return 'Statement history';
   }
   return source;
 }
