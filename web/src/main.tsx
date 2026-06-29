@@ -1553,7 +1553,8 @@ function FundDetailPage(props: {
   const statement = props.statementSummary;
   const settlement = props.settlementPreview;
   const draftSettlementRuns = props.settlementRuns.filter((run) => run.status === 'draft');
-  const historicalSettlementRuns = props.settlementRuns.filter((run) => run.status !== 'draft');
+  const confirmedSettlementRuns = props.settlementRuns.filter((run) => run.status === 'confirmed');
+  const voidedSettlementRuns = props.settlementRuns.filter((run) => run.status === 'voided');
 
   async function sampleFund() {
     const response = await fetch('/api/funds/sample?fund_id=' + encodeURIComponent(props.fundId), { method: 'POST' });
@@ -1798,19 +1799,32 @@ function FundDetailPage(props: {
       <section className="panel">
         <PanelTitle
           label="Settlement runs"
-          title="Settlement history"
-          action={historicalSettlementRuns.length + ' runs'}
+          title="Confirmed settlements"
+          action={confirmedSettlementRuns.length + ' runs'}
         />
-        <DataTable
-          empty="No confirmed or voided settlement runs are recorded yet."
-          headers={settlementRunHeaders}
-          rows={settlementRunRows({
-            actioningRunId: settlementRunActionId,
-            onConfirm: (runId) => void updateSettlementRunStatus(runId, 'confirm'),
-            onInspect: setSelectedSettlementRunId,
-            onVoid: (runId) => void updateSettlementRunStatus(runId, 'void'),
-            runs: historicalSettlementRuns,
-          })}
+        <SettlementRunsTable
+          actioningRunId={settlementRunActionId}
+          empty="No confirmed settlement runs are recorded yet."
+          runs={confirmedSettlementRuns}
+          onConfirm={(runId) => void updateSettlementRunStatus(runId, 'confirm')}
+          onInspect={setSelectedSettlementRunId}
+          onVoid={(runId) => void updateSettlementRunStatus(runId, 'void')}
+        />
+      </section>
+
+      <section className="panel">
+        <PanelTitle
+          label="Settlement runs"
+          title="Voided runs"
+          action={voidedSettlementRuns.length + ' runs'}
+        />
+        <SettlementRunsTable
+          actioningRunId={settlementRunActionId}
+          empty="No voided settlement runs are recorded yet."
+          runs={voidedSettlementRuns}
+          onConfirm={(runId) => void updateSettlementRunStatus(runId, 'confirm')}
+          onInspect={setSelectedSettlementRunId}
+          onVoid={(runId) => void updateSettlementRunStatus(runId, 'void')}
         />
       </section>
 
