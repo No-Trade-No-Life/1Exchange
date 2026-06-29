@@ -64,6 +64,16 @@ pub struct FundSettlementQuery {
 }
 
 #[derive(Deserialize)]
+pub struct FundSettlementRunQuery {
+    run_id: String,
+}
+
+#[derive(Deserialize)]
+pub struct CreateFundSettlementRunRequest {
+    fund_id: String,
+}
+
+#[derive(Deserialize)]
 pub struct SampleFundQuery {
     fund_id: String,
 }
@@ -147,6 +157,65 @@ pub struct FundInvestorSettlement {
     referrer_rebate_rate: f64,
     referrer_rebate: f64,
     net_equity: f64,
+}
+
+#[derive(Debug, Serialize, FromRow)]
+pub struct FundSettlementRun {
+    id: String,
+    fund_id: String,
+    equity_event_index: i64,
+    equity: f64,
+    equity_updated_at: String,
+    total_deposit: f64,
+    total_units: f64,
+    total_tax: f64,
+    total_referrer_rebate: f64,
+    investor_count: i64,
+    status: String,
+    created_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FundSettlementRunDetail {
+    run: FundSettlementRun,
+    investors: Vec<FundInvestorSettlement>,
+}
+
+#[derive(Debug, FromRow)]
+struct FundSettlementInvestorRow {
+    name: String,
+    referrer: Option<String>,
+    deposit: f64,
+    units: f64,
+    ownership: f64,
+    gross_equity: f64,
+    profit: f64,
+    tax_threshold: f64,
+    tax_rate: f64,
+    tax: f64,
+    referrer_rebate_rate: f64,
+    referrer_rebate: f64,
+    net_equity: f64,
+}
+
+impl From<FundSettlementInvestorRow> for FundInvestorSettlement {
+    fn from(row: FundSettlementInvestorRow) -> Self {
+        Self {
+            name: row.name,
+            referrer: row.referrer,
+            deposit: row.deposit,
+            units: row.units,
+            ownership: row.ownership,
+            gross_equity: row.gross_equity,
+            profit: row.profit,
+            tax_threshold: row.tax_threshold,
+            tax_rate: row.tax_rate,
+            tax: row.tax,
+            referrer_rebate_rate: row.referrer_rebate_rate,
+            referrer_rebate: row.referrer_rebate,
+            net_equity: row.net_equity,
+        }
+    }
 }
 
 #[derive(Clone, Debug, FromRow)]
@@ -373,7 +442,166 @@ pub async fn get_fund_settlement_preview(
     axum::extract::Query(query): axum::extract::Query<FundSettlementQuery>,
 ) -> Result<Json<FundSettlementPreview>, AppError> {
     get_fund_config(&state.db, &query.fund_id).await?;
+    Ok(Json(
+        load_fund_settlement_preview(&state.db, query.fund_id).await?,
+    ))
+}
 
+pub async fn list_fund_settlement_runs(
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<FundSettlementQuery>,
+) -> Result<Json<Vec<FundSettlementRun>>, AppError> {
+    get_fund_config(&state.db, &query.fund_id).await?;
+
+    Ok(Json(
+        sqlx::query_as::<_, FundSettlementRun>(
+            r#"
+            SELECT id, fund_id, equity_event_index, equity, equity_updated_at,
+                   total_deposit, total_units, total_tax, total_referrer_rebate,
+                   investor_count, status, created_at
+            FROM fund_settlement_runs
+            WHERE fund_id = ?1
+            ORDER BY created_at DESC
+            LIMIT 50
+            "#,
+        )
+        .bind(&query.fund_id)
+        .fetch_all(&state.db)
+        .await?,
+    ))
+}
+
+pub async fn get_fund_settlement_run_detail(
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<FundSettlementRunQuery>,
+) -> Result<Json<FundSettlementRunDetail>, AppError> {
+    let run = sqlx::query_as::<_, FundSettlementRun>(
+        r#"
+        SELECT id, fund_id, equity_event_index, equity, equity_updated_at,
+               total_deposit, total_units, total_tax, total_referrer_rebate,
+               investor_count, status, created_at
+        FROM fund_settlement_runs
+        WHERE id = ?1
+        "#,
+    )
+    .bind(&query.run_id)
+    .fetch_one(&state.db)
+    .await?;
+    let investors = sqlx::query_as::<_, FundSettlementInvestorRow>(
+        r#"
+        SELECT investor_name AS name, referrer, deposit, units, ownership,
+               gross_equity, profit, tax_threshold, tax_rate, tax,
+               referrer_rebate_rate, referrer_rebate, net_equity
+        FROM fund_settlement_investor_rows
+        WHERE run_id = ?1
+        ORDER BY gross_equity DESC, investor_name ASC
+        "#,
+    )
+    .bind(&query.run_id)
+    .fetch_all(&state.db)
+    .await?
+    .into_iter()
+    .map(FundInvestorSettlement::from)
+    .collect();
+
+    Ok(Json(FundSettlementRunDetail { run, investors }))
+}
+
+pub async fn create_fund_settlement_run(
+    State(state): State<AppState>,
+    Json(request): Json<CreateFundSettlementRunRequest>,
+) -> Result<(StatusCode, Json<FundSettlementRunDetail>), AppError> {
+    get_fund_config(&state.db, &request.fund_id).await?;
+    let preview = load_fund_settlement_preview(&state.db, request.fund_id).await?;
+    let equity = preview
+        .latest_equity
+        .as_ref()
+        .ok_or_else(|| AppError::bad_request("fund settlement requires legacy equity history"))?;
+    let run_id = Uuid::new_v4().to_string();
+    let created_at = Utc::now().to_rfc3339();
+    let mut tx = state.db.begin().await?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO fund_settlement_runs (
+            id, fund_id, equity_event_index, equity, equity_updated_at,
+            total_deposit, total_units, total_tax, total_referrer_rebate,
+            investor_count, status, created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'draft', ?11)
+        "#,
+    )
+    .bind(&run_id)
+    .bind(&preview.fund_id)
+    .bind(equity.event_index)
+    .bind(equity.equity)
+    .bind(&equity.updated_at)
+    .bind(preview.total_deposit)
+    .bind(preview.total_units)
+    .bind(preview.total_tax)
+    .bind(preview.total_referrer_rebate)
+    .bind(preview.investors.len() as i64)
+    .bind(&created_at)
+    .execute(&mut *tx)
+    .await?;
+
+    for investor in &preview.investors {
+        sqlx::query(
+            r#"
+            INSERT INTO fund_settlement_investor_rows (
+                run_id, fund_id, investor_name, referrer, deposit, units, ownership,
+                gross_equity, profit, tax_threshold, tax_rate, tax,
+                referrer_rebate_rate, referrer_rebate, net_equity
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+            "#,
+        )
+        .bind(&run_id)
+        .bind(&preview.fund_id)
+        .bind(&investor.name)
+        .bind(&investor.referrer)
+        .bind(investor.deposit)
+        .bind(investor.units)
+        .bind(investor.ownership)
+        .bind(investor.gross_equity)
+        .bind(investor.profit)
+        .bind(investor.tax_threshold)
+        .bind(investor.tax_rate)
+        .bind(investor.tax)
+        .bind(investor.referrer_rebate_rate)
+        .bind(investor.referrer_rebate)
+        .bind(investor.net_equity)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(FundSettlementRunDetail {
+            run: FundSettlementRun {
+                id: run_id,
+                fund_id: preview.fund_id,
+                equity_event_index: equity.event_index,
+                equity: equity.equity,
+                equity_updated_at: equity.updated_at.clone(),
+                total_deposit: preview.total_deposit,
+                total_units: preview.total_units,
+                total_tax: preview.total_tax,
+                total_referrer_rebate: preview.total_referrer_rebate,
+                investor_count: preview.investors.len() as i64,
+                status: "draft".to_string(),
+                created_at,
+            },
+            investors: preview.investors,
+        }),
+    ))
+}
+
+async fn load_fund_settlement_preview(
+    db: &SqlitePool,
+    fund_id: String,
+) -> Result<FundSettlementPreview, AppError> {
     let orders = sqlx::query_as::<_, SettlementOrder>(
         r#"
         SELECT investor_name, deposit, updated_at
@@ -382,8 +610,8 @@ pub async fn get_fund_settlement_preview(
         ORDER BY updated_at ASC, event_index ASC
         "#,
     )
-    .bind(&query.fund_id)
-    .fetch_all(&state.db)
+    .bind(&fund_id)
+    .fetch_all(db)
     .await?;
 
     let equity_points = sqlx::query_as::<_, FundStatementEquity>(
@@ -394,8 +622,8 @@ pub async fn get_fund_settlement_preview(
         ORDER BY updated_at ASC, event_index ASC
         "#,
     )
-    .bind(&query.fund_id)
-    .fetch_all(&state.db)
+    .bind(&fund_id)
+    .fetch_all(db)
     .await?;
 
     let investors = sqlx::query_as::<_, FundStatementInvestor>(
@@ -406,16 +634,16 @@ pub async fn get_fund_settlement_preview(
         WHERE fund_id = ?1
         "#,
     )
-    .bind(&query.fund_id)
-    .fetch_all(&state.db)
+    .bind(&fund_id)
+    .fetch_all(db)
     .await?;
 
-    Ok(Json(build_settlement_preview(
-        query.fund_id,
+    Ok(build_settlement_preview(
+        fund_id,
         orders,
         equity_points,
         investors,
-    )))
+    ))
 }
 
 pub async fn sample_fund_now(

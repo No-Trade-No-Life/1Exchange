@@ -134,6 +134,14 @@ async fn main() -> anyhow::Result<()> {
             "/fund-settlement-preview",
             get(funds::get_fund_settlement_preview),
         )
+        .route(
+            "/fund-settlement-runs",
+            get(funds::list_fund_settlement_runs).post(funds::create_fund_settlement_run),
+        )
+        .route(
+            "/fund-settlement-runs/detail",
+            get(funds::get_fund_settlement_run_detail),
+        )
         .route("/trades", get(list_trades))
         .route("/rates", get(list_rates))
         .route("/rates/convert", get(convert_rate))
@@ -474,6 +482,61 @@ async fn migrate(db: &SqlitePool) -> anyhow::Result<()> {
             comment TEXT,
             updated_at TEXT NOT NULL,
             PRIMARY KEY (fund_id, event_index)
+        )
+        "#,
+    )
+    .execute(db)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS fund_settlement_runs (
+            id TEXT PRIMARY KEY NOT NULL,
+            fund_id TEXT NOT NULL,
+            equity_event_index INTEGER NOT NULL,
+            equity REAL NOT NULL,
+            equity_updated_at TEXT NOT NULL,
+            total_deposit REAL NOT NULL,
+            total_units REAL NOT NULL,
+            total_tax REAL NOT NULL,
+            total_referrer_rebate REAL NOT NULL,
+            investor_count INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'draft',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        "#,
+    )
+    .execute(db)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_fund_settlement_runs_fund_created
+        ON fund_settlement_runs (fund_id, created_at DESC)
+        "#,
+    )
+    .execute(db)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS fund_settlement_investor_rows (
+            run_id TEXT NOT NULL,
+            fund_id TEXT NOT NULL,
+            investor_name TEXT NOT NULL,
+            referrer TEXT,
+            deposit REAL NOT NULL,
+            units REAL NOT NULL,
+            ownership REAL NOT NULL,
+            gross_equity REAL NOT NULL,
+            profit REAL NOT NULL,
+            tax_threshold REAL NOT NULL,
+            tax_rate REAL NOT NULL,
+            tax REAL NOT NULL,
+            referrer_rebate_rate REAL NOT NULL,
+            referrer_rebate REAL NOT NULL,
+            net_equity REAL NOT NULL,
+            PRIMARY KEY (run_id, investor_name)
         )
         "#,
     )

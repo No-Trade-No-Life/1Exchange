@@ -281,6 +281,26 @@ type FundInvestorSettlement = {
   net_equity: number;
 };
 
+type FundSettlementRun = {
+  id: string;
+  fund_id: string;
+  equity_event_index: number;
+  equity: number;
+  equity_updated_at: string;
+  total_deposit: number;
+  total_units: number;
+  total_tax: number;
+  total_referrer_rebate: number;
+  investor_count: number;
+  status: string;
+  created_at: string;
+};
+
+type FundSettlementRunDetail = {
+  run: FundSettlementRun;
+  investors: FundInvestorSettlement[];
+};
+
 type CustomAccountSource = {
   id: string;
   name: string;
@@ -728,16 +748,19 @@ function FundDetailRoute() {
   const nav = useJson<FundNavSnapshot[]>(fundId ? `/api/fund-nav?fund_id=${encodeURIComponent(fundId)}&limit=100` : null);
   const statements = useJson<FundStatementSummary>(fundId ? `/api/fund-statements?fund_id=${encodeURIComponent(fundId)}` : null);
   const settlement = useJson<FundSettlementPreview>(fundId ? `/api/fund-settlement-preview?fund_id=${encodeURIComponent(fundId)}` : null);
+  const settlementRuns = useJson<FundSettlementRun[]>(fundId ? `/api/fund-settlement-runs?fund_id=${encodeURIComponent(fundId)}` : null);
 
   return (
-    <RefreshScope resources={[funds, nav, statements, settlement]}>
+    <RefreshScope resources={[funds, nav, statements, settlement, settlementRuns]}>
       <FundDetailPage
         configs={funds.data ?? emptyFundConfigs}
         fundId={fundId}
-        loading={funds.loading || nav.loading || statements.loading || settlement.loading}
+        loading={funds.loading || nav.loading || statements.loading || settlement.loading || settlementRuns.loading}
         navError={nav.error}
         settlementError={settlement.error}
         settlementPreview={settlement.data ?? null}
+        settlementRuns={settlementRuns.data ?? []}
+        settlementRunsError={settlementRuns.error}
         statementError={statements.error}
         statementSummary={statements.data ?? null}
         snapshots={nav.data ?? []}
@@ -1413,11 +1436,15 @@ function FundDetailPage(props: {
   navError: string | null;
   settlementError: string | null;
   settlementPreview: FundSettlementPreview | null;
+  settlementRuns: FundSettlementRun[];
+  settlementRunsError: string | null;
   statementError: string | null;
   statementSummary: FundStatementSummary | null;
   snapshots: FundNavSnapshot[];
 }) {
   const queryClient = useQueryClient();
+  const [settlementRunError, setSettlementRunError] = useState<string | null>(null);
+  const [settlementRunSaving, setSettlementRunSaving] = useState(false);
   const fund = props.configs.find((item) => item.id === props.fundId);
   const latestSnapshot = props.snapshots[0];
   const statement = props.statementSummary;
@@ -1430,6 +1457,28 @@ function FundDetailPage(props: {
       throw new Error(body?.message ?? String(response.status) + ' ' + response.statusText);
     }
     await queryClient.invalidateQueries({ queryKey: ['json'] });
+  }
+
+  async function createSettlementRun() {
+    setSettlementRunError(null);
+    setSettlementRunSaving(true);
+    try {
+      const response = await fetch('/api/fund-settlement-runs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fund_id: props.fundId }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null) as { message?: string } | null;
+        throw new Error(body?.message ?? String(response.status) + ' ' + response.statusText);
+      }
+      await response.json() as FundSettlementRunDetail;
+      await queryClient.invalidateQueries({ queryKey: ['json'] });
+    } catch (error) {
+      setSettlementRunError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSettlementRunSaving(false);
+    }
   }
 
   if (!props.fundId) {
@@ -1450,6 +1499,9 @@ function FundDetailPage(props: {
           <h2>{fund.name}</h2>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
+          <Button variant="default" type="button" disabled={settlementRunSaving} onClick={() => void createSettlementRun()}>
+            {settlementRunSaving ? 'Creating...' : 'Create settlement run'}
+          </Button>
           <Button variant="outline" type="button" onClick={() => void sampleFund()}>Sample now</Button>
           <Link className="secondary-link" to="/funds">Back to funds</Link>
         </div>
@@ -1509,6 +1561,29 @@ function FundDetailPage(props: {
             formatNumber(investor.tax),
             formatNumber(investor.referrer_rebate),
             formatNumber(investor.net_equity),
+          ])}
+        />
+      </section>
+
+      <section className="panel">
+        <PanelTitle
+          label="Settlement runs"
+          title="Draft history"
+          action={props.settlementRuns.length + ' runs'}
+        />
+        <InlineError message={settlementRunError ?? props.settlementRunsError} />
+        <DataTable
+          empty="No settlement runs have been created yet."
+          headers={['Created', 'Status', 'Equity', 'Investors', 'Deposit', 'Tax', 'Rebate', 'Run ID']}
+          rows={props.settlementRuns.map((run) => [
+            formatDate(run.created_at),
+            run.status,
+            formatNumber(run.equity),
+            run.investor_count.toString(),
+            formatNumber(run.total_deposit),
+            formatNumber(run.total_tax),
+            formatNumber(run.total_referrer_rebate),
+            <span className="font-mono text-xs" key="run-id">{run.id}</span>,
           ])}
         />
       </section>
