@@ -2998,6 +2998,125 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn confirms_draft_settlement_run_and_writes_statement_events() {
+        let db = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        create_statement_write_test_tables(&db).await;
+        sqlx::query(
+            r#"
+            CREATE TABLE fund_settlement_runs (
+                id TEXT PRIMARY KEY NOT NULL,
+                fund_id TEXT NOT NULL,
+                settlement_model TEXT NOT NULL,
+                equity_event_index INTEGER NOT NULL,
+                equity REAL NOT NULL,
+                equity_updated_at TEXT NOT NULL,
+                basis_source TEXT NOT NULL,
+                basis_id TEXT NOT NULL,
+                basis_updated_at TEXT NOT NULL,
+                total_deposit REAL NOT NULL,
+                total_units REAL NOT NULL,
+                total_tax REAL NOT NULL,
+                total_referrer_rebate REAL NOT NULL,
+                capped_cash_flows INTEGER NOT NULL,
+                capped_units REAL NOT NULL,
+                capped_cash_amount REAL NOT NULL,
+                investor_count INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                status_updated_at TEXT,
+                created_at TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"
+            CREATE TABLE fund_settlement_investor_rows (
+                run_id TEXT NOT NULL,
+                units REAL NOT NULL
+            )
+            "#,
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"
+            INSERT INTO fund_statement_events (fund_id, event_index, event_type, updated_at, payload)
+            VALUES ('fund', 0, 'root', '2025-01-01T00:00:00+00:00', '{}')
+            "#,
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"
+            INSERT INTO fund_settlement_runs (
+                id, fund_id, settlement_model, equity_event_index, equity, equity_updated_at,
+                basis_source, basis_id, basis_updated_at, total_deposit, total_units,
+                total_tax, total_referrer_rebate, capped_cash_flows, capped_units,
+                capped_cash_amount, investor_count, status, status_updated_at, created_at
+            )
+            VALUES (
+                'run-1', 'fund', 'event_state_v1', 0, 150.0, '2025-01-02T00:00:00+00:00',
+                'live_nav', 'nav-1', '2025-01-02T00:00:00+00:00', 100.0, 100.0,
+                10.0, 0.0, 0, 0.0, 0.0, 1, 'draft', NULL, '2025-01-02T00:00:00+00:00'
+            )
+            "#,
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO fund_settlement_investor_rows (run_id, units) VALUES ('run-1', 100.0)",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        confirm_fund_settlement_run_status(&db, "run-1")
+            .await
+            .unwrap();
+
+        let (status,): (String,) =
+            sqlx::query_as("SELECT status FROM fund_settlement_runs WHERE id = 'run-1'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        let events = sqlx::query_as::<_, (i64, String)>(
+            r#"
+            SELECT event_index, event_type
+            FROM fund_statement_events
+            WHERE fund_id = 'fund'
+            ORDER BY event_index
+            "#,
+        )
+        .fetch_all(&db)
+        .await
+        .unwrap();
+
+        assert_eq!(status, "confirmed");
+        assert_eq!(
+            events,
+            vec![
+                (0, "root".to_string()),
+                (1, "settlement_equity".to_string()),
+                (2, "taxation/v2".to_string()),
+            ]
+        );
+        assert!(
+            confirm_fund_settlement_run_status(&db, "run-1")
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn folds_statement_events_by_event_index_not_timestamp() {
         let db = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
@@ -3054,6 +3173,53 @@ mod tests {
 
         assert_close(summary.total_assets, 150.0);
         assert_close(alice.share, 100.0);
+    }
+
+    async fn create_statement_write_test_tables(db: &SqlitePool) {
+        sqlx::query(
+            r#"
+            CREATE TABLE fund_statement_events (
+                fund_id TEXT NOT NULL,
+                event_index INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                PRIMARY KEY (fund_id, event_index)
+            )
+            "#,
+        )
+        .execute(db)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"
+            CREATE TABLE fund_statement_equity (
+                fund_id TEXT NOT NULL,
+                event_index INTEGER NOT NULL,
+                equity REAL NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (fund_id, event_index)
+            )
+            "#,
+        )
+        .execute(db)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"
+            CREATE TABLE fund_statement_tax_modes (
+                fund_id TEXT NOT NULL,
+                event_index INTEGER NOT NULL,
+                mode TEXT NOT NULL,
+                comment TEXT,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (fund_id, event_index)
+            )
+            "#,
+        )
+        .execute(db)
+        .await
+        .unwrap();
     }
 
     fn investor_rebate(
