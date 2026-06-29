@@ -142,6 +142,14 @@ async fn main() -> anyhow::Result<()> {
             "/fund-settlement-runs/detail",
             get(funds::get_fund_settlement_run_detail),
         )
+        .route(
+            "/fund-settlement-runs/confirm",
+            post(funds::confirm_fund_settlement_run),
+        )
+        .route(
+            "/fund-settlement-runs/void",
+            post(funds::void_fund_settlement_run),
+        )
         .route("/trades", get(list_trades))
         .route("/rates", get(list_rates))
         .route("/rates/convert", get(convert_rate))

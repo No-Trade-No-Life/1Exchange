@@ -31,7 +31,9 @@ import { cn } from '@/lib/utils';
 import {
   BadgeCheck,
   BarChart3,
+  Ban,
   ChevronDown,
+  CircleCheck,
   History,
   LayoutDashboard,
   LineChart,
@@ -1444,6 +1446,7 @@ function FundDetailPage(props: {
 }) {
   const queryClient = useQueryClient();
   const [settlementRunError, setSettlementRunError] = useState<string | null>(null);
+  const [settlementRunActionId, setSettlementRunActionId] = useState<string | null>(null);
   const [settlementRunSaving, setSettlementRunSaving] = useState(false);
   const fund = props.configs.find((item) => item.id === props.fundId);
   const latestSnapshot = props.snapshots[0];
@@ -1478,6 +1481,28 @@ function FundDetailPage(props: {
       setSettlementRunError(error instanceof Error ? error.message : String(error));
     } finally {
       setSettlementRunSaving(false);
+    }
+  }
+
+  async function updateSettlementRunStatus(runId: string, action: 'confirm' | 'void') {
+    setSettlementRunError(null);
+    setSettlementRunActionId(runId);
+    try {
+      const response = await fetch('/api/fund-settlement-runs/' + action, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ run_id: runId }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null) as { message?: string } | null;
+        throw new Error(body?.message ?? String(response.status) + ' ' + response.statusText);
+      }
+      await response.json() as FundSettlementRunDetail;
+      await queryClient.invalidateQueries({ queryKey: ['json'] });
+    } catch (error) {
+      setSettlementRunError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSettlementRunActionId(null);
     }
   }
 
@@ -1574,16 +1599,23 @@ function FundDetailPage(props: {
         <InlineError message={settlementRunError ?? props.settlementRunsError} />
         <DataTable
           empty="No settlement runs have been created yet."
-          headers={['Created', 'Status', 'Equity', 'Investors', 'Deposit', 'Tax', 'Rebate', 'Run ID']}
+          headers={['Created', 'Status', 'Equity', 'Investors', 'Deposit', 'Tax', 'Rebate', 'Run ID', 'Action']}
           rows={props.settlementRuns.map((run) => [
             formatDate(run.created_at),
-            run.status,
+            <UiBadge key="status" variant={run.status === 'confirmed' ? 'default' : 'secondary'}>{run.status}</UiBadge>,
             formatNumber(run.equity),
             run.investor_count.toString(),
             formatNumber(run.total_deposit),
             formatNumber(run.total_tax),
             formatNumber(run.total_referrer_rebate),
             <span className="font-mono text-xs" key="run-id">{run.id}</span>,
+            <SettlementRunActions
+              actioning={settlementRunActionId === run.id}
+              key="action"
+              onConfirm={() => void updateSettlementRunStatus(run.id, 'confirm')}
+              onVoid={() => void updateSettlementRunStatus(run.id, 'void')}
+              status={run.status}
+            />,
           ])}
         />
       </section>
@@ -1660,6 +1692,30 @@ function FundDetailPage(props: {
           ])}
         />
       </section>
+    </div>
+  );
+}
+
+function SettlementRunActions(props: {
+  actioning: boolean;
+  onConfirm: () => void;
+  onVoid: () => void;
+  status: string;
+}) {
+  if (props.status !== 'draft') {
+    return <span className="text-sm text-muted-foreground">-</span>;
+  }
+
+  return (
+    <div className="flex items-center gap-2">
+      <Button size="sm" type="button" disabled={props.actioning} onClick={props.onConfirm}>
+        <CircleCheck data-icon="inline-start" />
+        Confirm
+      </Button>
+      <Button size="sm" variant="outline" type="button" disabled={props.actioning} onClick={props.onVoid}>
+        <Ban data-icon="inline-start" />
+        Void
+      </Button>
     </div>
   );
 }

@@ -74,6 +74,11 @@ pub struct CreateFundSettlementRunRequest {
 }
 
 #[derive(Deserialize)]
+pub struct UpdateFundSettlementRunRequest {
+    run_id: String,
+}
+
+#[derive(Deserialize)]
 pub struct SampleFundQuery {
     fund_id: String,
 }
@@ -475,6 +480,15 @@ pub async fn get_fund_settlement_run_detail(
     State(state): State<AppState>,
     axum::extract::Query(query): axum::extract::Query<FundSettlementRunQuery>,
 ) -> Result<Json<FundSettlementRunDetail>, AppError> {
+    get_fund_settlement_run_detail_by_id(&state.db, &query.run_id)
+        .await
+        .map(Json)
+}
+
+async fn get_fund_settlement_run_detail_by_id(
+    db: &SqlitePool,
+    run_id: &str,
+) -> Result<FundSettlementRunDetail, AppError> {
     let run = sqlx::query_as::<_, FundSettlementRun>(
         r#"
         SELECT id, fund_id, equity_event_index, equity, equity_updated_at,
@@ -484,8 +498,8 @@ pub async fn get_fund_settlement_run_detail(
         WHERE id = ?1
         "#,
     )
-    .bind(&query.run_id)
-    .fetch_one(&state.db)
+    .bind(run_id)
+    .fetch_one(db)
     .await?;
     let investors = sqlx::query_as::<_, FundSettlementInvestorRow>(
         r#"
@@ -497,14 +511,14 @@ pub async fn get_fund_settlement_run_detail(
         ORDER BY gross_equity DESC, investor_name ASC
         "#,
     )
-    .bind(&query.run_id)
-    .fetch_all(&state.db)
+    .bind(run_id)
+    .fetch_all(db)
     .await?
     .into_iter()
     .map(FundInvestorSettlement::from)
     .collect();
 
-    Ok(Json(FundSettlementRunDetail { run, investors }))
+    Ok(FundSettlementRunDetail { run, investors })
 }
 
 pub async fn create_fund_settlement_run(
@@ -596,6 +610,52 @@ pub async fn create_fund_settlement_run(
             investors: preview.investors,
         }),
     ))
+}
+
+pub async fn confirm_fund_settlement_run(
+    State(state): State<AppState>,
+    Json(request): Json<UpdateFundSettlementRunRequest>,
+) -> Result<Json<FundSettlementRunDetail>, AppError> {
+    update_fund_settlement_run_status(&state.db, &request.run_id, "confirmed").await?;
+    get_fund_settlement_run_detail_by_id(&state.db, &request.run_id)
+        .await
+        .map(Json)
+}
+
+pub async fn void_fund_settlement_run(
+    State(state): State<AppState>,
+    Json(request): Json<UpdateFundSettlementRunRequest>,
+) -> Result<Json<FundSettlementRunDetail>, AppError> {
+    update_fund_settlement_run_status(&state.db, &request.run_id, "voided").await?;
+    get_fund_settlement_run_detail_by_id(&state.db, &request.run_id)
+        .await
+        .map(Json)
+}
+
+async fn update_fund_settlement_run_status(
+    db: &SqlitePool,
+    run_id: &str,
+    status: &str,
+) -> Result<(), AppError> {
+    let result = sqlx::query(
+        r#"
+        UPDATE fund_settlement_runs
+        SET status = ?1
+        WHERE id = ?2 AND status = 'draft'
+        "#,
+    )
+    .bind(status)
+    .bind(run_id)
+    .execute(db)
+    .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(AppError::bad_request(
+            "settlement run must exist and be in draft status",
+        ));
+    }
+
+    Ok(())
 }
 
 async fn load_fund_settlement_preview(
