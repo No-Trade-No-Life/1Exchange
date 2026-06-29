@@ -266,6 +266,8 @@ pub struct FundInvestorSettlement {
     tax: f64,
     referrer_rebate_rate: f64,
     referrer_rebate: f64,
+    referrer_rebate_received: f64,
+    tax_account_credit: f64,
     capped_cash_amount: f64,
     net_equity: f64,
 }
@@ -350,6 +352,8 @@ struct FundSettlementInvestorRow {
     tax: f64,
     referrer_rebate_rate: f64,
     referrer_rebate: f64,
+    referrer_rebate_received: f64,
+    tax_account_credit: f64,
     capped_cash_amount: f64,
     net_equity: f64,
 }
@@ -369,6 +373,8 @@ impl From<FundSettlementInvestorRow> for FundInvestorSettlement {
             tax: row.tax,
             referrer_rebate_rate: row.referrer_rebate_rate,
             referrer_rebate: row.referrer_rebate,
+            referrer_rebate_received: row.referrer_rebate_received,
+            tax_account_credit: row.tax_account_credit,
             capped_cash_amount: row.capped_cash_amount,
             net_equity: row.net_equity,
         }
@@ -821,7 +827,8 @@ async fn get_fund_settlement_run_detail_by_id(
         r#"
         SELECT investor_name AS name, referrer, deposit, units, ownership,
                gross_equity, profit, tax_threshold, tax_rate, tax,
-               referrer_rebate_rate, referrer_rebate, capped_cash_amount, net_equity
+               referrer_rebate_rate, referrer_rebate, referrer_rebate_received,
+               tax_account_credit, capped_cash_amount, net_equity
         FROM fund_settlement_investor_rows
         WHERE run_id = ?1
         ORDER BY gross_equity DESC, investor_name ASC
@@ -906,9 +913,10 @@ pub async fn create_fund_settlement_run(
             INSERT INTO fund_settlement_investor_rows (
                 run_id, fund_id, investor_name, referrer, deposit, units, ownership,
                 gross_equity, profit, tax_threshold, tax_rate, tax,
-                referrer_rebate_rate, referrer_rebate, capped_cash_amount, net_equity
+                referrer_rebate_rate, referrer_rebate, referrer_rebate_received,
+                tax_account_credit, capped_cash_amount, net_equity
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
             "#,
         )
         .bind(&run_id)
@@ -925,6 +933,8 @@ pub async fn create_fund_settlement_run(
         .bind(investor.tax)
         .bind(investor.referrer_rebate_rate)
         .bind(investor.referrer_rebate)
+        .bind(investor.referrer_rebate_received)
+        .bind(investor.tax_account_credit)
         .bind(investor.capped_cash_amount)
         .bind(investor.net_equity)
         .execute(&mut *tx)
@@ -1437,11 +1447,51 @@ fn build_settlement_preview(
                 tax,
                 referrer_rebate_rate: investor.referrer_rebate_rate,
                 referrer_rebate,
+                referrer_rebate_received: 0.0,
+                tax_account_credit: 0.0,
                 capped_cash_amount: 0.0,
-                net_equity: gross_equity - tax,
+                net_equity: 0.0,
             }
         })
         .collect::<Vec<_>>();
+    let referrer_rebates = summarize_referrer_rebates(&rows);
+    let rebate_received = referrer_rebates
+        .iter()
+        .map(|item| (item.referrer.clone(), item.rebate))
+        .collect::<HashMap<_, _>>();
+    let retained_tax = rows
+        .iter()
+        .map(|item| item.tax - item.referrer_rebate)
+        .sum::<f64>();
+
+    for row in &mut rows {
+        row.referrer_rebate_received = rebate_received.get(&row.name).copied().unwrap_or_default();
+        if row.name == "@tax" {
+            row.tax_account_credit = retained_tax;
+        }
+        row.net_equity =
+            row.gross_equity - row.tax + row.referrer_rebate_received + row.tax_account_credit;
+    }
+    if retained_tax > 0.0 && !rows.iter().any(|row| row.name == "@tax") {
+        rows.push(FundInvestorSettlement {
+            name: "@tax".to_string(),
+            referrer: None,
+            deposit: 0.0,
+            units: 0.0,
+            ownership: 0.0,
+            gross_equity: 0.0,
+            profit: 0.0,
+            tax_threshold: 0.0,
+            tax_rate: 0.0,
+            tax: 0.0,
+            referrer_rebate_rate: 0.0,
+            referrer_rebate: 0.0,
+            referrer_rebate_received: 0.0,
+            tax_account_credit: retained_tax,
+            capped_cash_amount: 0.0,
+            net_equity: retained_tax,
+        });
+    }
 
     rows.sort_by(|left, right| {
         right
@@ -1463,7 +1513,7 @@ fn build_settlement_preview(
         total_referrer_rebate: rows.iter().map(|item| item.referrer_rebate).sum(),
         totals,
         investor_taxes: summarize_investor_taxes(&rows),
-        referrer_rebates: summarize_referrer_rebates(&rows),
+        referrer_rebates,
         investors: rows,
     }
 }
@@ -1947,7 +1997,7 @@ fn settlement_run_csv(detail: &FundSettlementRunDetail) -> String {
         Vec::new(),
         vec!["settlement_report".to_string(), "amount".to_string()],
         vec![
-            "investor_net_equity".to_string(),
+            "post_settlement_equity".to_string(),
             detail.totals.net_equity.to_string(),
         ],
         vec![
@@ -1980,6 +2030,8 @@ fn settlement_run_csv(detail: &FundSettlementRunDetail) -> String {
             "tax".to_string(),
             "referrer_rebate_rate".to_string(),
             "referrer_rebate".to_string(),
+            "referrer_rebate_received".to_string(),
+            "tax_account_credit".to_string(),
             "net_equity".to_string(),
         ],
     ];
@@ -1998,6 +2050,8 @@ fn settlement_run_csv(detail: &FundSettlementRunDetail) -> String {
             investor.tax.to_string(),
             investor.referrer_rebate_rate.to_string(),
             investor.referrer_rebate.to_string(),
+            investor.referrer_rebate_received.to_string(),
+            investor.tax_account_credit.to_string(),
             investor.net_equity.to_string(),
         ]
     }));
@@ -2208,6 +2262,11 @@ mod tests {
             .iter()
             .find(|item| item.name == "Bob")
             .unwrap();
+        let tax = preview
+            .investors
+            .iter()
+            .find(|item| item.name == "@tax")
+            .unwrap();
 
         assert_close(preview.total_units, 220.0);
         assert_eq!(
@@ -2218,7 +2277,10 @@ mod tests {
         assert_close(bob.gross_equity, 240.0 * 120.0 / 220.0);
         assert_close(bob.tax, bob.profit * 0.2);
         assert_close(bob.referrer_rebate, bob.tax * 0.25);
+        assert_close(alice.referrer_rebate_received, bob.referrer_rebate);
+        assert_close(tax.tax_account_credit, bob.tax - bob.referrer_rebate);
         assert_close(bob.net_equity, bob.gross_equity - bob.tax);
+        assert_close(preview.totals.net_equity, preview.totals.gross_equity);
     }
 
     #[test]
@@ -2798,6 +2860,8 @@ mod tests {
             tax: 0.0,
             referrer_rebate_rate: 0.0,
             referrer_rebate,
+            referrer_rebate_received: 0.0,
+            tax_account_credit: 0.0,
             capped_cash_amount: 0.0,
             net_equity: 0.0,
         }

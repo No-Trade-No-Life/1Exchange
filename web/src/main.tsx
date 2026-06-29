@@ -370,6 +370,8 @@ type FundInvestorSettlement = {
   tax: number;
   referrer_rebate_rate: number;
   referrer_rebate: number;
+  referrer_rebate_received: number;
+  tax_account_credit: number;
   capped_cash_amount: number;
   net_equity: number;
 };
@@ -1784,7 +1786,7 @@ function FundDetailPage(props: {
         <InlineError message={props.settlementError} />
         <DataTable
           empty="No settlement preview is available for this fund."
-          headers={['Investor', 'Referrer', 'Deposit', 'Ownership', 'Gross equity', 'Profit', 'Tax', 'Rebate', 'Net equity']}
+          headers={['Investor', 'Referrer', 'Deposit', 'Ownership', 'Gross equity', 'Taxable', 'Tax', 'Rebate paid', 'Rebate received', 'Tax credit', 'Post equity']}
           rows={(settlement?.investors ?? []).map((investor) => [
             investor.name,
             investor.referrer ?? '-',
@@ -1794,6 +1796,8 @@ function FundDetailPage(props: {
             <Value key="profit" value={investor.profit} />,
             formatNumber(investor.tax),
             formatNumber(investor.referrer_rebate),
+            formatNumber(investor.referrer_rebate_received),
+            formatNumber(investor.tax_account_credit),
             formatNumber(investor.net_equity),
           ])}
         />
@@ -2296,7 +2300,7 @@ function SettlementReportContent(props: { detail: FundSettlementRunDetail | null
         <PanelTitle label="Run detail" title="Investor allocation" action={(props.detail?.investors.length ?? 0) + ' investors'} />
         <DataTable
           empty="No investor rows are recorded for this run."
-          headers={['Investor', 'Referrer', 'Deposit', 'Ownership', 'Gross equity', 'Profit', 'Tax', 'Rebate', 'Net equity']}
+          headers={['Investor', 'Referrer', 'Deposit', 'Ownership', 'Gross equity', 'Taxable', 'Tax', 'Rebate paid', 'Rebate received', 'Tax credit', 'Post equity']}
           rows={(props.detail?.investors ?? []).map((investor) => [
             investor.name,
             investor.referrer ?? '-',
@@ -2306,6 +2310,8 @@ function SettlementReportContent(props: { detail: FundSettlementRunDetail | null
             <Value key="profit" value={investor.profit} />,
             formatNumber(investor.tax),
             formatNumber(investor.referrer_rebate),
+            formatNumber(investor.referrer_rebate_received),
+            formatNumber(investor.tax_account_credit),
             formatNumber(investor.net_equity),
           ])}
         />
@@ -2817,7 +2823,7 @@ function settlementReportRows(detail: FundSettlementRunDetail | null) {
     return [];
   }
   return [
-    { label: 'Investor net equity', amount: detail.totals.net_equity },
+    { label: 'Post-settlement equity', amount: detail.totals.net_equity },
     { label: 'Investor tax payable', amount: detail.totals.tax },
     { label: 'Referrer rebates payable', amount: detail.totals.referrer_rebate },
     { label: 'Retained tax', amount: detail.totals.retained_tax },
