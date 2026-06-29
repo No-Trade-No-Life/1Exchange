@@ -2069,7 +2069,7 @@ function SettlementRunActions(props: {
   );
 }
 
-const settlementRunHeaders = ['Created', 'Status', 'Status time', 'Basis', 'Equity', 'Investors', 'Deposit', 'Capped cash', 'Tax', 'Rebate', 'Run ID', 'Action'];
+const settlementRunHeaders = ['Created', 'Status', 'Status time', 'Basis', 'Equity', 'Investors', 'Deposit', 'Tax', 'Rebate', 'Run ID', 'Action'];
 
 function SettlementRunsTable(props: {
   actioningRunId: string | null;
@@ -2103,7 +2103,6 @@ function settlementRunRows(props: {
     formatNumber(run.equity),
     run.investor_count.toString(),
     formatNumber(run.total_deposit),
-    formatNumber(run.capped_cash_amount),
     formatNumber(run.total_tax),
     formatNumber(run.total_referrer_rebate),
     <span className="font-mono text-xs" key="run-id">{run.id}</span>,
@@ -2149,12 +2148,6 @@ function SettlementRunDetailDialog(props: {
               <Metric label="Tax" value={formatNumber(run.total_tax)} />
               <Metric label="Rebate" value={formatNumber(run.total_referrer_rebate)} />
               <Metric label="Retained tax" value={detail.data ? formatNumber(detail.data.totals.retained_tax) : '-'} />
-              <Metric
-                label="Capped flows"
-                value={run.capped_cash_flows.toString()}
-                tone={run.capped_cash_flows ? 'warn' : 'neutral'}
-              />
-              <Metric label="Capped cash" value={formatNumber(run.capped_cash_amount)} />
               <Metric
                 label="Overdrawn investors"
                 value={detail.data ? detail.data.totals.overdrawn_investors.toString() : '-'}
@@ -2214,7 +2207,6 @@ function SettlementReportPage(props: {
             <Metric label="Net equity" value={formatNumber(props.detail?.totals.net_equity ?? 0)} />
             <Metric label="Tax" value={formatNumber(run.total_tax)} />
             <Metric label="Rebate" value={formatNumber(run.total_referrer_rebate)} />
-            <Metric label="Capped cash" value={formatNumber(run.capped_cash_amount)} />
           </section>
           <SettlementReportContent detail={props.detail} />
         </>
@@ -2266,12 +2258,11 @@ function SettlementReportContent(props: { detail: FundSettlementRunDetail | null
         <PanelTitle label="Run detail" title="Investor allocation" action={(props.detail?.investors.length ?? 0) + ' investors'} />
         <DataTable
           empty="No investor rows are recorded for this run."
-          headers={['Investor', 'Referrer', 'Deposit', 'Capped cash', 'Ownership', 'Gross equity', 'Profit', 'Tax', 'Rebate', 'Net equity']}
+          headers={['Investor', 'Referrer', 'Deposit', 'Ownership', 'Gross equity', 'Profit', 'Tax', 'Rebate', 'Net equity']}
           rows={(props.detail?.investors ?? []).map((investor) => [
             investor.name,
             investor.referrer ?? '-',
             formatNumber(investor.deposit),
-            formatNumber(investor.capped_cash_amount),
             formatPercent(investor.ownership),
             formatNumber(investor.gross_equity),
             <Value key="profit" value={investor.profit} />,
@@ -2769,7 +2760,6 @@ function settlementReportRows(detail: FundSettlementRunDetail | null) {
     { label: 'Investor tax payable', amount: detail.totals.tax },
     { label: 'Referrer rebates payable', amount: detail.totals.referrer_rebate },
     { label: 'Retained tax', amount: detail.totals.retained_tax },
-    { label: 'Capped cash audit', amount: detail.totals.capped_cash_amount },
     { label: 'Gross equity control', amount: detail.totals.gross_equity },
   ];
 }

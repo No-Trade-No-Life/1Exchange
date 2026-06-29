@@ -1759,8 +1759,6 @@ fn settlement_run_csv(detail: &FundSettlementRunDetail) -> String {
             detail.run.basis_source.clone(),
             "basis_id".to_string(),
             detail.run.basis_id.clone(),
-            "capped_cash_flows".to_string(),
-            detail.run.capped_cash_flows.to_string(),
         ],
         vec![
             "equity".to_string(),
@@ -1769,10 +1767,6 @@ fn settlement_run_csv(detail: &FundSettlementRunDetail) -> String {
             detail.run.equity_updated_at.clone(),
             "created_at".to_string(),
             detail.run.created_at.clone(),
-            "capped_units".to_string(),
-            detail.run.capped_units.to_string(),
-            "capped_cash_amount".to_string(),
-            detail.run.capped_cash_amount.to_string(),
         ],
         vec![
             "gross_equity".to_string(),
@@ -1801,10 +1795,6 @@ fn settlement_run_csv(detail: &FundSettlementRunDetail) -> String {
             detail.totals.retained_tax.to_string(),
         ],
         vec![
-            "capped_cash_audit".to_string(),
-            detail.totals.capped_cash_amount.to_string(),
-        ],
-        vec![
             "gross_equity_control".to_string(),
             detail.totals.gross_equity.to_string(),
         ],
@@ -1822,7 +1812,6 @@ fn settlement_run_csv(detail: &FundSettlementRunDetail) -> String {
             "tax".to_string(),
             "referrer_rebate_rate".to_string(),
             "referrer_rebate".to_string(),
-            "capped_cash_amount".to_string(),
             "net_equity".to_string(),
         ],
     ];
@@ -1841,7 +1830,6 @@ fn settlement_run_csv(detail: &FundSettlementRunDetail) -> String {
             investor.tax.to_string(),
             investor.referrer_rebate_rate.to_string(),
             investor.referrer_rebate.to_string(),
-            investor.capped_cash_amount.to_string(),
             investor.net_equity.to_string(),
         ]
     }));
