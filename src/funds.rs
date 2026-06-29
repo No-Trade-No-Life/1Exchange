@@ -93,6 +93,7 @@ pub struct FundStatementSummary {
     totals: FundStatementTotals,
     investors: Vec<FundStatementInvestor>,
     investor_ledger: Vec<FundStatementInvestorLedger>,
+    event_state: FundStatementEventState,
     recent_orders: Vec<FundStatementOrder>,
     latest_equity: Option<FundStatementEquity>,
     reconciliation: Option<FundEquityReconciliation>,
@@ -143,6 +144,37 @@ pub struct FundStatementInvestorLedger {
     units: f64,
     flow_count: i64,
     last_flow_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FundStatementEventState {
+    total_assets: f64,
+    total_deposit: f64,
+    total_share: f64,
+    unit_price: f64,
+    total_tax: f64,
+    total_taxed: f64,
+    total_profit: f64,
+    investors: Vec<FundStatementEventInvestor>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct FundStatementEventInvestor {
+    name: String,
+    referrer: Option<String>,
+    deposit: f64,
+    share: f64,
+    share_ratio: f64,
+    tax_threshold: f64,
+    tax_rate: f64,
+    tax: f64,
+    taxable: f64,
+    pre_tax_assets: f64,
+    after_tax_assets: f64,
+    after_tax_share: f64,
+    referrer_rebate_rate: f64,
+    claimed_referrer_rebate: f64,
+    taxed: f64,
 }
 
 #[derive(Clone, Debug, FromRow)]
@@ -362,14 +394,64 @@ struct FundStatementEventPayloadRow {
 
 #[derive(Debug, Deserialize)]
 struct FundStatementEventPayload {
+    #[serde(rename = "type")]
+    event_type: Option<String>,
     comment: Option<String>,
+    fund_equity: Option<FundStatementEquityPayload>,
+    order: Option<FundStatementOrderPayload>,
     investor: Option<FundStatementInvestorPayload>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FundStatementEquityPayload {
+    equity: f64,
+}
+
+#[derive(Debug, Deserialize)]
+struct FundStatementOrderPayload {
+    name: String,
+    deposit: f64,
 }
 
 #[derive(Debug, Deserialize)]
 struct FundStatementInvestorPayload {
     name: String,
+    tax_rate: Option<f64>,
     add_tax_threshold: Option<f64>,
+    referrer: Option<String>,
+    referrer_rebate_rate: Option<f64>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct YuanFundState {
+    total_assets: f64,
+    total_taxed: f64,
+    investors: HashMap<String, YuanInvestor>,
+    derived: HashMap<String, YuanInvestorDerived>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct YuanInvestor {
+    name: String,
+    referrer: Option<String>,
+    deposit: f64,
+    share: f64,
+    tax_threshold: f64,
+    tax_rate: f64,
+    referrer_rebate_rate: f64,
+    claimed_referrer_rebate: f64,
+    taxed: f64,
+    avg_cost_price: f64,
+}
+
+#[derive(Clone, Debug, Default)]
+struct YuanInvestorDerived {
+    share_ratio: f64,
+    tax: f64,
+    taxable: f64,
+    pre_tax_assets: f64,
+    after_tax_assets: f64,
+    after_tax_share: f64,
 }
 
 #[derive(Debug)]
@@ -628,6 +710,7 @@ pub async fn get_fund_statement_summary(
         .iter()
         .map(|item| item.amount)
         .sum();
+    let event_state = load_statement_event_state(&state.db, &query.fund_id).await?;
 
     Ok(Json(FundStatementSummary {
         totals: FundStatementTotals {
@@ -651,6 +734,7 @@ pub async fn get_fund_statement_summary(
         },
         investors,
         investor_ledger,
+        event_state,
         recent_orders,
         latest_equity,
         reconciliation,
@@ -1485,6 +1569,237 @@ fn tax_threshold_adjustment_from_row(
     })
 }
 
+async fn load_statement_event_state(
+    db: &SqlitePool,
+    fund_id: &str,
+) -> Result<FundStatementEventState, AppError> {
+    let rows = sqlx::query_as::<_, FundStatementEventPayloadRow>(
+        r#"
+        SELECT event_index, updated_at, payload
+        FROM fund_statement_events
+        WHERE fund_id = ?1
+        ORDER BY updated_at ASC, event_index ASC
+        "#,
+    )
+    .bind(fund_id)
+    .fetch_all(db)
+    .await?;
+
+    let mut state = YuanFundState::default();
+    recompute_yuan_derived(&mut state);
+    for row in rows {
+        let event = serde_json::from_str::<FundStatementEventPayload>(&row.payload)?;
+        apply_yuan_fund_event(&mut state, event);
+        recompute_yuan_derived(&mut state);
+    }
+
+    Ok(yuan_event_state_summary(state))
+}
+
+fn apply_yuan_fund_event(state: &mut YuanFundState, event: FundStatementEventPayload) {
+    if let Some(fund_equity) = event.fund_equity {
+        state.total_assets = fund_equity.equity;
+    }
+
+    if let Some(order) = event.order {
+        let unit_price = yuan_unit_price(state);
+        let share = order.deposit / unit_price;
+        let investor = ensure_yuan_investor(state, &order.name);
+        if share > 0.0 {
+            investor.avg_cost_price = (investor.avg_cost_price * investor.share + order.deposit)
+                / (investor.share + share);
+        }
+        investor.deposit += order.deposit;
+        investor.tax_threshold += order.deposit;
+        investor.share += share;
+        state.total_assets += order.deposit;
+    }
+
+    if let Some(investor_update) = event.investor {
+        let investor = ensure_yuan_investor(state, &investor_update.name);
+        if let Some(tax_rate) = investor_update.tax_rate {
+            investor.tax_rate = tax_rate;
+        }
+        if let Some(add_tax_threshold) = investor_update.add_tax_threshold {
+            investor.tax_threshold += add_tax_threshold;
+        }
+        if let Some(referrer) = investor_update.referrer {
+            investor.referrer = Some(referrer);
+        }
+        if let Some(referrer_rebate_rate) = investor_update.referrer_rebate_rate {
+            investor.referrer_rebate_rate = referrer_rebate_rate;
+        }
+    }
+
+    if event.event_type.as_deref() == Some("taxation") {
+        apply_yuan_taxation(state);
+    }
+
+    if event.event_type.as_deref() == Some("taxation/v2") {
+        apply_yuan_taxation_v2(state);
+    }
+}
+
+fn apply_yuan_taxation(state: &mut YuanFundState) {
+    let derived = state.derived.clone();
+    for investor in state.investors.values_mut() {
+        let item = derived.get(&investor.name).cloned().unwrap_or_default();
+        investor.share = item.after_tax_share;
+        investor.tax_threshold = item.after_tax_assets;
+        state.total_assets -= item.tax;
+        state.total_taxed += item.tax;
+    }
+}
+
+fn apply_yuan_taxation_v2(state: &mut YuanFundState) {
+    let derived = state.derived.clone();
+    let unit_price = yuan_unit_price(state);
+    let referrers = state.investors.keys().cloned().collect::<Vec<_>>();
+    let mut rebates = Vec::<(String, f64, f64)>::new();
+    let mut total_tax_share = 0.0;
+
+    for investor in state.investors.values_mut() {
+        let item = derived.get(&investor.name).cloned().unwrap_or_default();
+        let tax_share = investor.share - item.after_tax_share;
+        investor.share -= tax_share;
+        investor.tax_threshold = item.after_tax_assets;
+        investor.taxed += item.tax;
+        state.total_taxed += item.tax;
+
+        let mut tax_account_share = tax_share;
+        if investor.referrer_rebate_rate > 0.0 {
+            if let Some(referrer) = investor
+                .referrer
+                .as_ref()
+                .filter(|name| referrers.iter().any(|item| item == *name))
+            {
+                let rebate_share = tax_share * investor.referrer_rebate_rate;
+                tax_account_share -= rebate_share;
+                rebates.push((referrer.clone(), rebate_share, rebate_share * unit_price));
+            }
+        }
+        total_tax_share += tax_account_share;
+    }
+
+    for (referrer, rebate_share, rebate_value) in rebates {
+        let investor = ensure_yuan_investor(state, &referrer);
+        investor.share += rebate_share;
+        investor.tax_threshold += rebate_value;
+        investor.claimed_referrer_rebate += rebate_value;
+    }
+
+    let tax_account = ensure_yuan_investor(state, "@tax");
+    tax_account.share += total_tax_share;
+    tax_account.tax_threshold += total_tax_share * unit_price;
+}
+
+fn recompute_yuan_derived(state: &mut YuanFundState) {
+    let total_share = yuan_total_share(state);
+    let unit_price = yuan_unit_price(state);
+    state.derived = state
+        .investors
+        .values()
+        .map(|investor| {
+            let pre_tax_assets = investor.share * unit_price;
+            let taxable = pre_tax_assets - investor.tax_threshold;
+            let tax = taxable.max(0.0) * investor.tax_rate;
+            let after_tax_assets = pre_tax_assets - tax;
+            let after_tax_share = after_tax_assets / unit_price;
+            (
+                investor.name.clone(),
+                YuanInvestorDerived {
+                    share_ratio: if total_share == 0.0 {
+                        0.0
+                    } else {
+                        investor.share / total_share
+                    },
+                    tax,
+                    taxable,
+                    pre_tax_assets,
+                    after_tax_assets,
+                    after_tax_share,
+                },
+            )
+        })
+        .collect();
+}
+
+fn yuan_event_state_summary(state: YuanFundState) -> FundStatementEventState {
+    let total_deposit = state.investors.values().map(|item| item.deposit).sum();
+    let total_share = yuan_total_share(&state);
+    let unit_price = yuan_unit_price(&state);
+    let total_tax = state.derived.values().map(|item| item.tax).sum();
+    let total_profit = state.total_assets - total_deposit + state.total_taxed;
+    let mut investors = state
+        .investors
+        .values()
+        .map(|investor| {
+            let derived = state
+                .derived
+                .get(&investor.name)
+                .cloned()
+                .unwrap_or_default();
+            FundStatementEventInvestor {
+                name: investor.name.clone(),
+                referrer: investor.referrer.clone(),
+                deposit: investor.deposit,
+                share: investor.share,
+                share_ratio: derived.share_ratio,
+                tax_threshold: investor.tax_threshold,
+                tax_rate: investor.tax_rate,
+                tax: derived.tax,
+                taxable: derived.taxable,
+                pre_tax_assets: derived.pre_tax_assets,
+                after_tax_assets: derived.after_tax_assets,
+                after_tax_share: derived.after_tax_share,
+                referrer_rebate_rate: investor.referrer_rebate_rate,
+                claimed_referrer_rebate: investor.claimed_referrer_rebate,
+                taxed: investor.taxed,
+            }
+        })
+        .collect::<Vec<_>>();
+    investors.sort_by(|left, right| {
+        right
+            .after_tax_assets
+            .total_cmp(&left.after_tax_assets)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+
+    FundStatementEventState {
+        total_assets: state.total_assets,
+        total_deposit,
+        total_share,
+        unit_price,
+        total_tax,
+        total_taxed: state.total_taxed,
+        total_profit,
+        investors,
+    }
+}
+
+fn ensure_yuan_investor<'a>(state: &'a mut YuanFundState, name: &str) -> &'a mut YuanInvestor {
+    state
+        .investors
+        .entry(name.to_string())
+        .or_insert_with(|| YuanInvestor {
+            name: name.to_string(),
+            ..YuanInvestor::default()
+        })
+}
+
+fn yuan_total_share(state: &YuanFundState) -> f64 {
+    state.investors.values().map(|item| item.share).sum()
+}
+
+fn yuan_unit_price(state: &YuanFundState) -> f64 {
+    let total_share = yuan_total_share(state);
+    if total_share == 0.0 {
+        1.0
+    } else {
+        state.total_assets / total_share
+    }
+}
+
 fn settlement_basis(
     legacy: Option<&FundStatementEquity>,
     nav: Option<&FundNavSnapshot>,
@@ -1979,6 +2294,92 @@ mod tests {
         assert_eq!(alice.last_flow_at, "2025-01-02T00:00:00+00:00");
         assert_close(bob.deposit, 50.0);
         assert_close(bob.units, 50.0);
+    }
+
+    #[test]
+    fn folds_yuan_taxation_v2_into_referrer_and_tax_account_shares() {
+        let mut state = YuanFundState::default();
+        for event in [
+            FundStatementEventPayload {
+                event_type: None,
+                comment: None,
+                fund_equity: None,
+                order: Some(FundStatementOrderPayload {
+                    name: "Alice".to_string(),
+                    deposit: 100.0,
+                }),
+                investor: None,
+            },
+            FundStatementEventPayload {
+                event_type: None,
+                comment: None,
+                fund_equity: None,
+                order: Some(FundStatementOrderPayload {
+                    name: "Bob".to_string(),
+                    deposit: 100.0,
+                }),
+                investor: None,
+            },
+            FundStatementEventPayload {
+                event_type: None,
+                comment: None,
+                fund_equity: Some(FundStatementEquityPayload { equity: 300.0 }),
+                order: None,
+                investor: None,
+            },
+            FundStatementEventPayload {
+                event_type: Some("update".to_string()),
+                comment: None,
+                fund_equity: None,
+                order: None,
+                investor: Some(FundStatementInvestorPayload {
+                    name: "Alice".to_string(),
+                    tax_rate: Some(0.2),
+                    add_tax_threshold: None,
+                    referrer: Some("Bob".to_string()),
+                    referrer_rebate_rate: Some(0.5),
+                }),
+            },
+            FundStatementEventPayload {
+                event_type: Some("taxation/v2".to_string()),
+                comment: None,
+                fund_equity: None,
+                order: None,
+                investor: None,
+            },
+        ] {
+            apply_yuan_fund_event(&mut state, event);
+            recompute_yuan_derived(&mut state);
+        }
+
+        let summary = yuan_event_state_summary(state);
+        let alice = summary
+            .investors
+            .iter()
+            .find(|item| item.name == "Alice")
+            .unwrap();
+        let bob = summary
+            .investors
+            .iter()
+            .find(|item| item.name == "Bob")
+            .unwrap();
+        let tax = summary
+            .investors
+            .iter()
+            .find(|item| item.name == "@tax")
+            .unwrap();
+
+        assert_close(summary.total_assets, 300.0);
+        assert_close(summary.total_taxed, 10.0);
+        assert_close(summary.total_share, 200.0);
+        assert_close(summary.unit_price, 1.5);
+        assert_close(alice.share, 100.0 - 10.0 / 1.5);
+        assert_close(alice.tax_threshold, 140.0);
+        assert_close(alice.taxed, 10.0);
+        assert_close(bob.claimed_referrer_rebate, 5.0);
+        assert_close(bob.share, 100.0 + 5.0 / 1.5);
+        assert_close(tax.share, 5.0 / 1.5);
+        assert_close(tax.tax_threshold, 5.0);
     }
 
     #[test]

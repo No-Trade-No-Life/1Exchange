@@ -218,6 +218,7 @@ type FundStatementSummary = {
   totals: FundStatementTotals;
   investors: FundStatementInvestor[];
   investor_ledger: FundStatementInvestorLedger[];
+  event_state: FundStatementEventState;
   recent_orders: FundStatementOrder[];
   latest_equity: FundStatementEquity | null;
   reconciliation: FundEquityReconciliation | null;
@@ -265,6 +266,35 @@ type FundStatementInvestorLedger = {
   units: number;
   flow_count: number;
   last_flow_at: string;
+};
+
+type FundStatementEventState = {
+  total_assets: number;
+  total_deposit: number;
+  total_share: number;
+  unit_price: number;
+  total_tax: number;
+  total_taxed: number;
+  total_profit: number;
+  investors: FundStatementEventInvestor[];
+};
+
+type FundStatementEventInvestor = {
+  name: string;
+  referrer: string | null;
+  deposit: number;
+  share: number;
+  share_ratio: number;
+  tax_threshold: number;
+  tax_rate: number;
+  tax: number;
+  taxable: number;
+  pre_tax_assets: number;
+  after_tax_assets: number;
+  after_tax_share: number;
+  referrer_rebate_rate: number;
+  claimed_referrer_rebate: number;
+  taxed: number;
 };
 
 type FundStatementOrder = {
@@ -1684,6 +1714,9 @@ function FundDetailPage(props: {
         <Metric label="Capped cash" value={statement ? formatNumber(statement.totals.capped_cash_amount) : '-'} />
         <Metric label="Legacy equity" value={statement?.latest_equity ? formatNumber(statement.latest_equity.equity) : '-'} />
         <Metric label="Tax modes" value={statement ? statement.totals.tax_modes.toString() : '-'} />
+        <Metric label="Event unit price" value={statement ? formatNumber(statement.event_state.unit_price) : '-'} />
+        <Metric label="Event taxed" value={statement ? formatNumber(statement.event_state.total_taxed) : '-'} />
+        <Metric label="Event tax due" value={statement ? formatNumber(statement.event_state.total_tax) : '-'} />
       </section>
 
       <section className="metrics-grid compact" aria-label="Fund equity reconciliation">
@@ -1851,6 +1884,31 @@ function FundDetailPage(props: {
         open={selectedSettlementRunId !== null}
         runId={selectedSettlementRunId}
       />
+
+      <section className="panel">
+        <PanelTitle
+          label="Legacy statement"
+          title="Event-state investors"
+          action={statement ? statement.event_state.investors.length + ' investors' : undefined}
+        />
+        <InlineError message={props.statementError} />
+        <DataTable
+          empty="No folded legacy event state is available for this fund."
+          headers={['Investor', 'Referrer', 'After-tax assets', 'Share', 'Share %', 'Tax due', 'Taxed', 'Tax threshold', 'Rebate claimed', 'Deposit']}
+          rows={(statement?.event_state.investors ?? []).map((investor) => [
+            investor.name,
+            investor.referrer ?? '-',
+            formatNumber(investor.after_tax_assets),
+            formatNumber(investor.share),
+            formatPercent(investor.share_ratio),
+            formatNumber(investor.tax),
+            formatNumber(investor.taxed),
+            formatNumber(investor.tax_threshold),
+            formatNumber(investor.claimed_referrer_rebate),
+            <Value key="deposit" value={investor.deposit} />,
+          ])}
+        />
+      </section>
 
       <section className="panel">
         <PanelTitle
