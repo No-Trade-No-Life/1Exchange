@@ -9,6 +9,14 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from '@/components/ui/dialog';
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuGroup,
@@ -800,29 +808,67 @@ function AccountsPage(props: {
 
       <div className="account-source-section" id="account-source-credential">
         <PanelTitle label="Account source" title="Real EX credentials" action={props.credentials.length + ' saved'} />
-        <div className="credential-manager">
-          <CredentialCreatePanel exchanges={props.exchanges} onCreated={props.onCredentialCreated} />
-          <CredentialSecurityPanel />
+        <div className="account-source-actions">
+          <AccountSourceCreateDialog
+            description="Save a read-only exchange credential locally. Payload values stay server-side after creation."
+            title="Add real EX credential"
+            trigger="Add credential"
+          >
+            <CredentialCreatePanel exchanges={props.exchanges} onCreated={props.onCredentialCreated} />
+          </AccountSourceCreateDialog>
         </div>
+        <CredentialSecurityPanel />
         <CredentialInventory accountIds={props.accountIds} credentials={props.credentials} />
         <CredentialSchemaPanel exchanges={props.exchanges} />
       </div>
 
       <div className="account-source-section" id="account-source-virtual">
         <PanelTitle label="Account source" title="Virtual accounts" action={props.virtualAccounts.length + ' configs'} />
-        <VirtualAccountCreatePanel accountIds={props.accountIds} credentials={props.credentials} />
+        <div className="account-source-actions">
+          <AccountSourceCreateDialog
+            description="Create a linear composition account from existing exchange credentials."
+            title="Create virtual account"
+            trigger="Create virtual account"
+          >
+            <VirtualAccountCreatePanel accountIds={props.accountIds} credentials={props.credentials} />
+          </AccountSourceCreateDialog>
+        </div>
         <VirtualAccountInventory configs={props.virtualAccounts} />
       </div>
 
       <div className="account-source-section" id="account-source-custom">
         <PanelTitle label="Account source" title="Custom account sources" action={props.customSources.length + ' sources'} />
-        <CustomAccountSourcePanel sources={props.customSources} />
+        <div className="account-source-actions">
+          <AccountSourceCreateDialog
+            description="Register another 1Exchange-compatible server as a remote account source."
+            title="Register custom account source"
+            trigger="Register source"
+          >
+            <CustomAccountSourceForm />
+          </AccountSourceCreateDialog>
+        </div>
+        <CustomAccountSourceInventory sources={props.customSources} />
       </div>
     </div>
   );
 }
 
-function CustomAccountSourcePanel(props: { sources: CustomAccountSource[] }) {
+function AccountSourceCreateDialog(props: { children: React.ReactNode; description: string; title: string; trigger: string }) {
+  return (
+    <Dialog>
+      <DialogTrigger render={<Button type="button" />}>{props.trigger}</DialogTrigger>
+      <DialogContent className="max-h-[min(720px,calc(100vh-2rem))] overflow-y-auto sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>{props.title}</DialogTitle>
+          <DialogDescription>{props.description}</DialogDescription>
+        </DialogHeader>
+        {props.children}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function CustomAccountSourceForm() {
   const queryClient = useQueryClient();
   const [name, setName] = useState('Remote 1Exchange');
   const [baseUrl, setBaseUrl] = useState('');
@@ -854,29 +900,28 @@ function CustomAccountSourcePanel(props: { sources: CustomAccountSource[] }) {
   }
 
   return (
-    <section className="panel credential-create-panel">
-      <div className="panel-heading">
-        <div>
-          <p className="section-label">Custom account source</p>
-          <h2>Register a 1Exchange-compatible BASE URL</h2>
-        </div>
-        <span className="count-chip">{props.sources.length} sources</span>
-      </div>
-      <form className="credential-form" onSubmit={handleSubmit}>
-        <label>
-          Source name
-          <Input required value={name} onChange={(event) => setName(event.target.value)} />
-        </label>
-        <label>
-          BASE URL
-          <Input required placeholder="http://127.0.0.1:8788" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} />
-        </label>
-        <p className="form-note">The remote server must expose the 1Exchange account API subset: GET /api/accounts and GET /api/accounts?account_id=...</p>
-        <InlineError message={error} />
-        <Button disabled={saving || !name || !baseUrl} type="submit">
-          {saving ? 'Saving...' : 'Register source'}
-        </Button>
-      </form>
+    <form className="credential-form dialog-form" onSubmit={handleSubmit}>
+      <label>
+        Source name
+        <Input required value={name} onChange={(event) => setName(event.target.value)} />
+      </label>
+      <label>
+        BASE URL
+        <Input required placeholder="http://127.0.0.1:8788" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} />
+      </label>
+      <p className="form-note">The remote server must expose the 1Exchange account API subset: GET /api/accounts and GET /api/accounts?account_id=...</p>
+      <InlineError message={error} />
+      <Button disabled={saving || !name || !baseUrl} type="submit">
+        {saving ? 'Saving...' : 'Register source'}
+      </Button>
+    </form>
+  );
+}
+
+function CustomAccountSourceInventory(props: { sources: CustomAccountSource[] }) {
+  return (
+    <section className="panel">
+      <PanelTitle label="Custom sources" title="Remote 1Exchange protocols" action={props.sources.length + ' sources'} />
       <DataTable
         empty="No custom account sources registered."
         headers={['Name', 'BASE URL', 'Status', 'Updated']}
@@ -1185,15 +1230,7 @@ function VirtualAccountCreatePanel(props: { accountIds: AccountIds; credentials:
   }
 
   return (
-    <section className="panel credential-create-panel">
-      <div className="panel-heading">
-        <div>
-          <p className="section-label">Create virtual account</p>
-          <h2>Linear source composition</h2>
-        </div>
-        <span className="count-chip">On demand</span>
-      </div>
-      <form className="credential-form" onSubmit={handleSubmit}>
+      <form className="credential-form dialog-form" onSubmit={handleSubmit}>
         <label>
           Virtual account ID
           <Input required value={accountId} onChange={(event) => setAccountId(event.target.value)} />
@@ -1226,7 +1263,6 @@ function VirtualAccountCreatePanel(props: { accountIds: AccountIds; credentials:
           {saving ? 'Saving...' : 'Save virtual account'}
         </Button>
       </form>
-    </section>
   );
 }
 
@@ -1426,15 +1462,7 @@ function CredentialCreatePanel(props: { exchanges: ExchangeInfo[]; onCreated: (c
   }
 
   return (
-    <section className="panel credential-create-panel">
-      <div className="panel-heading">
-        <div>
-          <p className="section-label">Add credential</p>
-          <h2>Save read-only API access</h2>
-        </div>
-        <span className="count-chip">Local only</span>
-      </div>
-      <form className="credential-form" onSubmit={handleSubmit}>
+      <form className="credential-form dialog-form" onSubmit={handleSubmit}>
         <label>
           Exchange
           <select value={exchangeId} onChange={(event) => { setExchangeId(event.target.value); setPayload({}); }}>
@@ -1469,7 +1497,6 @@ function CredentialCreatePanel(props: { exchanges: ExchangeInfo[]; onCreated: (c
           {saving ? 'Saving...' : 'Save credential'}
         </Button>
       </form>
-    </section>
   );
 }
 

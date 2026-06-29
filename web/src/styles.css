@@ -131,6 +131,10 @@
     @apply rounded-xl bg-card text-card-foreground ring-1 ring-foreground/10;
   }
 
+  .account-source-actions {
+    @apply flex justify-end;
+  }
+
   .metrics-grid {
     @apply grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-3;
   }
@@ -167,12 +171,12 @@
     @apply p-4;
   }
 
-  .credential-manager {
-    @apply grid grid-cols-[minmax(360px,0.72fr)_minmax(280px,0.28fr)] items-start gap-4;
-  }
-
   .credential-form {
     @apply flex flex-col gap-4 px-5 pb-5;
+  }
+
+  .credential-form.dialog-form {
+    @apply px-0 pb-0;
   }
 
   .credential-form label,
@@ -269,8 +273,5 @@
       @apply flex-col items-stretch;
     }
 
-    .credential-manager {
-      @apply grid-cols-1;
-    }
   }
 }
