@@ -8,7 +8,7 @@ use axum::{
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, SqlitePool};
+use sqlx::{FromRow, Sqlite, SqlitePool, Transaction};
 use tokio::time::{Duration, interval};
 use uuid::Uuid;
 
@@ -1050,6 +1050,7 @@ async fn update_fund_settlement_run_status(
 
 async fn confirm_fund_settlement_run_status(db: &SqlitePool, run_id: &str) -> Result<(), AppError> {
     let status_updated_at = Utc::now().to_rfc3339();
+    let mut tx = db.begin().await?;
     let result = sqlx::query(
         r#"
         UPDATE fund_settlement_runs
@@ -1077,7 +1078,7 @@ async fn confirm_fund_settlement_run_status(db: &SqlitePool, run_id: &str) -> Re
     .bind(&status_updated_at)
     .bind(run_id)
     .bind(FUND_SETTLEMENT_MODEL_EVENT_STATE)
-    .execute(db)
+    .execute(&mut *tx)
     .await?;
 
     if result.rows_affected() == 0 {
@@ -1085,6 +1086,106 @@ async fn confirm_fund_settlement_run_status(db: &SqlitePool, run_id: &str) -> Re
             "settlement run must use the current model, be draft, non-duplicate, and have no negative investor units",
         ));
     }
+
+    let run = select_fund_settlement_run_by_id(&mut tx, run_id).await?;
+    insert_confirmed_settlement_event(&mut tx, &run, &status_updated_at).await?;
+    tx.commit().await?;
+
+    Ok(())
+}
+
+async fn select_fund_settlement_run_by_id(
+    tx: &mut Transaction<'_, Sqlite>,
+    run_id: &str,
+) -> Result<FundSettlementRun, AppError> {
+    Ok(sqlx::query_as::<_, FundSettlementRun>(
+        r#"
+        SELECT id, fund_id, settlement_model, equity_event_index, equity, equity_updated_at,
+               basis_source, basis_id, basis_updated_at,
+               total_deposit, total_units, total_tax, total_referrer_rebate,
+               capped_cash_flows, capped_units, capped_cash_amount,
+               investor_count, status, status_updated_at, created_at
+        FROM fund_settlement_runs
+        WHERE id = ?1
+        "#,
+    )
+    .bind(run_id)
+    .fetch_one(&mut **tx)
+    .await?)
+}
+
+async fn insert_confirmed_settlement_event(
+    tx: &mut Transaction<'_, Sqlite>,
+    run: &FundSettlementRun,
+    updated_at: &str,
+) -> Result<(), AppError> {
+    let (equity_event_index,): (i64,) = sqlx::query_as(
+        r#"
+        SELECT COALESCE(MAX(event_index), -1) + 1
+        FROM fund_statement_events
+        WHERE fund_id = ?1
+        "#,
+    )
+    .bind(&run.fund_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    let taxation_event_index = equity_event_index + 1;
+    let comment = format!("Settlement run {}", run.id);
+    let equity_payload = serde_json::json!({
+        "comment": comment,
+        "fund_equity": { "equity": run.equity },
+        "settlement_run_id": run.id,
+        "settlement_model": run.settlement_model,
+        "basis_source": run.basis_source,
+        "basis_id": run.basis_id,
+    });
+    let taxation_payload = serde_json::json!({
+        "type": "taxation/v2",
+        "comment": comment,
+        "settlement_run_id": run.id,
+        "settlement_model": run.settlement_model,
+        "basis_source": run.basis_source,
+        "basis_id": run.basis_id,
+    });
+
+    sqlx::query(
+        r#"
+        INSERT INTO fund_statement_events (fund_id, event_index, event_type, updated_at, payload)
+        VALUES (?1, ?2, 'settlement_equity', ?3, ?4)
+        "#,
+    )
+    .bind(&run.fund_id)
+    .bind(equity_event_index)
+    .bind(updated_at)
+    .bind(equity_payload.to_string())
+    .execute(&mut **tx)
+    .await?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO fund_statement_events (fund_id, event_index, event_type, updated_at, payload)
+        VALUES (?1, ?2, 'taxation/v2', ?3, ?4)
+        "#,
+    )
+    .bind(&run.fund_id)
+    .bind(taxation_event_index)
+    .bind(updated_at)
+    .bind(taxation_payload.to_string())
+    .execute(&mut **tx)
+    .await?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO fund_statement_tax_modes (fund_id, event_index, mode, comment, updated_at)
+        VALUES (?1, ?2, 'taxation/v2', ?3, ?4)
+        "#,
+    )
+    .bind(&run.fund_id)
+    .bind(taxation_event_index)
+    .bind(comment)
+    .bind(updated_at)
+    .execute(&mut **tx)
+    .await?;
 
     Ok(())
 }
@@ -2320,6 +2421,71 @@ mod tests {
         assert_close(bob.share, 100.0 + 5.0 / 1.5);
         assert_close(tax.share, 5.0 / 1.5);
         assert_close(tax.tax_threshold, 5.0);
+    }
+
+    #[test]
+    fn folds_settlement_event_with_basis_equity_before_taxation() {
+        let mut state = YuanFundState::default();
+        for event in [
+            FundStatementEventPayload {
+                event_type: None,
+                comment: None,
+                fund_equity: None,
+                order: Some(FundStatementOrderPayload {
+                    name: "Alice".to_string(),
+                    deposit: 100.0,
+                }),
+                investor: None,
+            },
+            FundStatementEventPayload {
+                event_type: Some("update".to_string()),
+                comment: None,
+                fund_equity: None,
+                order: None,
+                investor: Some(FundStatementInvestorPayload {
+                    name: "Alice".to_string(),
+                    tax_rate: Some(0.2),
+                    add_tax_threshold: None,
+                    referrer: None,
+                    referrer_rebate_rate: None,
+                }),
+            },
+            FundStatementEventPayload {
+                event_type: None,
+                comment: Some("Settlement run test".to_string()),
+                fund_equity: Some(FundStatementEquityPayload { equity: 150.0 }),
+                order: None,
+                investor: None,
+            },
+            FundStatementEventPayload {
+                event_type: Some("taxation/v2".to_string()),
+                comment: Some("Settlement run test".to_string()),
+                fund_equity: None,
+                order: None,
+                investor: None,
+            },
+        ] {
+            apply_yuan_fund_event(&mut state, event);
+            recompute_yuan_derived(&mut state);
+        }
+
+        let summary = yuan_event_state_summary(state);
+        let alice = summary
+            .investors
+            .iter()
+            .find(|item| item.name == "Alice")
+            .unwrap();
+        let tax = summary
+            .investors
+            .iter()
+            .find(|item| item.name == "@tax")
+            .unwrap();
+
+        assert_close(summary.total_assets, 150.0);
+        assert_close(summary.total_taxed, 10.0);
+        assert_close(alice.taxed, 10.0);
+        assert_close(alice.tax_threshold, 140.0);
+        assert_close(tax.tax_threshold, 10.0);
     }
 
     #[test]
