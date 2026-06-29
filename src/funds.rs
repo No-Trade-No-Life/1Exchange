@@ -149,6 +149,7 @@ pub struct FundSettlementPreview {
     total_units: f64,
     total_tax: f64,
     total_referrer_rebate: f64,
+    investor_taxes: Vec<FundInvestorTax>,
     referrer_rebates: Vec<FundReferrerRebate>,
     investors: Vec<FundInvestorSettlement>,
 }
@@ -190,7 +191,14 @@ pub struct FundSettlementRun {
 pub struct FundSettlementRunDetail {
     run: FundSettlementRun,
     investors: Vec<FundInvestorSettlement>,
+    investor_taxes: Vec<FundInvestorTax>,
     referrer_rebates: Vec<FundReferrerRebate>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FundInvestorTax {
+    investor: String,
+    tax: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -551,11 +559,13 @@ async fn get_fund_settlement_run_detail_by_id(
     .into_iter()
     .map(FundInvestorSettlement::from)
     .collect::<Vec<_>>();
+    let investor_taxes = summarize_investor_taxes(&investors);
     let referrer_rebates = summarize_referrer_rebates(&investors);
 
     Ok(FundSettlementRunDetail {
         run,
         investors,
+        investor_taxes,
         referrer_rebates,
     })
 }
@@ -628,6 +638,7 @@ pub async fn create_fund_settlement_run(
         .await?;
     }
     tx.commit().await?;
+    let investor_taxes = summarize_investor_taxes(&preview.investors);
     let referrer_rebates = summarize_referrer_rebates(&preview.investors);
 
     Ok((
@@ -647,6 +658,7 @@ pub async fn create_fund_settlement_run(
                 status: "draft".to_string(),
                 created_at,
             },
+            investor_taxes,
             referrer_rebates,
             investors: preview.investors,
         }),
@@ -1012,6 +1024,7 @@ fn build_settlement_preview(
         total_units,
         total_tax: rows.iter().map(|item| item.tax).sum(),
         total_referrer_rebate: rows.iter().map(|item| item.referrer_rebate).sum(),
+        investor_taxes: summarize_investor_taxes(&rows),
         referrer_rebates: summarize_referrer_rebates(&rows),
         investors: rows,
     }
@@ -1071,6 +1084,14 @@ fn settlement_run_csv(detail: &FundSettlementRunDetail) -> String {
         ]
     }));
     rows.push(Vec::new());
+    rows.push(vec!["tax_investor".to_string(), "tax".to_string()]);
+    rows.extend(
+        detail
+            .investor_taxes
+            .iter()
+            .map(|tax| vec![tax.investor.clone(), tax.tax.to_string()]),
+    );
+    rows.push(Vec::new());
     rows.push(vec!["referrer".to_string(), "rebate".to_string()]);
     rows.extend(
         detail
@@ -1089,6 +1110,24 @@ fn settlement_run_csv(detail: &FundSettlementRunDetail) -> String {
         .collect::<Vec<_>>()
         .join("\n")
         + "\n"
+}
+
+fn summarize_investor_taxes(investors: &[FundInvestorSettlement]) -> Vec<FundInvestorTax> {
+    let mut rows = investors
+        .iter()
+        .filter(|investor| investor.tax > 0.0)
+        .map(|investor| FundInvestorTax {
+            investor: investor.name.clone(),
+            tax: investor.tax,
+        })
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| {
+        right
+            .tax
+            .total_cmp(&left.tax)
+            .then_with(|| left.investor.cmp(&right.investor))
+    });
+    rows
 }
 
 fn summarize_referrer_rebates(investors: &[FundInvestorSettlement]) -> Vec<FundReferrerRebate> {
@@ -1256,6 +1295,21 @@ mod tests {
         assert_close(rows[1].rebate, 7.0);
     }
 
+    #[test]
+    fn summarizes_investor_taxes() {
+        let rows = summarize_investor_taxes(&[
+            investor_tax("Alice", 2.0),
+            investor_tax("Bob", 0.0),
+            investor_tax("Carol", 5.0),
+        ]);
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].investor, "Carol");
+        assert_close(rows[0].tax, 5.0);
+        assert_eq!(rows[1].investor, "Alice");
+        assert_close(rows[1].tax, 2.0);
+    }
+
     fn investor_rebate(
         name: &str,
         referrer: Option<&str>,
@@ -1275,6 +1329,13 @@ mod tests {
             referrer_rebate_rate: 0.0,
             referrer_rebate,
             net_equity: 0.0,
+        }
+    }
+
+    fn investor_tax(name: &str, tax: f64) -> FundInvestorSettlement {
+        FundInvestorSettlement {
+            tax,
+            ..investor_rebate(name, None, 0.0)
         }
     }
 

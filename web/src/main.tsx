@@ -265,6 +265,7 @@ type FundSettlementPreview = {
   total_units: number;
   total_tax: number;
   total_referrer_rebate: number;
+  investor_taxes: FundInvestorTax[];
   referrer_rebates: FundReferrerRebate[];
   investors: FundInvestorSettlement[];
 };
@@ -303,7 +304,13 @@ type FundSettlementRun = {
 type FundSettlementRunDetail = {
   run: FundSettlementRun;
   investors: FundInvestorSettlement[];
+  investor_taxes: FundInvestorTax[];
   referrer_rebates: FundReferrerRebate[];
+};
+
+type FundInvestorTax = {
+  investor: string;
+  tax: number;
 };
 
 type FundReferrerRebate = {
@@ -1610,6 +1617,22 @@ function FundDetailPage(props: {
           rows={(settlement?.referrer_rebates ?? []).map((rebate) => [
             rebate.referrer,
             formatNumber(rebate.rebate),
+          ])}
+        />
+      </section>
+
+      <section className="panel">
+        <PanelTitle
+          label="Settlement preview"
+          title="Tax payable"
+          action={settlement ? settlement.investor_taxes.length + ' investors' : undefined}
+        />
+        <DataTable
+          empty="No investor tax is estimated for this settlement."
+          headers={['Investor', 'Estimated tax']}
+          rows={(settlement?.investor_taxes ?? []).map((tax) => [
+            tax.investor,
+            formatNumber(tax.tax),
           ])}
         />
       </section>
