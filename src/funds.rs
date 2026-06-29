@@ -373,18 +373,6 @@ impl From<FundSettlementInvestorRow> for FundInvestorSettlement {
     }
 }
 
-#[derive(Clone, Debug, Default)]
-struct SettlementInvestorState {
-    name: String,
-    referrer: Option<String>,
-    deposit: f64,
-    units: f64,
-    capped_cash_amount: f64,
-    tax_threshold: f64,
-    tax_rate: f64,
-    referrer_rebate_rate: f64,
-}
-
 #[derive(Debug, FromRow)]
 struct FundStatementEventPayloadRow {
     event_index: i64,
@@ -1065,18 +1053,6 @@ async fn load_fund_settlement_preview(
     db: &SqlitePool,
     fund_id: String,
 ) -> Result<FundSettlementPreview, AppError> {
-    let orders = sqlx::query_as::<_, SettlementOrder>(
-        r#"
-        SELECT event_index, investor_name, deposit, updated_at
-        FROM fund_statement_orders
-        WHERE fund_id = ?1
-        ORDER BY updated_at ASC, event_index ASC
-        "#,
-    )
-    .bind(&fund_id)
-    .fetch_all(db)
-    .await?;
-
     let equity_points = sqlx::query_as::<_, FundStatementEquity>(
         r#"
         SELECT event_index, equity, updated_at
@@ -1089,17 +1065,6 @@ async fn load_fund_settlement_preview(
     .fetch_all(db)
     .await?;
 
-    let investors = sqlx::query_as::<_, FundStatementInvestor>(
-        r#"
-        SELECT name, referrer, tax_rate, referrer_rebate_rate, tax_threshold,
-               updated_at, source_event_index
-        FROM fund_statement_investors
-        WHERE fund_id = ?1
-        "#,
-    )
-    .bind(&fund_id)
-    .fetch_all(db)
-    .await?;
     let latest_nav = sqlx::query_as::<_, FundNavSnapshot>(
         r#"
         SELECT id, fund_id, account_id, equity, target_currency, positions_count,
@@ -1113,13 +1078,13 @@ async fn load_fund_settlement_preview(
     .bind(&fund_id)
     .fetch_optional(db)
     .await?;
+    let event_state = load_statement_event_state(db, &fund_id).await?;
 
     Ok(build_settlement_preview(
         fund_id,
-        orders,
         equity_points,
-        investors,
         latest_nav,
+        event_state,
     ))
 }
 
@@ -1281,59 +1246,21 @@ fn value_account(account: &AccountInfo, target_currency: &str) -> FundValuation 
 
 fn build_settlement_preview(
     fund_id: String,
-    orders: Vec<SettlementOrder>,
     equity_points: Vec<FundStatementEquity>,
-    investor_settings: Vec<FundStatementInvestor>,
     latest_nav: Option<FundNavSnapshot>,
+    event_state: FundStatementEventState,
 ) -> FundSettlementPreview {
     let latest_equity = equity_points.last().cloned();
     let basis = settlement_basis(latest_equity.as_ref(), latest_nav.as_ref());
     let final_equity = basis.as_ref().map(|item| item.equity).unwrap_or(0.0);
-    let mut investors = investor_settings
+
+    let total_units = event_state.total_share;
+    let mut rows = event_state
+        .investors
         .into_iter()
-        .map(|item| {
-            (
-                item.name.clone(),
-                SettlementInvestorState {
-                    name: item.name,
-                    referrer: item.referrer,
-                    tax_threshold: item.tax_threshold.unwrap_or(0.0),
-                    tax_rate: item.tax_rate.unwrap_or(0.0),
-                    referrer_rebate_rate: item.referrer_rebate_rate.unwrap_or(0.0),
-                    ..SettlementInvestorState::default()
-                },
-            )
-        })
-        .collect::<HashMap<_, _>>();
-    let mut total_deposit = 0.0;
-    let cash_flows = build_cash_flow_ledger(&orders, &equity_points);
-    let capped_cash_flows = cash_flows
-        .iter()
-        .filter(|item| item.capped_units > 1e-9)
-        .count() as i64;
-    let capped_units = cash_flows.iter().map(|item| item.capped_units).sum();
-    let capped_cash_amount = cash_flows.iter().map(|item| item.capped_cash_amount).sum();
-
-    for order in cash_flows {
-        let investor = investors
-            .entry(order.investor_name.clone())
-            .or_insert_with(|| SettlementInvestorState {
-                name: order.investor_name,
-                ..SettlementInvestorState::default()
-            });
-
-        investor.deposit += order.effective_deposit;
-        investor.units += order.unit_delta;
-        investor.capped_cash_amount += order.capped_cash_amount;
-        total_deposit += order.effective_deposit;
-    }
-
-    let total_units = investors.values().map(|item| item.units).sum::<f64>();
-    let mut rows = investors
-        .into_values()
         .map(|investor| {
             let ownership = if total_units > 0.0 {
-                investor.units / total_units
+                investor.share / total_units
             } else {
                 0.0
             };
@@ -1347,7 +1274,7 @@ fn build_settlement_preview(
                 name: investor.name,
                 referrer: investor.referrer,
                 deposit: investor.deposit,
-                units: investor.units,
+                units: investor.share,
                 ownership,
                 gross_equity,
                 profit,
@@ -1356,7 +1283,7 @@ fn build_settlement_preview(
                 tax,
                 referrer_rebate_rate: investor.referrer_rebate_rate,
                 referrer_rebate,
-                capped_cash_amount: investor.capped_cash_amount,
+                capped_cash_amount: 0.0,
                 net_equity: gross_equity - tax,
             }
         })
@@ -1369,18 +1296,14 @@ fn build_settlement_preview(
             .then_with(|| left.name.cmp(&right.name))
     });
 
-    let totals = settlement_totals_with_capped_values(
-        summarize_settlement_totals(&rows),
-        capped_cash_flows,
-        capped_units,
-        capped_cash_amount,
-    );
+    let totals =
+        settlement_totals_with_capped_values(summarize_settlement_totals(&rows), 0, 0.0, 0.0);
 
     FundSettlementPreview {
         fund_id,
         latest_equity,
         basis,
-        total_deposit,
+        total_deposit: event_state.total_deposit,
         total_units,
         total_tax: rows.iter().map(|item| item.tax).sum(),
         total_referrer_rebate: rows.iter().map(|item| item.referrer_rebate).sum(),
@@ -2101,20 +2024,6 @@ mod tests {
         let preview = build_settlement_preview(
             "fund".to_string(),
             vec![
-                SettlementOrder {
-                    event_index: 1,
-                    investor_name: "Alice".to_string(),
-                    deposit: 100.0,
-                    updated_at: "2025-01-01T00:00:00+00:00".to_string(),
-                },
-                SettlementOrder {
-                    event_index: 2,
-                    investor_name: "Bob".to_string(),
-                    deposit: 120.0,
-                    updated_at: "2025-01-02T00:00:00+00:00".to_string(),
-                },
-            ],
-            vec![
                 FundStatementEquity {
                     event_index: 1,
                     equity: 100.0,
@@ -2126,16 +2035,11 @@ mod tests {
                     updated_at: "2025-01-03T00:00:00+00:00".to_string(),
                 },
             ],
-            vec![FundStatementInvestor {
-                name: "Bob".to_string(),
-                referrer: Some("Alice".to_string()),
-                tax_rate: Some(0.2),
-                referrer_rebate_rate: Some(0.25),
-                tax_threshold: Some(10.0),
-                updated_at: "2025-01-02T00:00:00+00:00".to_string(),
-                source_event_index: 2,
-            }],
             None,
+            settlement_event_state(vec![
+                event_investor("Alice", None, 100.0, 100.0, 0.0, 0.0),
+                event_investor_with_rebate("Bob", Some("Alice"), 120.0, 120.0, 10.0, 0.2, 0.25),
+            ]),
         );
 
         let alice = preview
@@ -2165,18 +2069,11 @@ mod tests {
     fn previews_settlement_against_latest_live_nav_basis() {
         let preview = build_settlement_preview(
             "fund".to_string(),
-            vec![SettlementOrder {
-                event_index: 1,
-                investor_name: "Alice".to_string(),
-                deposit: 100.0,
-                updated_at: "2025-01-01T00:00:00+00:00".to_string(),
-            }],
             vec![FundStatementEquity {
                 event_index: 1,
                 equity: 100.0,
                 updated_at: "2025-01-01T12:00:00+00:00".to_string(),
             }],
-            Vec::new(),
             Some(FundNavSnapshot {
                 id: "nav-1".to_string(),
                 fund_id: "fund".to_string(),
@@ -2187,6 +2084,7 @@ mod tests {
                 unpriced_positions: 0,
                 created_at: "2025-01-02T00:00:00+00:00".to_string(),
             }),
+            settlement_event_state(vec![event_investor("Alice", None, 100.0, 100.0, 0.0, 0.0)]),
         );
 
         assert_eq!(
@@ -2527,6 +2425,65 @@ mod tests {
             tax,
             referrer_rebate,
             ..investor_rebate(name, None, referrer_rebate)
+        }
+    }
+
+    fn settlement_event_state(
+        investors: Vec<FundStatementEventInvestor>,
+    ) -> FundStatementEventState {
+        let total_share = investors.iter().map(|item| item.share).sum();
+        let total_deposit = investors.iter().map(|item| item.deposit).sum();
+        FundStatementEventState {
+            total_assets: 0.0,
+            total_deposit,
+            total_share,
+            unit_price: 1.0,
+            total_tax: 0.0,
+            total_taxed: 0.0,
+            total_profit: 0.0,
+            investors,
+        }
+    }
+
+    fn event_investor(
+        name: &str,
+        referrer: Option<&str>,
+        deposit: f64,
+        share: f64,
+        tax_threshold: f64,
+        tax_rate: f64,
+    ) -> FundStatementEventInvestor {
+        FundStatementEventInvestor {
+            name: name.to_string(),
+            referrer: referrer.map(str::to_string),
+            deposit,
+            share,
+            share_ratio: 0.0,
+            tax_threshold,
+            tax_rate,
+            tax: 0.0,
+            taxable: 0.0,
+            pre_tax_assets: 0.0,
+            after_tax_assets: 0.0,
+            after_tax_share: 0.0,
+            referrer_rebate_rate: 0.0,
+            claimed_referrer_rebate: 0.0,
+            taxed: 0.0,
+        }
+    }
+
+    fn event_investor_with_rebate(
+        name: &str,
+        referrer: Option<&str>,
+        deposit: f64,
+        share: f64,
+        tax_threshold: f64,
+        tax_rate: f64,
+        referrer_rebate_rate: f64,
+    ) -> FundStatementEventInvestor {
+        FundStatementEventInvestor {
+            referrer_rebate_rate,
+            ..event_investor(name, referrer, deposit, share, tax_threshold, tax_rate)
         }
     }
 

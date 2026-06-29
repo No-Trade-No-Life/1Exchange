@@ -1746,12 +1746,6 @@ function FundDetailPage(props: {
         <Metric label="Referrer rebate" value={settlement ? formatNumber(settlement.total_referrer_rebate) : '-'} />
         <Metric label="Retained tax" value={settlement ? formatNumber(settlement.totals.retained_tax) : '-'} />
         <Metric
-          label="Capped flows"
-          value={settlement ? settlement.totals.capped_cash_flows.toString() : '-'}
-          tone={settlement?.totals.capped_cash_flows ? 'warn' : 'neutral'}
-        />
-        <Metric label="Capped cash" value={settlement ? formatNumber(settlement.totals.capped_cash_amount) : '-'} />
-        <Metric
           label="Overdrawn investors"
           value={settlement ? settlement.totals.overdrawn_investors.toString() : '-'}
           tone={settlement?.totals.overdrawn_investors ? 'warn' : 'neutral'}
@@ -1778,12 +1772,11 @@ function FundDetailPage(props: {
         <InlineError message={props.settlementError} />
         <DataTable
           empty="No settlement preview is available for this fund."
-          headers={['Investor', 'Referrer', 'Deposit', 'Capped cash', 'Ownership', 'Gross equity', 'Profit', 'Tax', 'Rebate', 'Net equity']}
+          headers={['Investor', 'Referrer', 'Deposit', 'Ownership', 'Gross equity', 'Profit', 'Tax', 'Rebate', 'Net equity']}
           rows={(settlement?.investors ?? []).map((investor) => [
             investor.name,
             investor.referrer ?? '-',
             formatNumber(investor.deposit),
-            formatNumber(investor.capped_cash_amount),
             formatPercent(investor.ownership),
             formatNumber(investor.gross_equity),
             <Value key="profit" value={investor.profit} />,
