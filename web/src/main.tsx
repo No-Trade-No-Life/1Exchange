@@ -466,7 +466,7 @@ const pages: PageConfig[] = [
   { id: 'overview', label: 'Overview', hint: 'Service and adapter status', path: '/overview', icon: LayoutDashboard, primary: true },
   { id: 'accounts', label: 'Accounts', hint: 'Account identities and detail', path: '/accounts', icon: WalletCards, primary: true },
   { id: 'history', label: 'Audit', hint: 'Read-only fill history', path: '/history', icon: History },
-  { id: 'funds', label: 'Funds', hint: 'Virtual account NAV records', path: '/funds', icon: LineChart, primary: true },
+  { id: 'funds', label: 'Funds', hint: 'Account equity allocation', path: '/funds', icon: LineChart, primary: true },
   { id: 'positions', label: 'Positions', hint: 'Assets and open exposure', path: '/positions', icon: BarChart3, primary: true },
   { id: 'products', label: 'Products', hint: 'Exchange product specs', path: '/products', icon: PackageSearch },
   { id: 'exchanges', label: 'Exchanges', hint: 'Schemas and capabilities', path: '/exchanges', icon: BadgeCheck },
