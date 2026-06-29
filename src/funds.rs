@@ -2603,6 +2603,148 @@ mod tests {
         assert_eq!(reconciliation.delta_rate, Some(0.125));
     }
 
+    #[tokio::test]
+    async fn writes_confirmed_settlement_events_and_derived_rows() {
+        let db = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"
+            CREATE TABLE fund_statement_events (
+                fund_id TEXT NOT NULL,
+                event_index INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                PRIMARY KEY (fund_id, event_index)
+            )
+            "#,
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"
+            CREATE TABLE fund_statement_equity (
+                fund_id TEXT NOT NULL,
+                event_index INTEGER NOT NULL,
+                equity REAL NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (fund_id, event_index)
+            )
+            "#,
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"
+            CREATE TABLE fund_statement_tax_modes (
+                fund_id TEXT NOT NULL,
+                event_index INTEGER NOT NULL,
+                mode TEXT NOT NULL,
+                comment TEXT,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (fund_id, event_index)
+            )
+            "#,
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"
+            INSERT INTO fund_statement_events (fund_id, event_index, event_type, updated_at, payload)
+            VALUES ('fund', 0, 'root', '2025-01-01T00:00:00+00:00', '{}')
+            "#,
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let run = FundSettlementRun {
+            id: "run-1".to_string(),
+            fund_id: "fund".to_string(),
+            settlement_model: FUND_SETTLEMENT_MODEL_EVENT_STATE.to_string(),
+            equity_event_index: 7,
+            equity: 150.0,
+            equity_updated_at: "2025-01-02T00:00:00+00:00".to_string(),
+            basis_source: "live_nav".to_string(),
+            basis_id: "nav-1".to_string(),
+            basis_updated_at: "2025-01-02T00:00:00+00:00".to_string(),
+            total_deposit: 100.0,
+            total_units: 100.0,
+            total_tax: 10.0,
+            total_referrer_rebate: 0.0,
+            capped_cash_flows: 0,
+            capped_units: 0.0,
+            capped_cash_amount: 0.0,
+            investor_count: 1,
+            status: "confirmed".to_string(),
+            status_updated_at: Some("2025-01-03T00:00:00+00:00".to_string()),
+            created_at: "2025-01-02T00:00:00+00:00".to_string(),
+        };
+        let mut tx = db.begin().await.unwrap();
+        insert_confirmed_settlement_event(&mut tx, &run, "2025-01-03T00:00:00+00:00")
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let events = sqlx::query_as::<_, (i64, String, String)>(
+            r#"
+            SELECT event_index, event_type, payload
+            FROM fund_statement_events
+            WHERE fund_id = 'fund'
+            ORDER BY event_index
+            "#,
+        )
+        .fetch_all(&db)
+        .await
+        .unwrap();
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[1].0, 1);
+        assert_eq!(events[1].1, "settlement_equity");
+        assert_eq!(events[2].0, 2);
+        assert_eq!(events[2].1, "taxation/v2");
+
+        let equity_payload: serde_json::Value = serde_json::from_str(&events[1].2).unwrap();
+        assert_eq!(equity_payload["settlement_run_id"], "run-1");
+        assert_eq!(equity_payload["basis_source"], "live_nav");
+        assert_close(
+            equity_payload["fund_equity"]["equity"].as_f64().unwrap(),
+            150.0,
+        );
+
+        let (equity_event_index, equity): (i64, f64) = sqlx::query_as(
+            r#"
+            SELECT event_index, equity
+            FROM fund_statement_equity
+            WHERE fund_id = 'fund'
+            "#,
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(equity_event_index, 1);
+        assert_close(equity, 150.0);
+
+        let (tax_event_index, mode, comment): (i64, String, String) = sqlx::query_as(
+            r#"
+            SELECT event_index, mode, comment
+            FROM fund_statement_tax_modes
+            WHERE fund_id = 'fund'
+            "#,
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(tax_event_index, 2);
+        assert_eq!(mode, "taxation/v2");
+        assert_eq!(comment, "Settlement run run-1");
+    }
+
     fn investor_rebate(
         name: &str,
         referrer: Option<&str>,
