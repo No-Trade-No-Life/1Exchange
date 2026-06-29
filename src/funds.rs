@@ -251,6 +251,7 @@ pub struct FundSettlementTotals {
     tax: f64,
     referrer_rebate: f64,
     retained_tax: f64,
+    overdrawn_investors: i64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -900,6 +901,12 @@ async fn confirm_fund_settlement_run_status(db: &SqlitePool, run_id: &str) -> Re
                 AND confirmed.basis_id = fund_settlement_runs.basis_id
                 AND confirmed.status = 'confirmed'
           )
+          AND NOT EXISTS (
+              SELECT 1
+              FROM fund_settlement_investor_rows investor
+              WHERE investor.run_id = fund_settlement_runs.id
+                AND investor.units < -1e-9
+          )
         "#,
     )
     .bind(&status_updated_at)
@@ -909,7 +916,7 @@ async fn confirm_fund_settlement_run_status(db: &SqlitePool, run_id: &str) -> Re
 
     if result.rows_affected() == 0 {
         return Err(AppError::bad_request(
-            "settlement run must be draft and not duplicate a confirmed equity event",
+            "settlement run must be draft, non-duplicate, and have no negative investor units",
         ));
     }
 
@@ -1472,6 +1479,7 @@ fn summarize_settlement_totals(investors: &[FundInvestorSettlement]) -> FundSett
     let net_equity = investors.iter().map(|item| item.net_equity).sum();
     let tax = investors.iter().map(|item| item.tax).sum();
     let referrer_rebate = investors.iter().map(|item| item.referrer_rebate).sum();
+    let overdrawn_investors = investors.iter().filter(|item| item.units < -1e-9).count() as i64;
 
     FundSettlementTotals {
         gross_equity,
@@ -1479,6 +1487,7 @@ fn summarize_settlement_totals(investors: &[FundInvestorSettlement]) -> FundSett
         tax,
         referrer_rebate,
         retained_tax: tax - referrer_rebate,
+        overdrawn_investors,
     }
 }
 
@@ -1780,6 +1789,10 @@ mod tests {
         let rows = [
             investor_total("Alice", 10.0, 8.0, 2.0, 0.5),
             investor_total("Bob", 20.0, 17.0, 3.0, 1.0),
+            FundInvestorSettlement {
+                units: -1.0,
+                ..investor_total("Carol", 0.0, 0.0, 0.0, 0.0)
+            },
         ];
         let totals = summarize_settlement_totals(&rows);
 
@@ -1788,6 +1801,7 @@ mod tests {
         assert_close(totals.tax, 5.0);
         assert_close(totals.referrer_rebate, 1.5);
         assert_close(totals.retained_tax, 3.5);
+        assert_eq!(totals.overdrawn_investors, 1);
     }
 
     #[test]

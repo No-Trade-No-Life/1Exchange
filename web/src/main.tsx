@@ -354,6 +354,7 @@ type FundSettlementTotals = {
   tax: number;
   referrer_rebate: number;
   retained_tax: number;
+  overdrawn_investors: number;
 };
 
 type FundSettlementBasis = {
@@ -1659,6 +1660,11 @@ function FundDetailPage(props: {
         <Metric label="Estimated tax" value={settlement ? formatNumber(settlement.total_tax) : '-'} />
         <Metric label="Referrer rebate" value={settlement ? formatNumber(settlement.total_referrer_rebate) : '-'} />
         <Metric label="Retained tax" value={settlement ? formatNumber(settlement.totals.retained_tax) : '-'} />
+        <Metric
+          label="Overdrawn investors"
+          value={settlement ? settlement.totals.overdrawn_investors.toString() : '-'}
+          tone={settlement?.totals.overdrawn_investors ? 'warn' : 'neutral'}
+        />
       </section>
 
       <section className="panel">
@@ -1936,6 +1942,11 @@ function SettlementRunDetailDialog(props: {
               <Metric label="Tax" value={formatNumber(run.total_tax)} />
               <Metric label="Rebate" value={formatNumber(run.total_referrer_rebate)} />
               <Metric label="Retained tax" value={detail.data ? formatNumber(detail.data.totals.retained_tax) : '-'} />
+              <Metric
+                label="Overdrawn investors"
+                value={detail.data ? detail.data.totals.overdrawn_investors.toString() : '-'}
+                tone={detail.data?.totals.overdrawn_investors ? 'warn' : 'neutral'}
+              />
             </section>
 
             <section>
