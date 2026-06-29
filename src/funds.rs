@@ -103,6 +103,10 @@ pub struct FundStatementTotals {
     events: i64,
     orders: i64,
     order_deposit: f64,
+    inflow_count: i64,
+    inflow_amount: f64,
+    outflow_count: i64,
+    outflow_amount: f64,
     equity_points: i64,
     investors: i64,
     tax_modes: i64,
@@ -124,6 +128,7 @@ pub struct FundStatementOrder {
     event_index: i64,
     investor_name: String,
     deposit: f64,
+    direction: String,
     updated_at: String,
 }
 
@@ -409,8 +414,24 @@ pub async fn get_fund_statement_summary(
             .bind(&query.fund_id)
             .fetch_one(&state.db)
             .await?;
-    let (orders, order_deposit): (i64, Option<f64>) = sqlx::query_as(
-        "SELECT COUNT(*), SUM(deposit) FROM fund_statement_orders WHERE fund_id = ?1",
+    let (orders, order_deposit, inflow_count, inflow_amount, outflow_count, outflow_amount): (
+        i64,
+        Option<f64>,
+        i64,
+        Option<f64>,
+        i64,
+        Option<f64>,
+    ) = sqlx::query_as(
+        r#"
+        SELECT COUNT(*),
+               SUM(deposit),
+               SUM(CASE WHEN deposit > 0 THEN 1 ELSE 0 END),
+               SUM(CASE WHEN deposit > 0 THEN deposit ELSE 0 END),
+               SUM(CASE WHEN deposit < 0 THEN 1 ELSE 0 END),
+               SUM(CASE WHEN deposit < 0 THEN -deposit ELSE 0 END)
+        FROM fund_statement_orders
+        WHERE fund_id = ?1
+        "#,
     )
     .bind(&query.fund_id)
     .fetch_one(&state.db)
@@ -446,7 +467,11 @@ pub async fn get_fund_statement_summary(
 
     let recent_orders = sqlx::query_as::<_, FundStatementOrder>(
         r#"
-        SELECT event_index, investor_name, deposit, updated_at
+        SELECT event_index,
+               investor_name,
+               deposit,
+               CASE WHEN deposit < 0 THEN 'outflow' ELSE 'inflow' END AS direction,
+               updated_at
         FROM fund_statement_orders
         WHERE fund_id = ?1
         ORDER BY updated_at DESC, event_index DESC
@@ -504,6 +529,10 @@ pub async fn get_fund_statement_summary(
             events,
             orders,
             order_deposit: order_deposit.unwrap_or(0.0),
+            inflow_count,
+            inflow_amount: inflow_amount.unwrap_or(0.0),
+            outflow_count,
+            outflow_amount: outflow_amount.unwrap_or(0.0),
             equity_points,
             investors: investor_count,
             tax_modes: tax_mode_count,

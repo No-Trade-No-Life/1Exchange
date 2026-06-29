@@ -225,6 +225,10 @@ type FundStatementTotals = {
   events: number;
   orders: number;
   order_deposit: number;
+  inflow_count: number;
+  inflow_amount: number;
+  outflow_count: number;
+  outflow_amount: number;
   equity_points: number;
   investors: number;
   tax_modes: number;
@@ -244,6 +248,7 @@ type FundStatementOrder = {
   event_index: number;
   investor_name: string;
   deposit: number;
+  direction: string;
   updated_at: string;
 };
 
@@ -1592,7 +1597,10 @@ function FundDetailPage(props: {
       <section className="metrics-grid compact" aria-label="Fund statement summary">
         <Metric label="Statement events" value={statement ? statement.totals.events.toString() : '-'} />
         <Metric label="Investors" value={statement ? statement.totals.investors.toString() : '-'} />
-        <Metric label="Deposits" value={statement ? formatNumber(statement.totals.order_deposit) : '-'} />
+        <Metric label="Cash flows" value={statement ? statement.totals.orders.toString() : '-'} />
+        <Metric label="Investor inflows" value={statement ? formatNumber(statement.totals.inflow_amount) : '-'} />
+        <Metric label="Investor outflows" value={statement ? formatNumber(statement.totals.outflow_amount) : '-'} />
+        <Metric label="Net cash flow" value={statement ? formatNumber(statement.totals.order_deposit) : '-'} />
         <Metric label="Legacy equity" value={statement?.latest_equity ? formatNumber(statement.latest_equity.equity) : '-'} />
         <Metric label="Tax modes" value={statement ? statement.totals.tax_modes.toString() : '-'} />
       </section>
@@ -1760,16 +1768,17 @@ function FundDetailPage(props: {
       <section className="panel">
         <PanelTitle
           label="Legacy statement"
-          title="Recent subscriptions"
-          action={statement ? statement.recent_orders.length + ' orders' : undefined}
+          title="Recent cash flows"
+          action={statement ? statement.recent_orders.length + ' flows' : undefined}
         />
         <DataTable
           empty="No imported statement orders are available for this fund."
-          headers={['Time', 'Investor', 'Deposit', 'Event']}
+          headers={['Time', 'Investor', 'Direction', 'Amount', 'Event']}
           rows={(statement?.recent_orders ?? []).map((order) => [
             formatDate(order.updated_at),
             order.investor_name,
-            formatNumber(order.deposit),
+            cashFlowDirectionLabel(order.direction),
+            <Value key="amount" value={order.deposit} />,
             '#' + order.event_index,
           ])}
         />
@@ -2400,6 +2409,16 @@ function settlementBasisLabel(source: string) {
     return 'Legacy statement';
   }
   return source;
+}
+
+function cashFlowDirectionLabel(direction: string) {
+  if (direction === 'inflow') {
+    return 'Inflow';
+  }
+  if (direction === 'outflow') {
+    return 'Outflow';
+  }
+  return direction;
 }
 
 function scrollToAccountSource(sourceType: AccountSourceType) {
