@@ -347,6 +347,7 @@ function App() {
           <Route path="/credentials" element={<Navigate replace to="/accounts" />} />
           <Route path="/virtual-accounts" element={<Navigate replace to="/accounts" />} />
           <Route path="/funds" element={<PageBoundary><FundsRoute /></PageBoundary>} />
+          <Route path="/funds/detail" element={<PageBoundary><FundDetailRoute /></PageBoundary>} />
           <Route path="/positions" element={<PageBoundary><PositionsRoute /></PageBoundary>} />
           <Route path="/products" element={<PageBoundary><ProductsRoute /></PageBoundary>} />
           <Route path="/exchanges" element={<PageBoundary><ExchangesRoute /></PageBoundary>} />
@@ -633,17 +634,33 @@ function TradeHistoryRoute() {
 function FundsRoute() {
   const funds = useJson<FundConfig[]>('/api/funds');
   const virtualAccounts = useJson<VirtualAccountConfig[]>('/api/virtual-accounts');
-  const selectedFundId = funds.data?.[0]?.id ?? '';
-  const nav = useJson<FundNavSnapshot[]>(selectedFundId ? `/api/fund-nav?fund_id=${encodeURIComponent(selectedFundId)}&limit=25` : null);
 
   return (
-    <RefreshScope resources={[funds, virtualAccounts, nav]}>
-      <FundsPage
+    <RefreshScope resources={[funds, virtualAccounts]}>
+      <FundListPage
         configs={funds.data ?? emptyFundConfigs}
-        error={funds.error ?? virtualAccounts.error ?? nav.error}
-        loading={funds.loading || virtualAccounts.loading || nav.loading}
-        snapshots={nav.data ?? []}
+        error={funds.error ?? virtualAccounts.error}
+        loading={funds.loading || virtualAccounts.loading}
         virtualAccounts={virtualAccounts.data ?? emptyVirtualAccountConfigs}
+      />
+    </RefreshScope>
+  );
+}
+
+function FundDetailRoute() {
+  const [params] = useSearchParams();
+  const fundId = params.get('fund_id') ?? '';
+  const funds = useJson<FundConfig[]>('/api/funds');
+  const nav = useJson<FundNavSnapshot[]>(fundId ? `/api/fund-nav?fund_id=${encodeURIComponent(fundId)}&limit=100` : null);
+
+  return (
+    <RefreshScope resources={[funds, nav]}>
+      <FundDetailPage
+        configs={funds.data ?? emptyFundConfigs}
+        fundId={fundId}
+        loading={funds.loading || nav.loading}
+        navError={nav.error}
+        snapshots={nav.data ?? []}
       />
     </RefreshScope>
   );
@@ -1266,24 +1283,12 @@ function VirtualAccountCreatePanel(props: { accountIds: AccountIds; credentials:
   );
 }
 
-function FundsPage(props: {
+function FundListPage(props: {
   configs: FundConfig[];
   error: string | null;
   loading: boolean;
-  snapshots: FundNavSnapshot[];
   virtualAccounts: VirtualAccountConfig[];
 }) {
-  const queryClient = useQueryClient();
-
-  async function sampleFund(fundId: string) {
-    const response = await fetch('/api/funds/sample?fund_id=' + encodeURIComponent(fundId), { method: 'POST' });
-    if (!response.ok) {
-      const body = await response.json().catch(() => null) as { message?: string } | null;
-      throw new Error(body?.message ?? String(response.status) + ' ' + response.statusText);
-    }
-    await queryClient.invalidateQueries({ queryKey: ['json'] });
-  }
-
   return (
     <div className="page-stack">
       <FundCreatePanel virtualAccounts={props.virtualAccounts} />
@@ -1291,7 +1296,7 @@ function FundsPage(props: {
       <section className="metrics-grid compact" aria-label="Fund summary">
         <Metric label="Funds" value={props.configs.length.toString()} />
         <Metric label="Enabled" value={props.configs.filter((fund) => fund.enabled).length.toString()} />
-        <Metric label="Snapshots loaded" value={props.snapshots.length.toString()} />
+        <Metric label="Virtual accounts" value={props.virtualAccounts.length.toString()} />
         <Metric label="Status" value={props.loading ? 'Loading' : 'Ready'} />
       </section>
 
@@ -1302,21 +1307,85 @@ function FundsPage(props: {
           empty="No funds yet. Create a virtual account first, then bind a fund to it."
           headers={['Fund', 'Virtual account', 'Target', 'Interval', 'Last sample', 'Status', 'Action']}
           rows={props.configs.map((fund) => [
-            fund.name,
+            <FundLink fund={fund} key="fund" />,
             <AccountIdLink accountId={fund.account_id} key="account" />,
             fund.target_currency,
             fund.poll_interval_seconds + 's',
             fund.last_sampled_at ?? '-',
             fund.enabled ? 'Enabled' : 'Disabled',
-            <Button variant="outline" key="sample" type="button" onClick={() => void sampleFund(fund.id)}>
-              Sample now
-            </Button>,
+            <Link className="secondary-link" key="action" to={fundDetailPath(fund.id)}>Open</Link>,
           ])}
         />
       </section>
+    </div>
+  );
+}
+
+function FundDetailPage(props: {
+  configs: FundConfig[];
+  fundId: string;
+  loading: boolean;
+  navError: string | null;
+  snapshots: FundNavSnapshot[];
+}) {
+  const queryClient = useQueryClient();
+  const fund = props.configs.find((item) => item.id === props.fundId);
+  const latestSnapshot = props.snapshots[0];
+
+  async function sampleFund() {
+    const response = await fetch('/api/funds/sample?fund_id=' + encodeURIComponent(props.fundId), { method: 'POST' });
+    if (!response.ok) {
+      const body = await response.json().catch(() => null) as { message?: string } | null;
+      throw new Error(body?.message ?? String(response.status) + ' ' + response.statusText);
+    }
+    await queryClient.invalidateQueries({ queryKey: ['json'] });
+  }
+
+  if (!props.fundId) {
+    return <FundDetailEmpty title="Select a fund" message="Open the Funds page and choose a fund to inspect NAV records." />;
+  }
+
+  if (!fund) {
+    return props.loading
+      ? <FundDetailEmpty title="Loading fund" message="Fund config is loading from the local registry." />
+      : <FundDetailEmpty title="Fund not found" message="This fund is not available in the current local registry." />;
+  }
+
+  return (
+    <div className="page-stack">
+      <section className="panel account-detail-head">
+        <div>
+          <p className="section-label">Fund detail</p>
+          <h2>{fund.name}</h2>
+        </div>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Button variant="outline" type="button" onClick={() => void sampleFund()}>Sample now</Button>
+          <Link className="secondary-link" to="/funds">Back to funds</Link>
+        </div>
+      </section>
+
+      <section className="metrics-grid compact" aria-label="Fund detail summary">
+        <Metric label="Status" value={fund.enabled ? 'Enabled' : 'Disabled'} />
+        <Metric label="Target" value={fund.target_currency} />
+        <Metric label="Snapshots" value={props.snapshots.length.toString()} />
+        <Metric label="Latest equity" value={latestSnapshot ? formatNumber(latestSnapshot.equity) : '-'} />
+        <Metric label="Last sample" value={fund.last_sampled_at ?? '-'} />
+      </section>
 
       <section className="panel">
-        <PanelTitle label="Recent NAV" title={props.configs[0]?.name ?? 'No fund selected'} action={props.snapshots.length + ' rows'} />
+        <div className="account-detail-grid">
+          <DetailItem label="Fund ID" value={fund.id} monospace />
+          <DetailItem label="Virtual account" value={fund.account_id} monospace />
+          <DetailItem label="Target currency" value={fund.target_currency} />
+          <DetailItem label="Poll interval" value={fund.poll_interval_seconds + 's'} />
+          <DetailItem label="Created" value={formatDate(fund.created_at)} />
+          <DetailItem label="Updated" value={formatDate(fund.updated_at)} />
+        </div>
+      </section>
+
+      <section className="panel">
+        <PanelTitle label="Recent NAV" title={fund.name} action={props.snapshots.length + ' rows'} />
+        <InlineError message={props.navError} />
         <DataTable
           empty="No NAV snapshots recorded yet. The poller records enabled funds automatically."
           headers={['Time', 'Equity', 'Currency', 'Positions', 'Unpriced']}
@@ -1330,6 +1399,25 @@ function FundsPage(props: {
         />
       </section>
     </div>
+  );
+}
+
+function FundDetailEmpty(props: { title: string; message: string }) {
+  return (
+    <section className="panel empty-detail">
+      <p className="section-label">Fund detail</p>
+      <h2>{props.title}</h2>
+      <p className="muted">{props.message}</p>
+      <Link className="secondary-link" to="/funds">Open Funds</Link>
+    </section>
+  );
+}
+
+function FundLink(props: { fund: FundConfig }) {
+  return (
+    <Link className="account-id-link" to={fundDetailPath(props.fund.id)}>
+      {props.fund.name}
+    </Link>
   );
 }
 
@@ -1837,6 +1925,10 @@ function accountLabel(credential: Credential, accountIds: AccountIds) {
 
 function accountDetailPath(accountId: string) {
   return `/accounts/detail?account_id=${encodeURIComponent(accountId)}`;
+}
+
+function fundDetailPath(fundId: string) {
+  return `/funds/detail?fund_id=${encodeURIComponent(fundId)}`;
 }
 
 function fallbackAccountId(credential: Credential) {
