@@ -1188,14 +1188,7 @@ function AccountDetailPage(props: { accountOptions: AccountSnapshot[]; accounts:
 
   const header = (
     <section className="panel account-detail-head">
-      <div>
-        <p className="section-label">Accounts</p>
-        <h2>Account detail</h2>
-      </div>
-      <div className="account-detail-actions">
-        <AccountSelector accountId={accountId} accounts={props.accountOptions} onSelectAccount={selectAccount} />
-        <Link className="secondary-link" to="/accounts">Back to accounts</Link>
-      </div>
+      <AccountSelector accountId={accountId} accounts={props.accountOptions} onSelectAccount={selectAccount} />
     </section>
   );
 

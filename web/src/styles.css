@@ -202,10 +202,6 @@
     @apply p-5;
   }
 
-  .account-detail-actions {
-    @apply flex flex-wrap items-end justify-end gap-3;
-  }
-
   .account-selector {
     @apply grid gap-2 text-xs font-medium text-muted-foreground;
   }
@@ -279,10 +275,6 @@
     .split-panel,
     .toolbar-panel {
       @apply flex-col items-stretch;
-    }
-
-    .account-detail-actions {
-      @apply items-stretch justify-start;
     }
 
   }
