@@ -219,6 +219,7 @@ type FundStatementSummary = {
   latest_equity: FundStatementEquity | null;
   reconciliation: FundEquityReconciliation | null;
   tax_modes: FundStatementTaxMode[];
+  tax_threshold_adjustments: FundTaxThresholdAdjustment[];
 };
 
 type FundStatementTotals = {
@@ -232,6 +233,8 @@ type FundStatementTotals = {
   equity_points: number;
   investors: number;
   tax_modes: number;
+  tax_threshold_adjustments: number;
+  tax_threshold_amount: number;
 };
 
 type FundStatementInvestor = {
@@ -261,6 +264,14 @@ type FundStatementEquity = {
 type FundStatementTaxMode = {
   event_index: number;
   mode: string;
+  comment: string | null;
+  updated_at: string;
+};
+
+type FundTaxThresholdAdjustment = {
+  event_index: number;
+  investor_name: string;
+  amount: number;
   comment: string | null;
   updated_at: string;
 };
@@ -1601,6 +1612,7 @@ function FundDetailPage(props: {
         <Metric label="Investor inflows" value={statement ? formatNumber(statement.totals.inflow_amount) : '-'} />
         <Metric label="Investor outflows" value={statement ? formatNumber(statement.totals.outflow_amount) : '-'} />
         <Metric label="Net cash flow" value={statement ? formatNumber(statement.totals.order_deposit) : '-'} />
+        <Metric label="Tax threshold" value={statement ? formatNumber(statement.totals.tax_threshold_amount) : '-'} />
         <Metric label="Legacy equity" value={statement?.latest_equity ? formatNumber(statement.latest_equity.equity) : '-'} />
         <Metric label="Tax modes" value={statement ? statement.totals.tax_modes.toString() : '-'} />
       </section>
@@ -1761,6 +1773,25 @@ function FundDetailPage(props: {
             formatPercent(investor.referrer_rebate_rate),
             formatOptionalNumber(investor.tax_threshold),
             formatDate(investor.updated_at),
+          ])}
+        />
+      </section>
+
+      <section className="panel">
+        <PanelTitle
+          label="Legacy statement"
+          title="Tax threshold adjustments"
+          action={statement ? statement.tax_threshold_adjustments.length + ' adjustments' : undefined}
+        />
+        <DataTable
+          empty="No tax threshold adjustments are available for this fund."
+          headers={['Time', 'Investor', 'Amount', 'Comment', 'Event']}
+          rows={(statement?.tax_threshold_adjustments ?? []).map((adjustment) => [
+            formatDate(adjustment.updated_at),
+            adjustment.investor_name,
+            formatNumber(adjustment.amount),
+            adjustment.comment ?? '-',
+            '#' + adjustment.event_index,
           ])}
         />
       </section>

@@ -96,6 +96,7 @@ pub struct FundStatementSummary {
     latest_equity: Option<FundStatementEquity>,
     reconciliation: Option<FundEquityReconciliation>,
     tax_modes: Vec<FundStatementTaxMode>,
+    tax_threshold_adjustments: Vec<FundTaxThresholdAdjustment>,
 }
 
 #[derive(Debug, Serialize)]
@@ -110,6 +111,8 @@ pub struct FundStatementTotals {
     equity_points: i64,
     investors: i64,
     tax_modes: i64,
+    tax_threshold_adjustments: i64,
+    tax_threshold_amount: f64,
 }
 
 #[derive(Debug, Serialize, FromRow)]
@@ -143,6 +146,15 @@ pub struct FundStatementEquity {
 pub struct FundStatementTaxMode {
     event_index: i64,
     mode: String,
+    comment: Option<String>,
+    updated_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FundTaxThresholdAdjustment {
+    event_index: i64,
+    investor_name: String,
+    amount: f64,
     comment: Option<String>,
     updated_at: String,
 }
@@ -300,6 +312,25 @@ struct SettlementInvestorState {
     tax_threshold: f64,
     tax_rate: f64,
     referrer_rebate_rate: f64,
+}
+
+#[derive(Debug, FromRow)]
+struct FundStatementEventPayloadRow {
+    event_index: i64,
+    updated_at: String,
+    payload: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct FundStatementEventPayload {
+    comment: Option<String>,
+    investor: Option<FundStatementInvestorPayload>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FundStatementInvestorPayload {
+    name: String,
+    add_tax_threshold: Option<f64>,
 }
 
 #[derive(Debug)]
@@ -523,6 +554,12 @@ pub async fn get_fund_statement_summary(
     .bind(&query.fund_id)
     .fetch_all(&state.db)
     .await?;
+    let tax_threshold_adjustments =
+        load_tax_threshold_adjustments(&state.db, &query.fund_id).await?;
+    let tax_threshold_amount = tax_threshold_adjustments
+        .iter()
+        .map(|item| item.amount)
+        .sum();
 
     Ok(Json(FundStatementSummary {
         totals: FundStatementTotals {
@@ -536,12 +573,15 @@ pub async fn get_fund_statement_summary(
             equity_points,
             investors: investor_count,
             tax_modes: tax_mode_count,
+            tax_threshold_adjustments: tax_threshold_adjustments.len() as i64,
+            tax_threshold_amount,
         },
         investors,
         recent_orders,
         latest_equity,
         reconciliation,
         tax_modes,
+        tax_threshold_adjustments,
     }))
 }
 
@@ -1201,6 +1241,49 @@ fn reconcile_fund_equity(
     }
 }
 
+async fn load_tax_threshold_adjustments(
+    db: &SqlitePool,
+    fund_id: &str,
+) -> Result<Vec<FundTaxThresholdAdjustment>, AppError> {
+    let rows = sqlx::query_as::<_, FundStatementEventPayloadRow>(
+        r#"
+        SELECT event_index, updated_at, payload
+        FROM fund_statement_events
+        WHERE fund_id = ?1 AND event_type = 'investor'
+        ORDER BY updated_at ASC, event_index ASC
+        "#,
+    )
+    .bind(fund_id)
+    .fetch_all(db)
+    .await?;
+
+    rows.into_iter()
+        .filter_map(tax_threshold_adjustment_from_row)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(AppError::from)
+}
+
+fn tax_threshold_adjustment_from_row(
+    row: FundStatementEventPayloadRow,
+) -> Option<Result<FundTaxThresholdAdjustment, serde_json::Error>> {
+    let payload = match serde_json::from_str::<FundStatementEventPayload>(&row.payload) {
+        Ok(payload) => payload,
+        Err(error) => return Some(Err(error)),
+    };
+    payload.investor.and_then(|investor| {
+        investor
+            .add_tax_threshold
+            .map(|amount| FundTaxThresholdAdjustment {
+                event_index: row.event_index,
+                investor_name: investor.name,
+                amount,
+                comment: payload.comment,
+                updated_at: row.updated_at,
+            })
+            .map(Ok)
+    })
+}
+
 fn settlement_basis(
     legacy: Option<&FundStatementEquity>,
     nav: Option<&FundNavSnapshot>,
@@ -1536,6 +1619,25 @@ mod tests {
         assert_eq!(csv_cell("plain"), "plain");
         assert_eq!(csv_cell("a,b"), "\"a,b\"");
         assert_eq!(csv_cell("a\"b"), "\"a\"\"b\"");
+    }
+
+    #[test]
+    fn extracts_tax_threshold_adjustment_from_statement_event() {
+        let adjustment = tax_threshold_adjustment_from_row(FundStatementEventPayloadRow {
+            event_index: 1514,
+            updated_at: "2025-09-30T15:59:59.999000+00:00".to_string(),
+            payload: r#"{"comment":"快捷申报免税 张秦 108.06756441281664","investor":{"name":"张秦","add_tax_threshold":108.06756441281664}}"#.to_string(),
+        })
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(adjustment.event_index, 1514);
+        assert_eq!(adjustment.investor_name, "张秦");
+        assert_close(adjustment.amount, 108.06756441281664);
+        assert_eq!(
+            adjustment.comment.as_deref(),
+            Some("快捷申报免税 张秦 108.06756441281664")
+        );
     }
 
     #[test]
