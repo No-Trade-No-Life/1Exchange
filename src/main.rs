@@ -135,6 +135,10 @@ async fn main() -> anyhow::Result<()> {
             get(funds::get_fund_settlement_preview),
         )
         .route(
+            "/fund-settlement-confirm",
+            post(funds::confirm_fund_settlement),
+        )
+        .route(
             "/fund-settlement-runs",
             get(funds::list_fund_settlement_runs).post(funds::create_fund_settlement_run),
         )

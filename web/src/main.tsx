@@ -884,19 +884,16 @@ function FundDetailRoute() {
   const nav = useJson<FundNavSnapshot[]>(fundId ? `/api/fund-nav?fund_id=${encodeURIComponent(fundId)}&limit=100` : null);
   const statements = useJson<FundStatementSummary>(fundId ? `/api/fund-statements?fund_id=${encodeURIComponent(fundId)}` : null);
   const settlement = useJson<FundSettlementPreview>(fundId ? `/api/fund-settlement-preview?fund_id=${encodeURIComponent(fundId)}` : null);
-  const settlementRuns = useJson<FundSettlementRun[]>(fundId ? `/api/fund-settlement-runs?fund_id=${encodeURIComponent(fundId)}` : null);
 
   return (
-    <RefreshScope resources={[funds, nav, statements, settlement, settlementRuns]}>
+    <RefreshScope resources={[funds, nav, statements, settlement]}>
       <FundDetailPage
         configs={funds.data ?? emptyFundConfigs}
         fundId={fundId}
-        loading={funds.loading || nav.loading || statements.loading || settlement.loading || settlementRuns.loading}
+        loading={funds.loading || nav.loading || statements.loading || settlement.loading}
         navError={nav.error}
         settlementError={settlement.error}
         settlementPreview={settlement.data ?? null}
-        settlementRuns={settlementRuns.data ?? []}
-        settlementRunsError={settlementRuns.error}
         statementError={statements.error}
         statementSummary={statements.data ?? null}
         snapshots={nav.data ?? []}
@@ -1584,35 +1581,19 @@ function FundDetailPage(props: {
   navError: string | null;
   settlementError: string | null;
   settlementPreview: FundSettlementPreview | null;
-  settlementRuns: FundSettlementRun[];
-  settlementRunsError: string | null;
   statementError: string | null;
   statementSummary: FundStatementSummary | null;
   snapshots: FundNavSnapshot[];
 }) {
   const queryClient = useQueryClient();
-  const [selectedSettlementRunId, setSelectedSettlementRunId] = useState<string | null>(null);
-  const [settlementRunError, setSettlementRunError] = useState<string | null>(null);
-  const [settlementRunActionId, setSettlementRunActionId] = useState<string | null>(null);
-  const [settlementRunSaving, setSettlementRunSaving] = useState(false);
+  const [settlementConfirmError, setSettlementConfirmError] = useState<string | null>(null);
+  const [settlementConfirming, setSettlementConfirming] = useState(false);
   const fund = props.configs.find((item) => item.id === props.fundId);
   const latestSnapshot = props.snapshots[0];
   const statement = props.statementSummary;
   const settlement = props.settlementPreview;
-  const currentSettlementRuns = props.settlementRuns.filter((run) => run.settlement_model === 'event_state_v1');
-  const legacySettlementRuns = props.settlementRuns.filter((run) => run.settlement_model !== 'event_state_v1');
-  const draftSettlementRuns = currentSettlementRuns.filter((run) => run.status === 'draft');
-  const confirmedSettlementRuns = currentSettlementRuns.filter((run) => run.status === 'confirmed');
-  const voidedSettlementRuns = currentSettlementRuns.filter((run) => run.status === 'voided');
-  const activeSettlementRunForBasis = settlement?.basis
-    ? currentSettlementRuns.find((run) => (
-        run.status !== 'voided'
-        && run.basis_source === settlement.basis?.source
-        && run.basis_id === settlement.basis?.id
-      ))
-    : null;
-  const createSettlementDisabled = settlementRunSaving || !settlement?.basis || activeSettlementRunForBasis !== null;
-  const createSettlementLabel = settlementCreateButtonLabel(settlementRunSaving, activeSettlementRunForBasis);
+  const confirmSettlementDisabled = settlementConfirming || !settlement?.basis;
+  const confirmSettlementLabel = settlementConfirmLabel(settlementConfirming, settlement);
 
   async function sampleFund() {
     const response = await fetch('/api/funds/sample?fund_id=' + encodeURIComponent(props.fundId), { method: 'POST' });
@@ -1623,11 +1604,11 @@ function FundDetailPage(props: {
     await queryClient.invalidateQueries({ queryKey: ['json'] });
   }
 
-  async function createSettlementRun() {
-    setSettlementRunError(null);
-    setSettlementRunSaving(true);
+  async function confirmSettlement() {
+    setSettlementConfirmError(null);
+    setSettlementConfirming(true);
     try {
-      const response = await fetch('/api/fund-settlement-runs', {
+      const response = await fetch('/api/fund-settlement-confirm', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fund_id: props.fundId }),
@@ -1636,34 +1617,12 @@ function FundDetailPage(props: {
         const body = await response.json().catch(() => null) as { message?: string } | null;
         throw new Error(body?.message ?? String(response.status) + ' ' + response.statusText);
       }
-      await response.json() as FundSettlementRunDetail;
+      await response.json() as FundSettlementPreview;
       await queryClient.invalidateQueries({ queryKey: ['json'] });
     } catch (error) {
-      setSettlementRunError(error instanceof Error ? error.message : String(error));
+      setSettlementConfirmError(error instanceof Error ? error.message : String(error));
     } finally {
-      setSettlementRunSaving(false);
-    }
-  }
-
-  async function updateSettlementRunStatus(runId: string, action: 'confirm' | 'void') {
-    setSettlementRunError(null);
-    setSettlementRunActionId(runId);
-    try {
-      const response = await fetch('/api/fund-settlement-runs/' + action, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ run_id: runId }),
-      });
-      if (!response.ok) {
-        const body = await response.json().catch(() => null) as { message?: string } | null;
-        throw new Error(body?.message ?? String(response.status) + ' ' + response.statusText);
-      }
-      await response.json() as FundSettlementRunDetail;
-      await queryClient.invalidateQueries({ queryKey: ['json'] });
-    } catch (error) {
-      setSettlementRunError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setSettlementRunActionId(null);
+      setSettlementConfirming(false);
     }
   }
 
@@ -1685,8 +1644,8 @@ function FundDetailPage(props: {
           <h2>{fund.name}</h2>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
-          <Button variant="default" type="button" disabled={createSettlementDisabled} onClick={() => void createSettlementRun()}>
-            {createSettlementLabel}
+          <Button variant="default" type="button" disabled={confirmSettlementDisabled} onClick={() => void confirmSettlement()}>
+            {confirmSettlementLabel}
           </Button>
           <Button variant="outline" type="button" onClick={() => void sampleFund()}>Sample now</Button>
           <Link className="secondary-link" to="/funds">Back to funds</Link>
@@ -1783,7 +1742,7 @@ function FundDetailPage(props: {
           title="Investor allocation"
           action={settlement ? settlement.investors.length + ' investors' : undefined}
         />
-        <InlineError message={props.settlementError} />
+        <InlineError message={settlementConfirmError ?? props.settlementError} />
         <DataTable
           empty="No settlement preview is available for this fund."
           headers={['Investor', 'Referrer', 'Deposit', 'Ownership', 'Gross equity', 'Taxable', 'Tax', 'Rebate paid', 'Rebate received', 'Tax credit', 'Post equity']}
@@ -1834,81 +1793,6 @@ function FundDetailPage(props: {
           ])}
         />
       </section>
-
-      <section className="panel">
-        <PanelTitle
-          label="Settlement runs"
-          title="Draft workflow"
-          action={draftSettlementRuns.length + ' drafts'}
-        />
-        <InlineError message={settlementRunError ?? props.settlementRunsError} />
-        <SettlementRunsTable
-          actioningRunId={settlementRunActionId}
-          empty="No draft settlement runs are waiting for action."
-          runs={draftSettlementRuns}
-          onConfirm={(runId) => void updateSettlementRunStatus(runId, 'confirm')}
-          onInspect={setSelectedSettlementRunId}
-          onVoid={(runId) => void updateSettlementRunStatus(runId, 'void')}
-        />
-      </section>
-
-      <section className="panel">
-        <PanelTitle
-          label="Settlement runs"
-          title="Confirmed settlements"
-          action={confirmedSettlementRuns.length + ' runs'}
-        />
-        <SettlementRunsTable
-          actioningRunId={settlementRunActionId}
-          empty="No confirmed settlement runs are recorded yet."
-          runs={confirmedSettlementRuns}
-          onConfirm={(runId) => void updateSettlementRunStatus(runId, 'confirm')}
-          onInspect={setSelectedSettlementRunId}
-          onVoid={(runId) => void updateSettlementRunStatus(runId, 'void')}
-        />
-      </section>
-
-      <section className="panel">
-        <PanelTitle
-          label="Settlement runs"
-          title="Voided runs"
-          action={voidedSettlementRuns.length + ' runs'}
-        />
-        <SettlementRunsTable
-          actioningRunId={settlementRunActionId}
-          empty="No voided settlement runs are recorded yet."
-          runs={voidedSettlementRuns}
-          onConfirm={(runId) => void updateSettlementRunStatus(runId, 'confirm')}
-          onInspect={setSelectedSettlementRunId}
-          onVoid={(runId) => void updateSettlementRunStatus(runId, 'void')}
-        />
-      </section>
-
-      <section className="panel">
-        <PanelTitle
-          label="Settlement runs"
-          title="Legacy model runs"
-          action={legacySettlementRuns.length + ' runs'}
-        />
-        <SettlementRunsTable
-          actioningRunId={settlementRunActionId}
-          empty="No legacy model settlement runs are recorded."
-          runs={legacySettlementRuns}
-          onConfirm={(runId) => void updateSettlementRunStatus(runId, 'confirm')}
-          onInspect={setSelectedSettlementRunId}
-          onVoid={(runId) => void updateSettlementRunStatus(runId, 'void')}
-        />
-      </section>
-
-      <SettlementRunDetailDialog
-        onOpenChange={(open) => {
-          if (!open) {
-            setSelectedSettlementRunId(null);
-          }
-        }}
-        open={selectedSettlementRunId !== null}
-        runId={selectedSettlementRunId}
-      />
 
       <section className="panel">
         <PanelTitle
@@ -2805,17 +2689,14 @@ function settlementModelLabel(model: string) {
   return model;
 }
 
-function settlementCreateButtonLabel(saving: boolean, activeRun: FundSettlementRun | null | undefined) {
-  if (saving) {
-    return 'Creating...';
+function settlementConfirmLabel(confirming: boolean, settlement: FundSettlementPreview | null) {
+  if (confirming) {
+    return 'Confirming...';
   }
-  if (activeRun?.status === 'draft') {
-    return 'Draft exists';
+  if (!settlement?.basis) {
+    return 'No settlement basis';
   }
-  if (activeRun?.status === 'confirmed') {
-    return 'Settlement confirmed';
-  }
-  return 'Create settlement run';
+  return 'Confirm settlement';
 }
 
 function settlementReportRows(detail: FundSettlementRunDetail | null) {

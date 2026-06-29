@@ -80,6 +80,11 @@ pub struct CreateFundSettlementRunRequest {
 }
 
 #[derive(Deserialize)]
+pub struct ConfirmFundSettlementRequest {
+    fund_id: String,
+}
+
+#[derive(Deserialize)]
 pub struct UpdateFundSettlementRunRequest {
     run_id: String,
 }
@@ -978,6 +983,52 @@ pub async fn create_fund_settlement_run(
     ))
 }
 
+pub async fn confirm_fund_settlement(
+    State(state): State<AppState>,
+    Json(request): Json<ConfirmFundSettlementRequest>,
+) -> Result<Json<FundSettlementPreview>, AppError> {
+    get_fund_config(&state.db, &request.fund_id).await?;
+    let preview = load_fund_settlement_preview(&state.db, request.fund_id).await?;
+    let basis = preview
+        .basis
+        .as_ref()
+        .ok_or_else(|| AppError::bad_request("fund settlement requires an equity basis"))?;
+    if preview
+        .investors
+        .iter()
+        .any(|investor| investor.units < -1e-9)
+    {
+        return Err(AppError::bad_request(
+            "fund settlement cannot confirm with negative investor units",
+        ));
+    }
+
+    let updated_at = Utc::now().to_rfc3339();
+    let comment = format!(
+        "Settlement {} {}",
+        settlement_basis_label(&basis.source),
+        basis.id
+    );
+    let mut tx = state.db.begin().await?;
+    reject_duplicate_statement_settlement(&mut tx, &preview.fund_id, basis).await?;
+    insert_settlement_statement_events(
+        &mut tx,
+        &preview.fund_id,
+        basis.equity,
+        &basis.source,
+        &basis.id,
+        &comment,
+        None,
+        &updated_at,
+    )
+    .await?;
+    tx.commit().await?;
+
+    Ok(Json(
+        load_fund_settlement_preview(&state.db, preview.fund_id).await?,
+    ))
+}
+
 async fn reject_duplicate_active_settlement_run(
     db: &SqlitePool,
     fund_id: &str,
@@ -1004,6 +1055,38 @@ async fn reject_duplicate_active_settlement_run(
     if active_runs > 0 {
         return Err(AppError::bad_request(
             "an active settlement run already exists for this model and basis",
+        ));
+    }
+
+    Ok(())
+}
+
+async fn reject_duplicate_statement_settlement(
+    tx: &mut Transaction<'_, Sqlite>,
+    fund_id: &str,
+    basis: &FundSettlementBasis,
+) -> Result<(), AppError> {
+    let (count,): (i64,) = sqlx::query_as(
+        r#"
+        SELECT COUNT(*)
+        FROM fund_statement_events
+        WHERE fund_id = ?1
+          AND event_type = 'taxation/v2'
+          AND json_extract(payload, '$.settlement_model') = ?2
+          AND json_extract(payload, '$.basis_source') = ?3
+          AND json_extract(payload, '$.basis_id') = ?4
+        "#,
+    )
+    .bind(fund_id)
+    .bind(FUND_SETTLEMENT_MODEL_EVENT_STATE)
+    .bind(&basis.source)
+    .bind(&basis.id)
+    .fetch_one(&mut **tx)
+    .await?;
+
+    if count > 0 {
+        return Err(AppError::bad_request(
+            "settlement has already been confirmed for this basis",
         ));
     }
 
@@ -1129,6 +1212,30 @@ async fn insert_confirmed_settlement_event(
     run: &FundSettlementRun,
     updated_at: &str,
 ) -> Result<(), AppError> {
+    let comment = format!("Settlement run {}", run.id);
+    insert_settlement_statement_events(
+        tx,
+        &run.fund_id,
+        run.equity,
+        &run.basis_source,
+        &run.basis_id,
+        &comment,
+        Some(&run.id),
+        updated_at,
+    )
+    .await
+}
+
+async fn insert_settlement_statement_events(
+    tx: &mut Transaction<'_, Sqlite>,
+    fund_id: &str,
+    equity: f64,
+    basis_source: &str,
+    basis_id: &str,
+    comment: &str,
+    settlement_run_id: Option<&str>,
+    updated_at: &str,
+) -> Result<(), AppError> {
     let (equity_event_index,): (i64,) = sqlx::query_as(
         r#"
         SELECT COALESCE(MAX(event_index), -1) + 1
@@ -1136,26 +1243,25 @@ async fn insert_confirmed_settlement_event(
         WHERE fund_id = ?1
         "#,
     )
-    .bind(&run.fund_id)
+    .bind(fund_id)
     .fetch_one(&mut **tx)
     .await?;
     let taxation_event_index = equity_event_index + 1;
-    let comment = format!("Settlement run {}", run.id);
     let equity_payload = serde_json::json!({
         "comment": comment,
-        "fund_equity": { "equity": run.equity },
-        "settlement_run_id": run.id,
-        "settlement_model": run.settlement_model,
-        "basis_source": run.basis_source,
-        "basis_id": run.basis_id,
+        "fund_equity": { "equity": equity },
+        "settlement_run_id": settlement_run_id,
+        "settlement_model": FUND_SETTLEMENT_MODEL_EVENT_STATE,
+        "basis_source": basis_source,
+        "basis_id": basis_id,
     });
     let taxation_payload = serde_json::json!({
         "type": "taxation/v2",
         "comment": comment,
-        "settlement_run_id": run.id,
-        "settlement_model": run.settlement_model,
-        "basis_source": run.basis_source,
-        "basis_id": run.basis_id,
+        "settlement_run_id": settlement_run_id,
+        "settlement_model": FUND_SETTLEMENT_MODEL_EVENT_STATE,
+        "basis_source": basis_source,
+        "basis_id": basis_id,
     });
 
     sqlx::query(
@@ -1164,7 +1270,7 @@ async fn insert_confirmed_settlement_event(
         VALUES (?1, ?2, 'settlement_equity', ?3, ?4)
         "#,
     )
-    .bind(&run.fund_id)
+    .bind(fund_id)
     .bind(equity_event_index)
     .bind(updated_at)
     .bind(equity_payload.to_string())
@@ -1177,9 +1283,9 @@ async fn insert_confirmed_settlement_event(
         VALUES (?1, ?2, ?3, ?4)
         "#,
     )
-    .bind(&run.fund_id)
+    .bind(fund_id)
     .bind(equity_event_index)
-    .bind(run.equity)
+    .bind(equity)
     .bind(updated_at)
     .execute(&mut **tx)
     .await?;
@@ -1190,7 +1296,7 @@ async fn insert_confirmed_settlement_event(
         VALUES (?1, ?2, 'taxation/v2', ?3, ?4)
         "#,
     )
-    .bind(&run.fund_id)
+    .bind(fund_id)
     .bind(taxation_event_index)
     .bind(updated_at)
     .bind(taxation_payload.to_string())
@@ -1203,7 +1309,7 @@ async fn insert_confirmed_settlement_event(
         VALUES (?1, ?2, 'taxation/v2', ?3, ?4)
         "#,
     )
-    .bind(&run.fund_id)
+    .bind(fund_id)
     .bind(taxation_event_index)
     .bind(comment)
     .bind(updated_at)
@@ -1946,6 +2052,16 @@ fn settlement_basis(
         equity: item.equity,
         updated_at: item.updated_at.clone(),
     })
+}
+
+fn settlement_basis_label(source: &str) -> &str {
+    if source == "live_nav" {
+        return "Live NAV";
+    }
+    if source == "legacy_statement" {
+        return "Statement history";
+    }
+    source
 }
 
 fn settlement_run_csv(detail: &FundSettlementRunDetail) -> String {
@@ -3173,6 +3289,42 @@ mod tests {
 
         assert_close(summary.total_assets, 150.0);
         assert_close(alice.share, 100.0);
+    }
+
+    #[tokio::test]
+    async fn rejects_duplicate_statement_settlement_basis() {
+        let db = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        create_statement_write_test_tables(&db).await;
+        sqlx::query(
+            r#"
+            INSERT INTO fund_statement_events (fund_id, event_index, event_type, updated_at, payload)
+            VALUES (
+                'fund', 0, 'taxation/v2', '2025-01-01T00:00:00+00:00',
+                '{"type":"taxation/v2","settlement_model":"event_state_v1","basis_source":"live_nav","basis_id":"nav-1"}'
+            )
+            "#,
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let basis = FundSettlementBasis {
+            source: "live_nav".to_string(),
+            id: "nav-1".to_string(),
+            equity: 150.0,
+            updated_at: "2025-01-01T00:00:00+00:00".to_string(),
+        };
+        let mut tx = db.begin().await.unwrap();
+
+        assert!(
+            reject_duplicate_statement_settlement(&mut tx, "fund", &basis)
+                .await
+                .is_err()
+        );
     }
 
     async fn create_statement_write_test_tables(db: &SqlitePool) {
