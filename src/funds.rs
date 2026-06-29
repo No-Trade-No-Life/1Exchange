@@ -669,7 +669,7 @@ pub async fn confirm_fund_settlement_run(
     State(state): State<AppState>,
     Json(request): Json<UpdateFundSettlementRunRequest>,
 ) -> Result<Json<FundSettlementRunDetail>, AppError> {
-    update_fund_settlement_run_status(&state.db, &request.run_id, "confirmed").await?;
+    confirm_fund_settlement_run_status(&state.db, &request.run_id).await?;
     get_fund_settlement_run_detail_by_id(&state.db, &request.run_id)
         .await
         .map(Json)
@@ -705,6 +705,35 @@ async fn update_fund_settlement_run_status(
     if result.rows_affected() == 0 {
         return Err(AppError::bad_request(
             "settlement run must exist and be in draft status",
+        ));
+    }
+
+    Ok(())
+}
+
+async fn confirm_fund_settlement_run_status(db: &SqlitePool, run_id: &str) -> Result<(), AppError> {
+    let result = sqlx::query(
+        r#"
+        UPDATE fund_settlement_runs
+        SET status = 'confirmed'
+        WHERE id = ?1
+          AND status = 'draft'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM fund_settlement_runs confirmed
+              WHERE confirmed.fund_id = fund_settlement_runs.fund_id
+                AND confirmed.equity_event_index = fund_settlement_runs.equity_event_index
+                AND confirmed.status = 'confirmed'
+          )
+        "#,
+    )
+    .bind(run_id)
+    .execute(db)
+    .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(AppError::bad_request(
+            "settlement run must be draft and not duplicate a confirmed equity event",
         ));
     }
 
