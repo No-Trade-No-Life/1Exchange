@@ -1189,8 +1189,8 @@ function AccountDetailPage(props: { accountOptions: AccountSnapshot[]; accounts:
   const header = (
     <section className="panel account-detail-head">
       <div>
-        <p className="section-label">Account detail</p>
-        <h2>{accountId ? <code>{accountId}</code> : 'Select an account'}</h2>
+        <p className="section-label">Accounts</p>
+        <h2>Account detail</h2>
       </div>
       <div className="account-detail-actions">
         <AccountSelector accountId={accountId} accounts={props.accountOptions} onSelectAccount={selectAccount} />
@@ -1306,7 +1306,7 @@ function AccountDetailPage(props: { accountOptions: AccountSnapshot[]; accounts:
 function AccountSelector(props: { accountId: string; accounts: AccountSnapshot[]; onSelectAccount: (value: string) => void }) {
   return (
     <label className="account-selector">
-      Account ID
+      Switch account
       <select value={props.accountId} onChange={(event) => props.onSelectAccount(event.target.value)}>
         <option value="">Select account</option>
         {props.accounts.map((account) => (
