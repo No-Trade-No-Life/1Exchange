@@ -149,6 +149,7 @@ pub struct FundSettlementPreview {
     total_units: f64,
     total_tax: f64,
     total_referrer_rebate: f64,
+    referrer_rebates: Vec<FundReferrerRebate>,
     investors: Vec<FundInvestorSettlement>,
 }
 
@@ -189,6 +190,13 @@ pub struct FundSettlementRun {
 pub struct FundSettlementRunDetail {
     run: FundSettlementRun,
     investors: Vec<FundInvestorSettlement>,
+    referrer_rebates: Vec<FundReferrerRebate>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FundReferrerRebate {
+    referrer: String,
+    rebate: f64,
 }
 
 #[derive(Debug, FromRow)]
@@ -542,9 +550,14 @@ async fn get_fund_settlement_run_detail_by_id(
     .await?
     .into_iter()
     .map(FundInvestorSettlement::from)
-    .collect();
+    .collect::<Vec<_>>();
+    let referrer_rebates = summarize_referrer_rebates(&investors);
 
-    Ok(FundSettlementRunDetail { run, investors })
+    Ok(FundSettlementRunDetail {
+        run,
+        investors,
+        referrer_rebates,
+    })
 }
 
 pub async fn create_fund_settlement_run(
@@ -615,6 +628,7 @@ pub async fn create_fund_settlement_run(
         .await?;
     }
     tx.commit().await?;
+    let referrer_rebates = summarize_referrer_rebates(&preview.investors);
 
     Ok((
         StatusCode::CREATED,
@@ -633,6 +647,7 @@ pub async fn create_fund_settlement_run(
                 status: "draft".to_string(),
                 created_at,
             },
+            referrer_rebates,
             investors: preview.investors,
         }),
     ))
@@ -997,6 +1012,7 @@ fn build_settlement_preview(
         total_units,
         total_tax: rows.iter().map(|item| item.tax).sum(),
         total_referrer_rebate: rows.iter().map(|item| item.referrer_rebate).sum(),
+        referrer_rebates: summarize_referrer_rebates(&rows),
         investors: rows,
     }
 }
@@ -1054,6 +1070,14 @@ fn settlement_run_csv(detail: &FundSettlementRunDetail) -> String {
             investor.net_equity.to_string(),
         ]
     }));
+    rows.push(Vec::new());
+    rows.push(vec!["referrer".to_string(), "rebate".to_string()]);
+    rows.extend(
+        detail
+            .referrer_rebates
+            .iter()
+            .map(|rebate| vec![rebate.referrer.clone(), rebate.rebate.to_string()]),
+    );
 
     rows.into_iter()
         .map(|row| {
@@ -1065,6 +1089,30 @@ fn settlement_run_csv(detail: &FundSettlementRunDetail) -> String {
         .collect::<Vec<_>>()
         .join("\n")
         + "\n"
+}
+
+fn summarize_referrer_rebates(investors: &[FundInvestorSettlement]) -> Vec<FundReferrerRebate> {
+    let mut rebates = HashMap::<String, f64>::new();
+
+    for investor in investors {
+        if let Some(referrer) = &investor.referrer {
+            if investor.referrer_rebate > 0.0 {
+                *rebates.entry(referrer.clone()).or_default() += investor.referrer_rebate;
+            }
+        }
+    }
+
+    let mut rows = rebates
+        .into_iter()
+        .map(|(referrer, rebate)| FundReferrerRebate { referrer, rebate })
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| {
+        right
+            .rebate
+            .total_cmp(&left.rebate)
+            .then_with(|| left.referrer.cmp(&right.referrer))
+    });
+    rows
 }
 
 fn csv_cell(value: &str) -> String {
@@ -1189,6 +1237,45 @@ mod tests {
         assert_eq!(csv_cell("plain"), "plain");
         assert_eq!(csv_cell("a,b"), "\"a,b\"");
         assert_eq!(csv_cell("a\"b"), "\"a\"\"b\"");
+    }
+
+    #[test]
+    fn summarizes_referrer_rebates() {
+        let rows = summarize_referrer_rebates(&[
+            investor_rebate("Alice", Some("Carol"), 3.0),
+            investor_rebate("Bob", Some("Carol"), 5.0),
+            investor_rebate("Dan", Some("Eve"), 0.0),
+            investor_rebate("Finn", Some("Grace"), 7.0),
+            investor_rebate("Heidi", None, 11.0),
+        ]);
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].referrer, "Carol");
+        assert_close(rows[0].rebate, 8.0);
+        assert_eq!(rows[1].referrer, "Grace");
+        assert_close(rows[1].rebate, 7.0);
+    }
+
+    fn investor_rebate(
+        name: &str,
+        referrer: Option<&str>,
+        referrer_rebate: f64,
+    ) -> FundInvestorSettlement {
+        FundInvestorSettlement {
+            name: name.to_string(),
+            referrer: referrer.map(str::to_string),
+            deposit: 0.0,
+            units: 0.0,
+            ownership: 0.0,
+            gross_equity: 0.0,
+            profit: 0.0,
+            tax_threshold: 0.0,
+            tax_rate: 0.0,
+            tax: 0.0,
+            referrer_rebate_rate: 0.0,
+            referrer_rebate,
+            net_equity: 0.0,
+        }
     }
 
     fn assert_close(left: f64, right: f64) {

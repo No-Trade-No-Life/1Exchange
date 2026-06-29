@@ -265,6 +265,7 @@ type FundSettlementPreview = {
   total_units: number;
   total_tax: number;
   total_referrer_rebate: number;
+  referrer_rebates: FundReferrerRebate[];
   investors: FundInvestorSettlement[];
 };
 
@@ -302,6 +303,12 @@ type FundSettlementRun = {
 type FundSettlementRunDetail = {
   run: FundSettlementRun;
   investors: FundInvestorSettlement[];
+  referrer_rebates: FundReferrerRebate[];
+};
+
+type FundReferrerRebate = {
+  referrer: string;
+  rebate: number;
 };
 
 type CustomAccountSource = {
@@ -1587,6 +1594,22 @@ function FundDetailPage(props: {
             formatNumber(investor.tax),
             formatNumber(investor.referrer_rebate),
             formatNumber(investor.net_equity),
+          ])}
+        />
+      </section>
+
+      <section className="panel">
+        <PanelTitle
+          label="Settlement preview"
+          title="Referrer rebates"
+          action={settlement ? settlement.referrer_rebates.length + ' referrers' : undefined}
+        />
+        <DataTable
+          empty="No referrer rebate is estimated for this settlement."
+          headers={['Referrer', 'Estimated rebate']}
+          rows={(settlement?.referrer_rebates ?? []).map((rebate) => [
+            rebate.referrer,
+            formatNumber(rebate.rebate),
           ])}
         />
       </section>
