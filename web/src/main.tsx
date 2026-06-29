@@ -1602,6 +1602,15 @@ function FundDetailPage(props: {
   const draftSettlementRuns = currentSettlementRuns.filter((run) => run.status === 'draft');
   const confirmedSettlementRuns = currentSettlementRuns.filter((run) => run.status === 'confirmed');
   const voidedSettlementRuns = currentSettlementRuns.filter((run) => run.status === 'voided');
+  const activeSettlementRunForBasis = settlement?.basis
+    ? currentSettlementRuns.find((run) => (
+        run.status !== 'voided'
+        && run.basis_source === settlement.basis?.source
+        && run.basis_id === settlement.basis?.id
+      ))
+    : null;
+  const createSettlementDisabled = settlementRunSaving || !settlement?.basis || activeSettlementRunForBasis !== null;
+  const createSettlementLabel = settlementCreateButtonLabel(settlementRunSaving, activeSettlementRunForBasis);
 
   async function sampleFund() {
     const response = await fetch('/api/funds/sample?fund_id=' + encodeURIComponent(props.fundId), { method: 'POST' });
@@ -1674,8 +1683,8 @@ function FundDetailPage(props: {
           <h2>{fund.name}</h2>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
-          <Button variant="default" type="button" disabled={settlementRunSaving} onClick={() => void createSettlementRun()}>
-            {settlementRunSaving ? 'Creating...' : 'Create settlement run'}
+          <Button variant="default" type="button" disabled={createSettlementDisabled} onClick={() => void createSettlementRun()}>
+            {createSettlementLabel}
           </Button>
           <Button variant="outline" type="button" onClick={() => void sampleFund()}>Sample now</Button>
           <Link className="secondary-link" to="/funds">Back to funds</Link>
@@ -2785,6 +2794,19 @@ function settlementModelLabel(model: string) {
     return 'Legacy ledger v1';
   }
   return model;
+}
+
+function settlementCreateButtonLabel(saving: boolean, activeRun: FundSettlementRun | null | undefined) {
+  if (saving) {
+    return 'Creating...';
+  }
+  if (activeRun?.status === 'draft') {
+    return 'Draft exists';
+  }
+  if (activeRun?.status === 'confirmed') {
+    return 'Settlement confirmed';
+  }
+  return 'Create settlement run';
 }
 
 function settlementReportRows(detail: FundSettlementRunDetail | null) {
