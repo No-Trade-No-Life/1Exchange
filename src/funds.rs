@@ -1493,6 +1493,32 @@ fn settlement_run_csv(detail: &FundSettlementRunDetail) -> String {
             detail.totals.retained_tax.to_string(),
         ],
         Vec::new(),
+        vec!["settlement_report".to_string(), "amount".to_string()],
+        vec![
+            "investor_net_equity".to_string(),
+            detail.totals.net_equity.to_string(),
+        ],
+        vec![
+            "investor_tax_payable".to_string(),
+            detail.totals.tax.to_string(),
+        ],
+        vec![
+            "referrer_rebates_payable".to_string(),
+            detail.totals.referrer_rebate.to_string(),
+        ],
+        vec![
+            "retained_tax".to_string(),
+            detail.totals.retained_tax.to_string(),
+        ],
+        vec![
+            "capped_cash_audit".to_string(),
+            detail.totals.capped_cash_amount.to_string(),
+        ],
+        vec![
+            "gross_equity_control".to_string(),
+            detail.totals.gross_equity.to_string(),
+        ],
+        Vec::new(),
         vec![
             "investor".to_string(),
             "referrer".to_string(),

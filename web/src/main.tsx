@@ -1989,6 +1989,18 @@ function SettlementRunDetailDialog(props: {
             </section>
 
             <section>
+              <PanelTitle label="Settlement report" title="Settlement summary" action={run.status} />
+              <DataTable
+                empty="No settlement summary is available for this run."
+                headers={['Line item', 'Amount']}
+                rows={settlementReportRows(detail.data).map((row) => [
+                  row.label,
+                  <Value key={row.label} value={row.amount} />,
+                ])}
+              />
+            </section>
+
+            <section>
               <PanelTitle label="Run detail" title="Tax payable" action={(detail.data?.investor_taxes.length ?? 0) + ' investors'} />
               <DataTable
                 empty="No investor tax is recorded for this run."
@@ -2511,6 +2523,20 @@ function settlementBasisLabel(source: string) {
     return 'Legacy statement';
   }
   return source;
+}
+
+function settlementReportRows(detail: FundSettlementRunDetail | null) {
+  if (!detail) {
+    return [];
+  }
+  return [
+    { label: 'Investor net equity', amount: detail.totals.net_equity },
+    { label: 'Investor tax payable', amount: detail.totals.tax },
+    { label: 'Referrer rebates payable', amount: detail.totals.referrer_rebate },
+    { label: 'Retained tax', amount: detail.totals.retained_tax },
+    { label: 'Capped cash audit', amount: detail.totals.capped_cash_amount },
+    { label: 'Gross equity control', amount: detail.totals.gross_equity },
+  ];
 }
 
 function cashFlowDirectionLabel(direction: string) {
