@@ -115,6 +115,8 @@ pub struct FundStatementTotals {
     tax_threshold_amount: f64,
     overdrawn_cash_flows: i64,
     overdrawn_investors: i64,
+    capped_cash_flows: i64,
+    capped_units: f64,
 }
 
 #[derive(Debug, Serialize, FromRow)]
@@ -143,7 +145,9 @@ pub struct FundStatementOrder {
     deposit: f64,
     direction: String,
     nav_per_unit: f64,
+    requested_unit_delta: f64,
     unit_delta: f64,
+    capped_units: f64,
     investor_units_after: f64,
     total_units_after: f64,
     updated_at: String,
@@ -552,6 +556,11 @@ pub async fn get_fund_statement_summary(
         .values()
         .filter(|units| **units < -1e-9)
         .count() as i64;
+    let capped_cash_flows = recent_orders
+        .iter()
+        .filter(|item| item.capped_units > 1e-9)
+        .count() as i64;
+    let capped_units = recent_orders.iter().map(|item| item.capped_units).sum();
     recent_orders.reverse();
     recent_orders.truncate(50);
     let latest_nav = sqlx::query_as::<_, FundNavSnapshot>(
@@ -606,6 +615,8 @@ pub async fn get_fund_statement_summary(
             tax_threshold_amount,
             overdrawn_cash_flows,
             overdrawn_investors,
+            capped_cash_flows,
+            capped_units,
         },
         investors,
         recent_orders,
@@ -1288,10 +1299,13 @@ fn build_cash_flow_ledger(
             } else {
                 1.0
             };
-            let unit_delta = order.deposit / nav_per_unit;
+            let requested_unit_delta = order.deposit / nav_per_unit;
             let investor_units_after = investor_units
                 .entry(order.investor_name.clone())
                 .or_default();
+            let current_investor_units = *investor_units_after;
+            let unit_delta = capped_unit_delta(requested_unit_delta, current_investor_units);
+            let capped_units = (unit_delta - requested_unit_delta).max(0.0);
             *investor_units_after += unit_delta;
             total_units += unit_delta;
 
@@ -1301,13 +1315,23 @@ fn build_cash_flow_ledger(
                 deposit: order.deposit,
                 direction: cash_flow_direction(order.deposit).to_string(),
                 nav_per_unit,
+                requested_unit_delta,
                 unit_delta,
+                capped_units,
                 investor_units_after: *investor_units_after,
                 total_units_after: total_units,
                 updated_at: order.updated_at.clone(),
             }
         })
         .collect()
+}
+
+fn capped_unit_delta(requested_unit_delta: f64, current_investor_units: f64) -> f64 {
+    if requested_unit_delta < -current_investor_units {
+        -current_investor_units
+    } else {
+        requested_unit_delta
+    }
 }
 
 fn cash_flow_direction(deposit: f64) -> &'static str {
@@ -1708,6 +1732,12 @@ mod tests {
                     deposit: -20.0,
                     updated_at: "2025-01-02T00:00:00+00:00".to_string(),
                 },
+                SettlementOrder {
+                    event_index: 3,
+                    investor_name: "Alice".to_string(),
+                    deposit: -400.0,
+                    updated_at: "2025-01-03T00:00:00+00:00".to_string(),
+                },
             ],
             &[FundStatementEquity {
                 event_index: 1,
@@ -1724,6 +1754,11 @@ mod tests {
         assert_eq!(ledger[1].direction, "outflow");
         assert_close(ledger[1].investor_units_after, 90.0);
         assert_close(ledger[1].total_units_after, 90.0);
+        assert_close(ledger[2].requested_unit_delta, -180.0);
+        assert_close(ledger[2].unit_delta, -90.0);
+        assert_close(ledger[2].capped_units, 90.0);
+        assert_close(ledger[2].investor_units_after, 0.0);
+        assert_close(ledger[2].total_units_after, 0.0);
     }
 
     #[test]
