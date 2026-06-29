@@ -1163,6 +1163,19 @@ async fn insert_confirmed_settlement_event(
 
     sqlx::query(
         r#"
+        INSERT INTO fund_statement_equity (fund_id, event_index, equity, updated_at)
+        VALUES (?1, ?2, ?3, ?4)
+        "#,
+    )
+    .bind(&run.fund_id)
+    .bind(equity_event_index)
+    .bind(run.equity)
+    .bind(updated_at)
+    .execute(&mut **tx)
+    .await?;
+
+    sqlx::query(
+        r#"
         INSERT INTO fund_statement_events (fund_id, event_index, event_type, updated_at, payload)
         VALUES (?1, ?2, 'taxation/v2', ?3, ?4)
         "#,
