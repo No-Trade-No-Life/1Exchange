@@ -659,6 +659,16 @@ async fn migrate(db: &SqlitePool) -> anyhow::Result<()> {
 
     sqlx::query(
         r#"
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_fund_settlement_runs_one_active_event_state_basis
+        ON fund_settlement_runs (fund_id, settlement_model, basis_source, basis_id)
+        WHERE settlement_model = 'event_state_v1' AND status IN ('draft', 'confirmed')
+        "#,
+    )
+    .execute(db)
+    .await?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS fund_settlement_investor_rows (
             run_id TEXT NOT NULL,
             fund_id TEXT NOT NULL,

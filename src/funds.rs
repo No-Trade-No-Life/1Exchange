@@ -861,6 +861,7 @@ pub async fn create_fund_settlement_run(
         .basis
         .as_ref()
         .ok_or_else(|| AppError::bad_request("fund settlement requires an equity basis"))?;
+    reject_duplicate_active_settlement_run(&state.db, &preview.fund_id, basis).await?;
     let run_id = Uuid::new_v4().to_string();
     let created_at = Utc::now().to_rfc3339();
     let mut tx = state.db.begin().await?;
@@ -965,6 +966,38 @@ pub async fn create_fund_settlement_run(
             investors: preview.investors,
         }),
     ))
+}
+
+async fn reject_duplicate_active_settlement_run(
+    db: &SqlitePool,
+    fund_id: &str,
+    basis: &FundSettlementBasis,
+) -> Result<(), AppError> {
+    let (active_runs,): (i64,) = sqlx::query_as(
+        r#"
+        SELECT COUNT(*)
+        FROM fund_settlement_runs
+        WHERE fund_id = ?1
+          AND settlement_model = ?2
+          AND basis_source = ?3
+          AND basis_id = ?4
+          AND status IN ('draft', 'confirmed')
+        "#,
+    )
+    .bind(fund_id)
+    .bind(FUND_SETTLEMENT_MODEL_EVENT_STATE)
+    .bind(&basis.source)
+    .bind(&basis.id)
+    .fetch_one(db)
+    .await?;
+
+    if active_runs > 0 {
+        return Err(AppError::bad_request(
+            "an active settlement run already exists for this model and basis",
+        ));
+    }
+
+    Ok(())
 }
 
 pub async fn confirm_fund_settlement_run(
