@@ -505,6 +505,7 @@ async fn migrate(db: &SqlitePool) -> anyhow::Result<()> {
         CREATE TABLE IF NOT EXISTS fund_settlement_runs (
             id TEXT PRIMARY KEY NOT NULL,
             fund_id TEXT NOT NULL,
+            settlement_model TEXT NOT NULL DEFAULT 'event_state_v1',
             equity_event_index INTEGER NOT NULL,
             equity REAL NOT NULL,
             equity_updated_at TEXT NOT NULL,
@@ -523,6 +524,22 @@ async fn migrate(db: &SqlitePool) -> anyhow::Result<()> {
             status_updated_at TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
+        "#,
+    )
+    .execute(db)
+    .await?;
+    ensure_column(
+        db,
+        "fund_settlement_runs",
+        "settlement_model",
+        "ALTER TABLE fund_settlement_runs ADD COLUMN settlement_model TEXT",
+    )
+    .await?;
+    sqlx::query(
+        r#"
+        UPDATE fund_settlement_runs
+        SET settlement_model = 'cash_flow_ledger_v1'
+        WHERE settlement_model IS NULL OR settlement_model = ''
         "#,
     )
     .execute(db)
@@ -626,10 +643,14 @@ async fn migrate(db: &SqlitePool) -> anyhow::Result<()> {
         .execute(db)
         .await?;
 
+    sqlx::query("DROP INDEX IF EXISTS idx_fund_settlement_runs_one_confirmed_basis")
+        .execute(db)
+        .await?;
+
     sqlx::query(
         r#"
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_fund_settlement_runs_one_confirmed_basis
-        ON fund_settlement_runs (fund_id, basis_source, basis_id)
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_fund_settlement_runs_one_confirmed_model_basis
+        ON fund_settlement_runs (fund_id, settlement_model, basis_source, basis_id)
         WHERE status = 'confirmed'
         "#,
     )

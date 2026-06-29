@@ -377,6 +377,7 @@ type FundInvestorSettlement = {
 type FundSettlementRun = {
   id: string;
   fund_id: string;
+  settlement_model: string;
   equity_event_index: number;
   equity: number;
   equity_updated_at: string;
@@ -2033,6 +2034,7 @@ function FundDetailPage(props: {
 
 function SettlementRunActions(props: {
   actioning: boolean;
+  model: string;
   onConfirm: () => void;
   onInspect: () => void;
   onVoid: () => void;
@@ -2051,10 +2053,12 @@ function SettlementRunActions(props: {
       </Button>
       {props.status === 'draft' ? (
         <>
-          <Button size="sm" type="button" disabled={props.actioning} onClick={props.onConfirm}>
-            <CircleCheck data-icon="inline-start" />
-            Confirm
-          </Button>
+          {props.model === 'event_state_v1' ? (
+            <Button size="sm" type="button" disabled={props.actioning} onClick={props.onConfirm}>
+              <CircleCheck data-icon="inline-start" />
+              Confirm
+            </Button>
+          ) : null}
           <Button size="sm" variant="outline" type="button" disabled={props.actioning} onClick={props.onVoid}>
             <Ban data-icon="inline-start" />
             Void
@@ -2069,7 +2073,7 @@ function SettlementRunActions(props: {
   );
 }
 
-const settlementRunHeaders = ['Created', 'Status', 'Status time', 'Basis', 'Equity', 'Investors', 'Deposit', 'Tax', 'Rebate', 'Run ID', 'Action'];
+const settlementRunHeaders = ['Created', 'Status', 'Status time', 'Model', 'Basis', 'Equity', 'Investors', 'Deposit', 'Tax', 'Rebate', 'Run ID', 'Action'];
 
 function SettlementRunsTable(props: {
   actioningRunId: string | null;
@@ -2099,6 +2103,7 @@ function settlementRunRows(props: {
     formatDate(run.created_at),
     <UiBadge key="status" variant={run.status === 'confirmed' ? 'default' : 'secondary'}>{run.status}</UiBadge>,
     run.status_updated_at ? formatDate(run.status_updated_at) : '-',
+    settlementModelLabel(run.settlement_model),
     settlementBasisLabel(run.basis_source),
     formatNumber(run.equity),
     run.investor_count.toString(),
@@ -2112,6 +2117,7 @@ function settlementRunRows(props: {
       onConfirm={() => props.onConfirm(run.id)}
       onInspect={() => props.onInspect(run.id)}
       onVoid={() => props.onVoid(run.id)}
+      model={run.settlement_model}
       runId={run.id}
       status={run.status}
     />,
@@ -2139,6 +2145,7 @@ function SettlementRunDetailDialog(props: {
             <section className="metrics-grid compact" aria-label="Settlement run detail summary">
               <Metric label="Status" value={run.status} />
               <Metric label="Status time" value={formatDate(run.status_updated_at ?? run.created_at)} />
+              <Metric label="Model" value={settlementModelLabel(run.settlement_model)} />
               <Metric label="Basis" value={settlementBasisLabel(run.basis_source)} />
               <Metric label="Basis time" value={formatDate(run.basis_updated_at)} />
               <Metric label="Equity" value={formatNumber(run.equity)} />
@@ -2201,6 +2208,7 @@ function SettlementReportPage(props: {
         <>
           <section className="metrics-grid compact" aria-label="Settlement report summary">
             <Metric label="Status" value={run.status} />
+            <Metric label="Model" value={settlementModelLabel(run.settlement_model)} />
             <Metric label="Basis" value={settlementBasisLabel(run.basis_source)} />
             <Metric label="Equity" value={formatNumber(run.equity)} />
             <Metric label="Investors" value={run.investor_count.toString()} />
@@ -2749,6 +2757,16 @@ function settlementBasisLabel(source: string) {
     return 'Legacy statement';
   }
   return source;
+}
+
+function settlementModelLabel(model: string) {
+  if (model === 'event_state_v1') {
+    return 'Event state v1';
+  }
+  if (model === 'cash_flow_ledger_v1') {
+    return 'Legacy ledger v1';
+  }
+  return model;
 }
 
 function settlementReportRows(detail: FundSettlementRunDetail | null) {

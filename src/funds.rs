@@ -16,6 +16,7 @@ use crate::{AppError, AppState, models::AccountInfo, rates, virtual_accounts};
 
 const DEFAULT_POLL_INTERVAL_SECONDS: i64 = 600;
 const FUND_SCAN_INTERVAL_SECONDS: u64 = 60;
+const FUND_SETTLEMENT_MODEL_EVENT_STATE: &str = "event_state_v1";
 
 #[derive(Debug, Deserialize)]
 pub struct CreateFundRequest {
@@ -273,6 +274,7 @@ pub struct FundInvestorSettlement {
 pub struct FundSettlementRun {
     id: String,
     fund_id: String,
+    settlement_model: String,
     equity_event_index: i64,
     equity: f64,
     equity_updated_at: String,
@@ -750,7 +752,7 @@ pub async fn list_fund_settlement_runs(
     Ok(Json(
         sqlx::query_as::<_, FundSettlementRun>(
             r#"
-            SELECT id, fund_id, equity_event_index, equity, equity_updated_at,
+            SELECT id, fund_id, settlement_model, equity_event_index, equity, equity_updated_at,
                    basis_source, basis_id, basis_updated_at,
                    total_deposit, total_units, total_tax, total_referrer_rebate,
                    capped_cash_flows, capped_units, capped_cash_amount,
@@ -803,7 +805,7 @@ async fn get_fund_settlement_run_detail_by_id(
 ) -> Result<FundSettlementRunDetail, AppError> {
     let run = sqlx::query_as::<_, FundSettlementRun>(
         r#"
-        SELECT id, fund_id, equity_event_index, equity, equity_updated_at,
+        SELECT id, fund_id, settlement_model, equity_event_index, equity, equity_updated_at,
                basis_source, basis_id, basis_updated_at,
                total_deposit, total_units, total_tax, total_referrer_rebate,
                capped_cash_flows, capped_units, capped_cash_amount,
@@ -866,17 +868,18 @@ pub async fn create_fund_settlement_run(
     sqlx::query(
         r#"
         INSERT INTO fund_settlement_runs (
-            id, fund_id, equity_event_index, equity, equity_updated_at,
+            id, fund_id, settlement_model, equity_event_index, equity, equity_updated_at,
             basis_source, basis_id, basis_updated_at,
             total_deposit, total_units, total_tax, total_referrer_rebate,
             capped_cash_flows, capped_units, capped_cash_amount,
             investor_count, status, status_updated_at, created_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 'draft', ?17, ?18)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, 'draft', ?18, ?19)
         "#,
     )
     .bind(&run_id)
     .bind(&preview.fund_id)
+    .bind(FUND_SETTLEMENT_MODEL_EVENT_STATE)
     .bind(equity.event_index)
     .bind(basis.equity)
     .bind(&basis.updated_at)
@@ -937,6 +940,7 @@ pub async fn create_fund_settlement_run(
             run: FundSettlementRun {
                 id: run_id,
                 fund_id: preview.fund_id,
+                settlement_model: FUND_SETTLEMENT_MODEL_EVENT_STATE.to_string(),
                 equity_event_index: equity.event_index,
                 equity: basis.equity,
                 equity_updated_at: basis.updated_at.clone(),
@@ -1019,10 +1023,12 @@ async fn confirm_fund_settlement_run_status(db: &SqlitePool, run_id: &str) -> Re
         SET status = 'confirmed', status_updated_at = ?1
         WHERE id = ?2
           AND status = 'draft'
+          AND settlement_model = ?3
           AND NOT EXISTS (
               SELECT 1
               FROM fund_settlement_runs confirmed
               WHERE confirmed.fund_id = fund_settlement_runs.fund_id
+                AND confirmed.settlement_model = fund_settlement_runs.settlement_model
                 AND confirmed.basis_source = fund_settlement_runs.basis_source
                 AND confirmed.basis_id = fund_settlement_runs.basis_id
                 AND confirmed.status = 'confirmed'
@@ -1037,12 +1043,13 @@ async fn confirm_fund_settlement_run_status(db: &SqlitePool, run_id: &str) -> Re
     )
     .bind(&status_updated_at)
     .bind(run_id)
+    .bind(FUND_SETTLEMENT_MODEL_EVENT_STATE)
     .execute(db)
     .await?;
 
     if result.rows_affected() == 0 {
         return Err(AppError::bad_request(
-            "settlement run must be draft, non-duplicate, and have no negative investor units",
+            "settlement run must use the current model, be draft, non-duplicate, and have no negative investor units",
         ));
     }
 
@@ -1751,6 +1758,8 @@ fn settlement_run_csv(detail: &FundSettlementRunDetail) -> String {
             detail.run.id.clone(),
             "fund_id".to_string(),
             detail.run.fund_id.clone(),
+            "settlement_model".to_string(),
+            detail.run.settlement_model.clone(),
             "status".to_string(),
             detail.run.status.clone(),
             "status_updated_at".to_string(),
