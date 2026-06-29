@@ -2405,6 +2405,71 @@ mod tests {
     }
 
     #[test]
+    fn settlement_taxation_v2_resets_taxable_profit_at_basis_equity() {
+        let mut state = YuanFundState::default();
+        for event in [
+            FundStatementEventPayload {
+                event_type: None,
+                comment: None,
+                fund_equity: None,
+                order: Some(FundStatementOrderPayload {
+                    name: "Alice".to_string(),
+                    deposit: 100.0,
+                }),
+                investor: None,
+            },
+            FundStatementEventPayload {
+                event_type: Some("update".to_string()),
+                comment: None,
+                fund_equity: None,
+                order: None,
+                investor: Some(FundStatementInvestorPayload {
+                    name: "Alice".to_string(),
+                    tax_rate: Some(0.2),
+                    add_tax_threshold: None,
+                    referrer: None,
+                    referrer_rebate_rate: None,
+                }),
+            },
+            FundStatementEventPayload {
+                event_type: None,
+                comment: None,
+                fund_equity: Some(FundStatementEquityPayload { equity: 150.0 }),
+                order: None,
+                investor: None,
+            },
+            FundStatementEventPayload {
+                event_type: Some("taxation/v2".to_string()),
+                comment: None,
+                fund_equity: None,
+                order: None,
+                investor: None,
+            },
+        ] {
+            apply_yuan_fund_event(&mut state, event);
+            recompute_yuan_derived(&mut state);
+        }
+
+        let summary = yuan_event_state_summary(state);
+        let alice = summary
+            .investors
+            .iter()
+            .find(|item| item.name == "Alice")
+            .unwrap();
+        let tax = summary
+            .investors
+            .iter()
+            .find(|item| item.name == "@tax")
+            .unwrap();
+
+        assert_close(summary.total_assets, 150.0);
+        assert_close(summary.total_tax, 0.0);
+        assert_close(alice.tax, 0.0);
+        assert_close(alice.tax_threshold, 140.0);
+        assert_close(tax.tax_threshold, 10.0);
+    }
+
+    #[test]
     fn previews_settlement_against_latest_live_nav_basis() {
         let preview = build_settlement_preview(
             "fund".to_string(),
