@@ -52,8 +52,66 @@ pub struct FundNavQuery {
 }
 
 #[derive(Deserialize)]
+pub struct FundStatementQuery {
+    fund_id: String,
+}
+
+#[derive(Deserialize)]
 pub struct SampleFundQuery {
     fund_id: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FundStatementSummary {
+    totals: FundStatementTotals,
+    investors: Vec<FundStatementInvestor>,
+    recent_orders: Vec<FundStatementOrder>,
+    latest_equity: Option<FundStatementEquity>,
+    tax_modes: Vec<FundStatementTaxMode>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FundStatementTotals {
+    events: i64,
+    orders: i64,
+    order_deposit: f64,
+    equity_points: i64,
+    investors: i64,
+    tax_modes: i64,
+}
+
+#[derive(Debug, Serialize, FromRow)]
+pub struct FundStatementInvestor {
+    name: String,
+    referrer: Option<String>,
+    tax_rate: Option<f64>,
+    referrer_rebate_rate: Option<f64>,
+    tax_threshold: Option<f64>,
+    updated_at: String,
+    source_event_index: i64,
+}
+
+#[derive(Debug, Serialize, FromRow)]
+pub struct FundStatementOrder {
+    event_index: i64,
+    investor_name: String,
+    deposit: f64,
+    updated_at: String,
+}
+
+#[derive(Debug, Serialize, FromRow)]
+pub struct FundStatementEquity {
+    event_index: i64,
+    equity: f64,
+    updated_at: String,
+}
+
+#[derive(Debug, Serialize, FromRow)]
+pub struct FundStatementTaxMode {
+    event_index: i64,
+    mode: String,
+    comment: Option<String>,
+    updated_at: String,
 }
 
 #[derive(Debug)]
@@ -155,6 +213,106 @@ pub async fn list_fund_nav(
     };
 
     Ok(Json(rows))
+}
+
+pub async fn get_fund_statement_summary(
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<FundStatementQuery>,
+) -> Result<Json<FundStatementSummary>, AppError> {
+    get_fund_config(&state.db, &query.fund_id).await?;
+
+    let (events,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM fund_statement_events WHERE fund_id = ?1")
+            .bind(&query.fund_id)
+            .fetch_one(&state.db)
+            .await?;
+    let (orders, order_deposit): (i64, Option<f64>) = sqlx::query_as(
+        "SELECT COUNT(*), SUM(deposit) FROM fund_statement_orders WHERE fund_id = ?1",
+    )
+    .bind(&query.fund_id)
+    .fetch_one(&state.db)
+    .await?;
+    let (equity_points,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM fund_statement_equity WHERE fund_id = ?1")
+            .bind(&query.fund_id)
+            .fetch_one(&state.db)
+            .await?;
+    let (investor_count,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM fund_statement_investors WHERE fund_id = ?1")
+            .bind(&query.fund_id)
+            .fetch_one(&state.db)
+            .await?;
+    let (tax_mode_count,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM fund_statement_tax_modes WHERE fund_id = ?1")
+            .bind(&query.fund_id)
+            .fetch_one(&state.db)
+            .await?;
+
+    let investors = sqlx::query_as::<_, FundStatementInvestor>(
+        r#"
+        SELECT name, referrer, tax_rate, referrer_rebate_rate, tax_threshold,
+               updated_at, source_event_index
+        FROM fund_statement_investors
+        WHERE fund_id = ?1
+        ORDER BY name ASC
+        "#,
+    )
+    .bind(&query.fund_id)
+    .fetch_all(&state.db)
+    .await?;
+
+    let recent_orders = sqlx::query_as::<_, FundStatementOrder>(
+        r#"
+        SELECT event_index, investor_name, deposit, updated_at
+        FROM fund_statement_orders
+        WHERE fund_id = ?1
+        ORDER BY updated_at DESC, event_index DESC
+        LIMIT 50
+        "#,
+    )
+    .bind(&query.fund_id)
+    .fetch_all(&state.db)
+    .await?;
+
+    let latest_equity = sqlx::query_as::<_, FundStatementEquity>(
+        r#"
+        SELECT event_index, equity, updated_at
+        FROM fund_statement_equity
+        WHERE fund_id = ?1
+        ORDER BY updated_at DESC, event_index DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(&query.fund_id)
+    .fetch_optional(&state.db)
+    .await?;
+
+    let tax_modes = sqlx::query_as::<_, FundStatementTaxMode>(
+        r#"
+        SELECT event_index, mode, comment, updated_at
+        FROM fund_statement_tax_modes
+        WHERE fund_id = ?1
+        ORDER BY updated_at ASC, event_index ASC
+        "#,
+    )
+    .bind(&query.fund_id)
+    .fetch_all(&state.db)
+    .await?;
+
+    Ok(Json(FundStatementSummary {
+        totals: FundStatementTotals {
+            events,
+            orders,
+            order_deposit: order_deposit.unwrap_or(0.0),
+            equity_points,
+            investors: investor_count,
+            tax_modes: tax_mode_count,
+        },
+        investors,
+        recent_orders,
+        latest_equity,
+        tax_modes,
+    }))
 }
 
 pub async fn sample_fund_now(

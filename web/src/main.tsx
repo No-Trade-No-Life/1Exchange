@@ -208,6 +208,53 @@ type FundNavSnapshot = {
   created_at: string;
 };
 
+type FundStatementSummary = {
+  totals: FundStatementTotals;
+  investors: FundStatementInvestor[];
+  recent_orders: FundStatementOrder[];
+  latest_equity: FundStatementEquity | null;
+  tax_modes: FundStatementTaxMode[];
+};
+
+type FundStatementTotals = {
+  events: number;
+  orders: number;
+  order_deposit: number;
+  equity_points: number;
+  investors: number;
+  tax_modes: number;
+};
+
+type FundStatementInvestor = {
+  name: string;
+  referrer: string | null;
+  tax_rate: number | null;
+  referrer_rebate_rate: number | null;
+  tax_threshold: number | null;
+  updated_at: string;
+  source_event_index: number;
+};
+
+type FundStatementOrder = {
+  event_index: number;
+  investor_name: string;
+  deposit: number;
+  updated_at: string;
+};
+
+type FundStatementEquity = {
+  event_index: number;
+  equity: number;
+  updated_at: string;
+};
+
+type FundStatementTaxMode = {
+  event_index: number;
+  mode: string;
+  comment: string | null;
+  updated_at: string;
+};
+
 type CustomAccountSource = {
   id: string;
   name: string;
@@ -653,14 +700,17 @@ function FundDetailRoute() {
   const fundId = params.get('fund_id') ?? '';
   const funds = useJson<FundConfig[]>('/api/funds');
   const nav = useJson<FundNavSnapshot[]>(fundId ? `/api/fund-nav?fund_id=${encodeURIComponent(fundId)}&limit=100` : null);
+  const statements = useJson<FundStatementSummary>(fundId ? `/api/fund-statements?fund_id=${encodeURIComponent(fundId)}` : null);
 
   return (
-    <RefreshScope resources={[funds, nav]}>
+    <RefreshScope resources={[funds, nav, statements]}>
       <FundDetailPage
         configs={funds.data ?? emptyFundConfigs}
         fundId={fundId}
-        loading={funds.loading || nav.loading}
+        loading={funds.loading || nav.loading || statements.loading}
         navError={nav.error}
+        statementError={statements.error}
+        statementSummary={statements.data ?? null}
         snapshots={nav.data ?? []}
       />
     </RefreshScope>
@@ -1332,11 +1382,14 @@ function FundDetailPage(props: {
   fundId: string;
   loading: boolean;
   navError: string | null;
+  statementError: string | null;
+  statementSummary: FundStatementSummary | null;
   snapshots: FundNavSnapshot[];
 }) {
   const queryClient = useQueryClient();
   const fund = props.configs.find((item) => item.id === props.fundId);
   const latestSnapshot = props.snapshots[0];
+  const statement = props.statementSummary;
 
   async function sampleFund() {
     const response = await fetch('/api/funds/sample?fund_id=' + encodeURIComponent(props.fundId), { method: 'POST' });
@@ -1378,6 +1431,14 @@ function FundDetailPage(props: {
         <Metric label="Last sample" value={fund.last_sampled_at ?? '-'} />
       </section>
 
+      <section className="metrics-grid compact" aria-label="Fund statement summary">
+        <Metric label="Statement events" value={statement ? statement.totals.events.toString() : '-'} />
+        <Metric label="Investors" value={statement ? statement.totals.investors.toString() : '-'} />
+        <Metric label="Deposits" value={statement ? formatNumber(statement.totals.order_deposit) : '-'} />
+        <Metric label="Legacy equity" value={statement?.latest_equity ? formatNumber(statement.latest_equity.equity) : '-'} />
+        <Metric label="Tax modes" value={statement ? statement.totals.tax_modes.toString() : '-'} />
+      </section>
+
       <section className="panel">
         <div className="account-detail-grid">
           <DetailItem label="Fund ID" value={fund.id} monospace />
@@ -1387,6 +1448,63 @@ function FundDetailPage(props: {
           <DetailItem label="Created" value={formatDate(fund.created_at)} />
           <DetailItem label="Updated" value={formatDate(fund.updated_at)} />
         </div>
+      </section>
+
+      <section className="panel">
+        <PanelTitle
+          label="Legacy statement"
+          title="Investor ledger"
+          action={statement ? statement.investors.length + ' investors' : undefined}
+        />
+        <InlineError message={props.statementError} />
+        <DataTable
+          empty="No imported statement investors are available for this fund."
+          headers={['Investor', 'Referrer', 'Tax rate', 'Rebate rate', 'Tax threshold', 'Updated']}
+          rows={(statement?.investors ?? []).map((investor) => [
+            investor.name,
+            investor.referrer ?? '-',
+            formatPercent(investor.tax_rate),
+            formatPercent(investor.referrer_rebate_rate),
+            formatOptionalNumber(investor.tax_threshold),
+            formatDate(investor.updated_at),
+          ])}
+        />
+      </section>
+
+      <section className="panel">
+        <PanelTitle
+          label="Legacy statement"
+          title="Recent subscriptions"
+          action={statement ? statement.recent_orders.length + ' orders' : undefined}
+        />
+        <DataTable
+          empty="No imported statement orders are available for this fund."
+          headers={['Time', 'Investor', 'Deposit', 'Event']}
+          rows={(statement?.recent_orders ?? []).map((order) => [
+            formatDate(order.updated_at),
+            order.investor_name,
+            formatNumber(order.deposit),
+            '#' + order.event_index,
+          ])}
+        />
+      </section>
+
+      <section className="panel">
+        <PanelTitle
+          label="Legacy statement"
+          title="Tax modes"
+          action={statement ? statement.tax_modes.length + ' markers' : undefined}
+        />
+        <DataTable
+          empty="No imported tax mode markers are available for this fund."
+          headers={['Time', 'Mode', 'Comment', 'Event']}
+          rows={(statement?.tax_modes ?? []).map((mode) => [
+            formatDate(mode.updated_at),
+            mode.mode,
+            mode.comment ?? '-',
+            '#' + mode.event_index,
+          ])}
+        />
       </section>
 
       <section className="panel">
@@ -2178,6 +2296,10 @@ function formatNumber(value: number) {
 
 function formatOptionalNumber(value: number | null) {
   return value === null ? '-' : formatNumber(value);
+}
+
+function formatPercent(value: number | null) {
+  return value === null ? '-' : Intl.NumberFormat(undefined, { maximumFractionDigits: 4, style: 'percent' }).format(value);
 }
 
 function finiteNumber(value: number) {
