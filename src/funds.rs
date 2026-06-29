@@ -1,6 +1,11 @@
 use std::collections::HashMap;
 
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{
+    Json,
+    extract::State,
+    http::{StatusCode, header},
+    response::{IntoResponse, Response},
+};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, SqlitePool};
@@ -483,6 +488,27 @@ pub async fn get_fund_settlement_run_detail(
     get_fund_settlement_run_detail_by_id(&state.db, &query.run_id)
         .await
         .map(Json)
+}
+
+pub async fn export_fund_settlement_run_csv(
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<FundSettlementRunQuery>,
+) -> Result<Response, AppError> {
+    let detail = get_fund_settlement_run_detail_by_id(&state.db, &query.run_id).await?;
+    let filename = format!("fund-settlement-{}.csv", detail.run.id);
+    let body = settlement_run_csv(&detail);
+
+    Ok((
+        [
+            (header::CONTENT_TYPE, "text/csv; charset=utf-8".to_string()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{filename}\""),
+            ),
+        ],
+        body,
+    )
+        .into_response())
 }
 
 async fn get_fund_settlement_run_detail_by_id(
@@ -975,6 +1001,80 @@ fn build_settlement_preview(
     }
 }
 
+fn settlement_run_csv(detail: &FundSettlementRunDetail) -> String {
+    let mut rows = vec![
+        vec![
+            "run_id".to_string(),
+            detail.run.id.clone(),
+            "fund_id".to_string(),
+            detail.run.fund_id.clone(),
+            "status".to_string(),
+            detail.run.status.clone(),
+        ],
+        vec![
+            "equity".to_string(),
+            detail.run.equity.to_string(),
+            "equity_updated_at".to_string(),
+            detail.run.equity_updated_at.clone(),
+            "created_at".to_string(),
+            detail.run.created_at.clone(),
+        ],
+        Vec::new(),
+        vec![
+            "investor".to_string(),
+            "referrer".to_string(),
+            "deposit".to_string(),
+            "units".to_string(),
+            "ownership".to_string(),
+            "gross_equity".to_string(),
+            "profit".to_string(),
+            "tax_threshold".to_string(),
+            "tax_rate".to_string(),
+            "tax".to_string(),
+            "referrer_rebate_rate".to_string(),
+            "referrer_rebate".to_string(),
+            "net_equity".to_string(),
+        ],
+    ];
+
+    rows.extend(detail.investors.iter().map(|investor| {
+        vec![
+            investor.name.clone(),
+            investor.referrer.clone().unwrap_or_default(),
+            investor.deposit.to_string(),
+            investor.units.to_string(),
+            investor.ownership.to_string(),
+            investor.gross_equity.to_string(),
+            investor.profit.to_string(),
+            investor.tax_threshold.to_string(),
+            investor.tax_rate.to_string(),
+            investor.tax.to_string(),
+            investor.referrer_rebate_rate.to_string(),
+            investor.referrer_rebate.to_string(),
+            investor.net_equity.to_string(),
+        ]
+    }));
+
+    rows.into_iter()
+        .map(|row| {
+            row.into_iter()
+                .map(|cell| csv_cell(&cell))
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
+}
+
+fn csv_cell(value: &str) -> String {
+    if value.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
+}
+
 fn validate_fund_request(request: &CreateFundRequest) -> Result<(), AppError> {
     if request.name.trim().is_empty() {
         return Err(AppError::bad_request("missing fund name"));
@@ -1082,6 +1182,13 @@ mod tests {
         assert_close(bob.tax, (bob.profit - 10.0) * 0.2);
         assert_close(bob.referrer_rebate, bob.tax * 0.25);
         assert_close(bob.net_equity, bob.gross_equity - bob.tax);
+    }
+
+    #[test]
+    fn escapes_csv_cells() {
+        assert_eq!(csv_cell("plain"), "plain");
+        assert_eq!(csv_cell("a,b"), "\"a,b\"");
+        assert_eq!(csv_cell("a\"b"), "\"a\"\"b\"");
     }
 
     fn assert_close(left: f64, right: f64) {

@@ -143,6 +143,10 @@ async fn main() -> anyhow::Result<()> {
             get(funds::get_fund_settlement_run_detail),
         )
         .route(
+            "/fund-settlement-runs/export",
+            get(funds::export_fund_settlement_run_csv),
+        )
+        .route(
             "/fund-settlement-runs/confirm",
             post(funds::confirm_fund_settlement_run),
         )

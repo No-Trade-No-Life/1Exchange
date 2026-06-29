@@ -34,6 +34,7 @@ import {
   Ban,
   ChevronDown,
   CircleCheck,
+  Download,
   History,
   LayoutDashboard,
   LineChart,
@@ -1614,6 +1615,7 @@ function FundDetailPage(props: {
               key="action"
               onConfirm={() => void updateSettlementRunStatus(run.id, 'confirm')}
               onVoid={() => void updateSettlementRunStatus(run.id, 'void')}
+              runId={run.id}
               status={run.status}
             />,
           ])}
@@ -1700,21 +1702,26 @@ function SettlementRunActions(props: {
   actioning: boolean;
   onConfirm: () => void;
   onVoid: () => void;
+  runId: string;
   status: string;
 }) {
-  if (props.status !== 'draft') {
-    return <span className="text-sm text-muted-foreground">-</span>;
-  }
-
   return (
     <div className="flex items-center gap-2">
-      <Button size="sm" type="button" disabled={props.actioning} onClick={props.onConfirm}>
-        <CircleCheck data-icon="inline-start" />
-        Confirm
-      </Button>
-      <Button size="sm" variant="outline" type="button" disabled={props.actioning} onClick={props.onVoid}>
-        <Ban data-icon="inline-start" />
-        Void
+      {props.status === 'draft' ? (
+        <>
+          <Button size="sm" type="button" disabled={props.actioning} onClick={props.onConfirm}>
+            <CircleCheck data-icon="inline-start" />
+            Confirm
+          </Button>
+          <Button size="sm" variant="outline" type="button" disabled={props.actioning} onClick={props.onVoid}>
+            <Ban data-icon="inline-start" />
+            Void
+          </Button>
+        </>
+      ) : null}
+      <Button size="sm" variant="outline" type="button" render={<a href={settlementRunExportPath(props.runId)} />}>
+        <Download data-icon="inline-start" />
+        CSV
       </Button>
     </div>
   );
@@ -2249,6 +2256,10 @@ function accountDetailPath(accountId: string) {
 
 function fundDetailPath(fundId: string) {
   return `/funds/detail?fund_id=${encodeURIComponent(fundId)}`;
+}
+
+function settlementRunExportPath(runId: string) {
+  return `/api/fund-settlement-runs/export?run_id=${encodeURIComponent(runId)}`;
 }
 
 function fallbackAccountId(credential: Credential) {
