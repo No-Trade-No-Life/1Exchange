@@ -298,8 +298,9 @@ fn value_account(account: &AccountInfo, target_currency: &str) -> FundValuation 
                 return valuation;
             }
             let currency = position
-                .notional_currency
+                .settlement_currency
                 .as_deref()
+                .or(position.notional_currency.as_deref())
                 .or(position.quote_currency.as_deref())
                 .unwrap_or(target_currency);
             if let Some(rate) = rates::convert_rate(&snapshot.edges, currency, target_currency) {

@@ -353,6 +353,9 @@ fn map_derivative_position(row: Value) -> Option<Position> {
     };
     let closable_price = common::f64_value(&row, "markPx");
     let (base_currency, quote_currency) = okx_pair_currencies(&inst_id);
+    let notional_currency = okx_quote_currency(&inst_id);
+    let settlement_currency = okx_settlement_currency(&row).or_else(|| notional_currency.clone());
+    let floating_profit = common::f64_value(&row, "upl");
 
     Some(Position {
         position_id,
@@ -365,11 +368,22 @@ fn map_derivative_position(row: Value) -> Option<Position> {
         position_price: common::f64_value(&row, "avgPx"),
         closable_price,
         notional_value: common::notional_value(volume, closable_price),
-        notional_currency: okx_quote_currency(&inst_id),
-        floating_profit: common::f64_value(&row, "upl"),
+        notional_currency,
+        settlement_currency,
+        valuation: floating_profit,
+        floating_profit,
         comment: None,
         ..Position::default()
     })
+}
+
+fn okx_settlement_currency(row: &Value) -> Option<String> {
+    let currency = common::str_value(row, "ccy");
+    if currency.is_empty() {
+        None
+    } else {
+        Some(currency)
+    }
 }
 
 fn okx_pair_currencies(inst_id: &str) -> (Option<String>, Option<String>) {
@@ -450,5 +464,43 @@ fn map_product(inst_type: &str, row: &Value) -> Product {
         market_id: Some(ID.to_string()),
         no_interest_rate: Some(inst_type == "SPOT"),
         spread: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn maps_swap_valuation_as_settlement_pnl_and_notional_as_exposure() {
+        let position = map_derivative_position(json!({
+            "instId": "BNB-USDT-SWAP",
+            "instType": "SWAP",
+            "posId": "3667923355465342976",
+            "pos": "900",
+            "posSide": "short",
+            "markPx": "553.2",
+            "avgPx": "555",
+            "availPos": "900",
+            "upl": "16.2",
+            "ccy": "USDT"
+        }))
+        .expect("swap position")
+        .normalized("OKX/853250016859980800");
+
+        assert_eq!(position.product_id, "OKX/SWAP/BNB-USDT-SWAP");
+        assert_eq!(position.settlement_currency.as_deref(), Some("USDT"));
+        assert_eq!(position.notional_currency.as_deref(), Some("USDT"));
+        assert_eq!(
+            position
+                .notional
+                .as_deref()
+                .and_then(|value| value.parse::<f64>().ok()),
+            Some(-497_880.00000000006)
+        );
+        assert_eq!(position.valuation, 16.2);
+        assert_eq!(position.floating_profit, 16.2);
     }
 }

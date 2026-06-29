@@ -55,6 +55,10 @@ pub struct Position {
     pub current_price: Option<String>,
     pub notional_value: f64,
     pub notional_currency: Option<String>,
+    /// Currency for NAV-additive valuation, PnL and margin. Adapters set this
+    /// because settlement rules vary by exchange and product type.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settlement_currency: Option<String>,
     /// Yuan signed notional. Long positions are positive, shorts are negative.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notional: Option<String>,
@@ -192,6 +196,7 @@ impl Default for Position {
             current_price: None,
             notional_value: 0.0,
             notional_currency: None,
+            settlement_currency: None,
             notional: None,
             valuation: 0.0,
             floating_profit: 0.0,

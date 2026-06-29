@@ -94,6 +94,7 @@ type Position = {
   current_price?: string | null;
   notional_value: number;
   notional_currency: string | null;
+  settlement_currency?: string | null;
   notional?: string | null;
   valuation?: number;
   floating_profit: number;
@@ -802,7 +803,7 @@ function AccountsPage(props: {
         </div>
         <DataTable
           empty="No accounts loaded yet. Add a credential, virtual account, or custom account source below."
-          headers={['AccountID', 'Source type', 'Name', 'Protocol', 'Positions', 'Assets', 'USD converted', 'Floating P/L', 'Status', 'Action']}
+          headers={['AccountID', 'Source type', 'Name', 'Protocol', 'Positions', 'Assets', 'Equity USD', 'Floating P/L', 'Status', 'Action']}
           rows={props.accounts.map((account) => {
             const summary = summarizeAccountPositions(account.positions);
             return [
@@ -812,7 +813,7 @@ function AccountsPage(props: {
               <Badge key="protocol">{account.sourceLabel}</Badge>,
               summary.total.toString(),
               summary.assets.toString(),
-              formatConvertedValue(convertCurrencyTotals(summary.notionalByCurrency, 'USD', props.rateEdges), 'USD'),
+              formatConvertedValue(convertCurrencyTotals(summary.equityByCurrency, 'USD', props.rateEdges), 'USD'),
               <Value key="pnl" value={summary.pnl} />,
               account.error ? <span className="status-text bad" key="status">{account.error}</span> : <span className="status-text good" key="status">Loaded</span>,
               <Button key="action" variant="outline" type="button" onClick={() => scrollToAccountSource(account.sourceType)}>
@@ -960,7 +961,7 @@ function AccountDetailPage(props: { accounts: AccountSnapshot[]; loading: boolea
   const positions = account?.positions ?? [];
   const summary = summarizeAccountPositions(positions);
   const assetRows = summarizeAccountAssets(positions);
-  const usdValue = convertCurrencyTotals(summary.notionalByCurrency, 'USD', props.rateEdges);
+  const usdValue = convertCurrencyTotals(summary.equityByCurrency, 'USD', props.rateEdges);
 
   if (!accountId) {
     return <AccountDetailEmpty title="Select an account" message="Open the Accounts page and choose an AccountID to inspect positions and metadata." />;
@@ -985,8 +986,9 @@ function AccountDetailPage(props: { accounts: AccountSnapshot[]; loading: boolea
       <section className="metrics-grid compact" aria-label="Account detail summary">
         <Metric label="Positions" value={summary.total.toString()} />
         <Metric label="Assets" value={summary.assets.toString()} />
-        <Metric label="Notional value" value={formatNotionalBreakdown(summary.notionalByCurrency)} />
-        <Metric label="USD converted" value={formatConvertedValue(usdValue, 'USD')} tone={usdValue.unconverted.length > 0 ? 'warn' : 'neutral'} />
+        <Metric label="Equity value" value={formatCurrencyBreakdown(summary.equityByCurrency)} />
+        <Metric label="USD equity" value={formatConvertedValue(usdValue, 'USD')} tone={usdValue.unconverted.length > 0 ? 'warn' : 'neutral'} />
+        <Metric label="Exposure" value={formatCurrencyBreakdown(summary.exposureByCurrency)} />
         <Metric label="Floating P/L" value={formatNumber(summary.pnl)} tone={summary.pnl < 0 ? 'warn' : 'good'} />
       </section>
 
@@ -1012,14 +1014,16 @@ function AccountDetailPage(props: { accounts: AccountSnapshot[]; loading: boolea
         <InlineError message={account.error} />
         <DataTable
           empty="This account returned no asset exposure."
-          headers={['Product', 'Currency', 'Rows', 'Volume', 'Free', 'Notional value', 'Floating P/L']}
+          headers={['Product', 'Exposure currency', 'Settlement', 'Rows', 'Volume', 'Free', 'Equity', 'Exposure', 'Floating P/L']}
           rows={assetRows.map((row) => [
             <code key="product">{row.productId}</code>,
-            row.currency,
+            row.exposureCurrency,
+            row.settlementCurrency,
             row.rows.toString(),
             formatNumber(row.volume),
             formatNumber(row.freeVolume),
-            formatNumber(row.notionalValue),
+            formatNumber(row.equityValue),
+            formatNumber(row.exposureValue),
             <Value key="pnl" value={row.pnl} />,
           ])}
         />
@@ -1036,18 +1040,20 @@ function AccountDetailPage(props: { accounts: AccountSnapshot[]; loading: boolea
         <InlineError message={account.error} />
         <DataTable
           empty="This account returned no positions."
-          headers={['Position', 'Product', 'Base', 'Quote', 'Side', 'Volume', 'Free', 'Entry', 'Mark', 'Notional', 'P/L']}
+          headers={['Position', 'Product', 'Base', 'Quote', 'Settle', 'Side', 'Volume', 'Free', 'Entry', 'Mark', 'Equity', 'Exposure', 'P/L']}
           rows={account.positions.map((item) => [
             item.position_id,
             <code key="product">{item.product_id}</code>,
             item.base_currency ?? '-',
             item.quote_currency ?? '-',
+            settlementCurrency(item),
             item.direction ? <Badge key="direction">{item.direction}</Badge> : 'Asset',
             formatNumber(item.volume),
             formatNumber(item.free_volume),
             formatNumber(item.position_price),
             formatNumber(item.closable_price),
-            formatPositionNotional(item),
+            formatPositionEquity(item),
+            formatPositionExposure(item),
             <Value key="pnl" value={item.floating_profit} />,
           ])}
         />
@@ -1688,18 +1694,20 @@ function PositionsPage(props: {
         <InlineError message={props.error} />
         <DataTable
           empty="Select a credential to load positions. If a request fails, check API permissions on the exchange key."
-          headers={['Position', 'Product', 'Base', 'Quote', 'Side', 'Volume', 'Free', 'Entry', 'Mark', 'Notional', 'P/L']}
+          headers={['Position', 'Product', 'Base', 'Quote', 'Settle', 'Side', 'Volume', 'Free', 'Entry', 'Mark', 'Equity', 'Exposure', 'P/L']}
           rows={props.positions.map((item) => [
             item.position_id,
             <code key="product">{item.product_id}</code>,
             item.base_currency ?? '-',
             item.quote_currency ?? '-',
+            settlementCurrency(item),
             item.direction ? <Badge key="direction">{item.direction}</Badge> : 'Asset',
             formatNumber(item.volume),
             formatNumber(item.free_volume),
             formatNumber(item.position_price),
             formatNumber(item.closable_price),
-            formatPositionNotional(item),
+            formatPositionEquity(item),
+            formatPositionExposure(item),
             <Value key="pnl" value={item.floating_profit} />,
           ])}
         />
@@ -1990,59 +1998,99 @@ function summarizePositions(positions: Position[]) {
 function summarizeAccountPositions(positions: Position[]) {
   return positions.reduce(
     (summary, item) => {
-      addCurrencyTotal(summary.notionalByCurrency, item.notional_currency, notionalValue(item));
+      addCurrencyTotal(summary.equityByCurrency, settlementCurrency(item), equityValue(item));
+      addCurrencyTotal(summary.exposureByCurrency, exposureCurrency(item), exposureValue(item));
       return {
         total: summary.total + 1,
         assets: summary.assets + (item.direction ? 0 : 1),
         long: summary.long + (item.direction === 'LONG' ? 1 : 0),
         short: summary.short + (item.direction === 'SHORT' ? 1 : 0),
-        notionalByCurrency: summary.notionalByCurrency,
+        equityByCurrency: summary.equityByCurrency,
+        exposureByCurrency: summary.exposureByCurrency,
         pnl: summary.pnl + item.floating_profit,
       };
     },
-    { total: 0, assets: 0, long: 0, short: 0, notionalByCurrency: new Map<string, number>(), pnl: 0 },
+    {
+      total: 0,
+      assets: 0,
+      long: 0,
+      short: 0,
+      equityByCurrency: new Map<string, number>(),
+      exposureByCurrency: new Map<string, number>(),
+      pnl: 0,
+    },
   );
 }
 
 function summarizeAccountAssets(positions: Position[]) {
   const rows = new Map<
     string,
-    { currency: string; freeVolume: number; notionalValue: number; pnl: number; productId: string; rows: number; volume: number }
+    {
+      equityValue: number;
+      exposureCurrency: string;
+      exposureValue: number;
+      freeVolume: number;
+      pnl: number;
+      productId: string;
+      rows: number;
+      settlementCurrency: string;
+      volume: number;
+    }
   >();
   for (const position of positions) {
-    const currency = position.notional_currency ?? 'UNKNOWN';
-    const rowKey = `${position.product_id}\u0000${currency}`;
+    const settle = settlementCurrency(position);
+    const exposure = exposureCurrency(position);
+    const rowKey = `${position.product_id}\u0000${settle}\u0000${exposure}`;
     const current = rows.get(rowKey) ?? {
-      currency,
+      equityValue: 0,
+      exposureCurrency: exposure,
+      exposureValue: 0,
       freeVolume: 0,
-      notionalValue: 0,
       pnl: 0,
       productId: position.product_id,
       rows: 0,
+      settlementCurrency: settle,
       volume: 0,
     };
     current.rows += 1;
     current.volume += finiteNumber(position.volume);
     current.freeVolume += finiteNumber(position.free_volume);
-    current.notionalValue += finiteNumber(notionalValue(position));
+    current.equityValue += finiteNumber(equityValue(position));
+    current.exposureValue += finiteNumber(exposureValue(position));
     current.pnl += finiteNumber(position.floating_profit);
     rows.set(rowKey, current);
   }
 
   return Array.from(rows.values())
-    .sort((a, b) => Math.abs(b.notionalValue) - Math.abs(a.notionalValue));
+    .sort((a, b) => Math.abs(b.exposureValue) - Math.abs(a.exposureValue));
 }
 
-function notionalValue(position: Position) {
+function equityValue(position: Position) {
+  return finiteNumber(position.valuation ?? position.notional_value);
+}
+
+function exposureValue(position: Position) {
   if (position.notional != null) {
     return finiteNumber(Number(position.notional));
   }
 
-  return position.valuation ?? position.notional_value;
+  return finiteNumber(position.notional_value);
 }
 
-function formatPositionNotional(position: Position) {
-  return `${formatNumber(notionalValue(position))} ${position.notional_currency ?? position.quote_currency ?? ''}`.trim();
+function settlementCurrency(position: Position) {
+  return position.settlement_currency ?? position.notional_currency ?? position.quote_currency ?? 'UNKNOWN';
+}
+
+function exposureCurrency(position: Position) {
+  return position.notional_currency ?? position.quote_currency ?? 'UNKNOWN';
+}
+
+function formatPositionEquity(position: Position) {
+  return `${formatNumber(equityValue(position))} ${settlementCurrency(position)}`.trim();
+}
+
+function formatPositionExposure(position: Position) {
+  return `${formatNumber(exposureValue(position))} ${exposureCurrency(position)}`.trim();
 }
 
 function addCurrencyTotal(totals: Map<string, number>, currency: string | null, value: number) {
@@ -2050,7 +2098,7 @@ function addCurrencyTotal(totals: Map<string, number>, currency: string | null, 
   totals.set(key, (totals.get(key) ?? 0) + finiteNumber(value));
 }
 
-function formatNotionalBreakdown(totals: Map<string, number>) {
+function formatCurrencyBreakdown(totals: Map<string, number>) {
   const rows = Array.from(totals.entries()).filter(([, value]) => value !== 0);
   if (rows.length === 0) {
     return '0';
