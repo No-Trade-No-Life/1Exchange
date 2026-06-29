@@ -2100,7 +2100,7 @@ function SettlementRunActions(props: {
   );
 }
 
-const settlementRunHeaders = ['Created', 'Status', 'Status time', 'Model', 'Basis', 'Equity', 'Investors', 'Deposit', 'Tax', 'Rebate', 'Run ID', 'Action'];
+const settlementRunHeaders = ['Created', 'Status', 'Status time', 'Model', 'Basis', 'Equity', 'Investors', 'Units', 'Deposit', 'Tax', 'Rebate', 'Run ID', 'Action'];
 
 function SettlementRunsTable(props: {
   actioningRunId: string | null;
@@ -2134,6 +2134,7 @@ function settlementRunRows(props: {
     settlementBasisLabel(run.basis_source),
     formatNumber(run.equity),
     run.investor_count.toString(),
+    formatNumber(run.total_units),
     formatNumber(run.total_deposit),
     formatNumber(run.total_tax),
     formatNumber(run.total_referrer_rebate),
@@ -2177,6 +2178,7 @@ function SettlementRunDetailDialog(props: {
               <Metric label="Basis time" value={formatDate(run.basis_updated_at)} />
               <Metric label="Equity" value={formatNumber(run.equity)} />
               <Metric label="Investors" value={run.investor_count.toString()} />
+              <Metric label="Units" value={formatNumber(run.total_units)} />
               <Metric label="Gross equity" value={detail.data ? formatNumber(detail.data.totals.gross_equity) : '-'} />
               <Metric label="Net equity" value={detail.data ? formatNumber(detail.data.totals.net_equity) : '-'} />
               <Metric label="Tax" value={formatNumber(run.total_tax)} />
@@ -2239,6 +2241,7 @@ function SettlementReportPage(props: {
             <Metric label="Basis" value={settlementBasisLabel(run.basis_source)} />
             <Metric label="Equity" value={formatNumber(run.equity)} />
             <Metric label="Investors" value={run.investor_count.toString()} />
+            <Metric label="Units" value={formatNumber(run.total_units)} />
             <Metric label="Net equity" value={formatNumber(props.detail?.totals.net_equity ?? 0)} />
             <Metric label="Tax" value={formatNumber(run.total_tax)} />
             <Metric label="Rebate" value={formatNumber(run.total_referrer_rebate)} />

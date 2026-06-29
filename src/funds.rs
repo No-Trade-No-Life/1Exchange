@@ -1801,6 +1801,8 @@ fn settlement_run_csv(detail: &FundSettlementRunDetail) -> String {
             detail.run.basis_source.clone(),
             "basis_id".to_string(),
             detail.run.basis_id.clone(),
+            "basis_updated_at".to_string(),
+            detail.run.basis_updated_at.clone(),
         ],
         vec![
             "equity".to_string(),
@@ -1809,6 +1811,16 @@ fn settlement_run_csv(detail: &FundSettlementRunDetail) -> String {
             detail.run.equity_updated_at.clone(),
             "created_at".to_string(),
             detail.run.created_at.clone(),
+            "total_deposit".to_string(),
+            detail.run.total_deposit.to_string(),
+        ],
+        vec![
+            "total_units".to_string(),
+            detail.run.total_units.to_string(),
+            "total_tax".to_string(),
+            detail.run.total_tax.to_string(),
+            "total_referrer_rebate".to_string(),
+            detail.run.total_referrer_rebate.to_string(),
         ],
         vec![
             "gross_equity".to_string(),
