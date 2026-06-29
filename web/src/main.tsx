@@ -35,6 +35,7 @@ import {
   ChevronDown,
   CircleCheck,
   Download,
+  Eye,
   History,
   LayoutDashboard,
   LineChart,
@@ -1460,6 +1461,7 @@ function FundDetailPage(props: {
   snapshots: FundNavSnapshot[];
 }) {
   const queryClient = useQueryClient();
+  const [selectedSettlementRunId, setSelectedSettlementRunId] = useState<string | null>(null);
   const [settlementRunError, setSettlementRunError] = useState<string | null>(null);
   const [settlementRunActionId, setSettlementRunActionId] = useState<string | null>(null);
   const [settlementRunSaving, setSettlementRunSaving] = useState(false);
@@ -1660,6 +1662,7 @@ function FundDetailPage(props: {
               actioning={settlementRunActionId === run.id}
               key="action"
               onConfirm={() => void updateSettlementRunStatus(run.id, 'confirm')}
+              onInspect={() => setSelectedSettlementRunId(run.id)}
               onVoid={() => void updateSettlementRunStatus(run.id, 'void')}
               runId={run.id}
               status={run.status}
@@ -1667,6 +1670,16 @@ function FundDetailPage(props: {
           ])}
         />
       </section>
+
+      <SettlementRunDetailDialog
+        onOpenChange={(open) => {
+          if (!open) {
+            setSelectedSettlementRunId(null);
+          }
+        }}
+        open={selectedSettlementRunId !== null}
+        runId={selectedSettlementRunId}
+      />
 
       <section className="panel">
         <PanelTitle
@@ -1747,12 +1760,17 @@ function FundDetailPage(props: {
 function SettlementRunActions(props: {
   actioning: boolean;
   onConfirm: () => void;
+  onInspect: () => void;
   onVoid: () => void;
   runId: string;
   status: string;
 }) {
   return (
     <div className="flex items-center gap-2">
+      <Button size="sm" variant="outline" type="button" onClick={props.onInspect}>
+        <Eye data-icon="inline-start" />
+        View
+      </Button>
       {props.status === 'draft' ? (
         <>
           <Button size="sm" type="button" disabled={props.actioning} onClick={props.onConfirm}>
@@ -1770,6 +1788,81 @@ function SettlementRunActions(props: {
         CSV
       </Button>
     </div>
+  );
+}
+
+function SettlementRunDetailDialog(props: {
+  onOpenChange: (open: boolean) => void;
+  open: boolean;
+  runId: string | null;
+}) {
+  const detail = useJson<FundSettlementRunDetail>(props.runId ? '/api/fund-settlement-runs/detail?run_id=' + encodeURIComponent(props.runId) : null);
+  const run = detail.data?.run;
+
+  return (
+    <Dialog open={props.open} onOpenChange={props.onOpenChange}>
+      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-5xl">
+        <DialogHeader>
+          <DialogTitle>Settlement run detail</DialogTitle>
+          <DialogDescription>{run ? run.status + ' · ' + formatDate(run.created_at) : 'Loading settlement run'}</DialogDescription>
+        </DialogHeader>
+        <InlineError message={detail.error} />
+        {run ? (
+          <div className="flex flex-col gap-4">
+            <section className="metrics-grid compact" aria-label="Settlement run detail summary">
+              <Metric label="Status" value={run.status} />
+              <Metric label="Equity" value={formatNumber(run.equity)} />
+              <Metric label="Investors" value={run.investor_count.toString()} />
+              <Metric label="Tax" value={formatNumber(run.total_tax)} />
+              <Metric label="Rebate" value={formatNumber(run.total_referrer_rebate)} />
+            </section>
+
+            <section>
+              <PanelTitle label="Run detail" title="Tax payable" action={(detail.data?.investor_taxes.length ?? 0) + ' investors'} />
+              <DataTable
+                empty="No investor tax is recorded for this run."
+                headers={['Investor', 'Tax']}
+                rows={(detail.data?.investor_taxes ?? []).map((tax) => [
+                  tax.investor,
+                  formatNumber(tax.tax),
+                ])}
+              />
+            </section>
+
+            <section>
+              <PanelTitle label="Run detail" title="Referrer rebates" action={(detail.data?.referrer_rebates.length ?? 0) + ' referrers'} />
+              <DataTable
+                empty="No referrer rebate is recorded for this run."
+                headers={['Referrer', 'Rebate']}
+                rows={(detail.data?.referrer_rebates ?? []).map((rebate) => [
+                  rebate.referrer,
+                  formatNumber(rebate.rebate),
+                ])}
+              />
+            </section>
+
+            <section>
+              <PanelTitle label="Run detail" title="Investor allocation" action={(detail.data?.investors.length ?? 0) + ' investors'} />
+              <DataTable
+                empty="No investor rows are recorded for this run."
+                headers={['Investor', 'Referrer', 'Deposit', 'Ownership', 'Gross equity', 'Profit', 'Tax', 'Rebate', 'Net equity']}
+                rows={(detail.data?.investors ?? []).map((investor) => [
+                  investor.name,
+                  investor.referrer ?? '-',
+                  formatNumber(investor.deposit),
+                  formatPercent(investor.ownership),
+                  formatNumber(investor.gross_equity),
+                  <Value key="profit" value={investor.profit} />,
+                  formatNumber(investor.tax),
+                  formatNumber(investor.referrer_rebate),
+                  formatNumber(investor.net_equity),
+                ])}
+              />
+            </section>
+          </div>
+        ) : null}
+      </DialogContent>
+    </Dialog>
   );
 }
 
