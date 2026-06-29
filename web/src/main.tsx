@@ -255,6 +255,32 @@ type FundStatementTaxMode = {
   updated_at: string;
 };
 
+type FundSettlementPreview = {
+  fund_id: string;
+  latest_equity: FundStatementEquity | null;
+  total_deposit: number;
+  total_units: number;
+  total_tax: number;
+  total_referrer_rebate: number;
+  investors: FundInvestorSettlement[];
+};
+
+type FundInvestorSettlement = {
+  name: string;
+  referrer: string | null;
+  deposit: number;
+  units: number;
+  ownership: number;
+  gross_equity: number;
+  profit: number;
+  tax_threshold: number;
+  tax_rate: number;
+  tax: number;
+  referrer_rebate_rate: number;
+  referrer_rebate: number;
+  net_equity: number;
+};
+
 type CustomAccountSource = {
   id: string;
   name: string;
@@ -701,14 +727,17 @@ function FundDetailRoute() {
   const funds = useJson<FundConfig[]>('/api/funds');
   const nav = useJson<FundNavSnapshot[]>(fundId ? `/api/fund-nav?fund_id=${encodeURIComponent(fundId)}&limit=100` : null);
   const statements = useJson<FundStatementSummary>(fundId ? `/api/fund-statements?fund_id=${encodeURIComponent(fundId)}` : null);
+  const settlement = useJson<FundSettlementPreview>(fundId ? `/api/fund-settlement-preview?fund_id=${encodeURIComponent(fundId)}` : null);
 
   return (
-    <RefreshScope resources={[funds, nav, statements]}>
+    <RefreshScope resources={[funds, nav, statements, settlement]}>
       <FundDetailPage
         configs={funds.data ?? emptyFundConfigs}
         fundId={fundId}
-        loading={funds.loading || nav.loading || statements.loading}
+        loading={funds.loading || nav.loading || statements.loading || settlement.loading}
         navError={nav.error}
+        settlementError={settlement.error}
+        settlementPreview={settlement.data ?? null}
         statementError={statements.error}
         statementSummary={statements.data ?? null}
         snapshots={nav.data ?? []}
@@ -1382,6 +1411,8 @@ function FundDetailPage(props: {
   fundId: string;
   loading: boolean;
   navError: string | null;
+  settlementError: string | null;
+  settlementPreview: FundSettlementPreview | null;
   statementError: string | null;
   statementSummary: FundStatementSummary | null;
   snapshots: FundNavSnapshot[];
@@ -1390,6 +1421,7 @@ function FundDetailPage(props: {
   const fund = props.configs.find((item) => item.id === props.fundId);
   const latestSnapshot = props.snapshots[0];
   const statement = props.statementSummary;
+  const settlement = props.settlementPreview;
 
   async function sampleFund() {
     const response = await fetch('/api/funds/sample?fund_id=' + encodeURIComponent(props.fundId), { method: 'POST' });
@@ -1439,6 +1471,13 @@ function FundDetailPage(props: {
         <Metric label="Tax modes" value={statement ? statement.totals.tax_modes.toString() : '-'} />
       </section>
 
+      <section className="metrics-grid compact" aria-label="Fund settlement preview">
+        <Metric label="Issued units" value={settlement ? formatNumber(settlement.total_units) : '-'} />
+        <Metric label="Total deposit" value={settlement ? formatNumber(settlement.total_deposit) : '-'} />
+        <Metric label="Estimated tax" value={settlement ? formatNumber(settlement.total_tax) : '-'} />
+        <Metric label="Referrer rebate" value={settlement ? formatNumber(settlement.total_referrer_rebate) : '-'} />
+      </section>
+
       <section className="panel">
         <div className="account-detail-grid">
           <DetailItem label="Fund ID" value={fund.id} monospace />
@@ -1448,6 +1487,30 @@ function FundDetailPage(props: {
           <DetailItem label="Created" value={formatDate(fund.created_at)} />
           <DetailItem label="Updated" value={formatDate(fund.updated_at)} />
         </div>
+      </section>
+
+      <section className="panel">
+        <PanelTitle
+          label="Settlement preview"
+          title="Investor allocation"
+          action={settlement ? settlement.investors.length + ' investors' : undefined}
+        />
+        <InlineError message={props.settlementError} />
+        <DataTable
+          empty="No settlement preview is available for this fund."
+          headers={['Investor', 'Referrer', 'Deposit', 'Ownership', 'Gross equity', 'Profit', 'Tax', 'Rebate', 'Net equity']}
+          rows={(settlement?.investors ?? []).map((investor) => [
+            investor.name,
+            investor.referrer ?? '-',
+            formatNumber(investor.deposit),
+            formatPercent(investor.ownership),
+            formatNumber(investor.gross_equity),
+            <Value key="profit" value={investor.profit} />,
+            formatNumber(investor.tax),
+            formatNumber(investor.referrer_rebate),
+            formatNumber(investor.net_equity),
+          ])}
+        />
       </section>
 
       <section className="panel">

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use axum::{Json, extract::State, http::StatusCode};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -57,6 +59,11 @@ pub struct FundStatementQuery {
 }
 
 #[derive(Deserialize)]
+pub struct FundSettlementQuery {
+    fund_id: String,
+}
+
+#[derive(Deserialize)]
 pub struct SampleFundQuery {
     fund_id: String,
 }
@@ -99,7 +106,7 @@ pub struct FundStatementOrder {
     updated_at: String,
 }
 
-#[derive(Debug, Serialize, FromRow)]
+#[derive(Clone, Debug, Serialize, FromRow)]
 pub struct FundStatementEquity {
     event_index: i64,
     equity: f64,
@@ -112,6 +119,52 @@ pub struct FundStatementTaxMode {
     mode: String,
     comment: Option<String>,
     updated_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FundSettlementPreview {
+    fund_id: String,
+    latest_equity: Option<FundStatementEquity>,
+    total_deposit: f64,
+    total_units: f64,
+    total_tax: f64,
+    total_referrer_rebate: f64,
+    investors: Vec<FundInvestorSettlement>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FundInvestorSettlement {
+    name: String,
+    referrer: Option<String>,
+    deposit: f64,
+    units: f64,
+    ownership: f64,
+    gross_equity: f64,
+    profit: f64,
+    tax_threshold: f64,
+    tax_rate: f64,
+    tax: f64,
+    referrer_rebate_rate: f64,
+    referrer_rebate: f64,
+    net_equity: f64,
+}
+
+#[derive(Clone, Debug, FromRow)]
+struct SettlementOrder {
+    investor_name: String,
+    deposit: f64,
+    updated_at: String,
+}
+
+#[derive(Clone, Debug, Default)]
+struct SettlementInvestorState {
+    name: String,
+    referrer: Option<String>,
+    deposit: f64,
+    units: f64,
+    tax_threshold: f64,
+    tax_rate: f64,
+    referrer_rebate_rate: f64,
 }
 
 #[derive(Debug)]
@@ -315,6 +368,56 @@ pub async fn get_fund_statement_summary(
     }))
 }
 
+pub async fn get_fund_settlement_preview(
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<FundSettlementQuery>,
+) -> Result<Json<FundSettlementPreview>, AppError> {
+    get_fund_config(&state.db, &query.fund_id).await?;
+
+    let orders = sqlx::query_as::<_, SettlementOrder>(
+        r#"
+        SELECT investor_name, deposit, updated_at
+        FROM fund_statement_orders
+        WHERE fund_id = ?1
+        ORDER BY updated_at ASC, event_index ASC
+        "#,
+    )
+    .bind(&query.fund_id)
+    .fetch_all(&state.db)
+    .await?;
+
+    let equity_points = sqlx::query_as::<_, FundStatementEquity>(
+        r#"
+        SELECT event_index, equity, updated_at
+        FROM fund_statement_equity
+        WHERE fund_id = ?1
+        ORDER BY updated_at ASC, event_index ASC
+        "#,
+    )
+    .bind(&query.fund_id)
+    .fetch_all(&state.db)
+    .await?;
+
+    let investors = sqlx::query_as::<_, FundStatementInvestor>(
+        r#"
+        SELECT name, referrer, tax_rate, referrer_rebate_rate, tax_threshold,
+               updated_at, source_event_index
+        FROM fund_statement_investors
+        WHERE fund_id = ?1
+        "#,
+    )
+    .bind(&query.fund_id)
+    .fetch_all(&state.db)
+    .await?;
+
+    Ok(Json(build_settlement_preview(
+        query.fund_id,
+        orders,
+        equity_points,
+        investors,
+    )))
+}
+
 pub async fn sample_fund_now(
     State(state): State<AppState>,
     axum::extract::Query(query): axum::extract::Query<SampleFundQuery>,
@@ -471,6 +574,119 @@ fn value_account(account: &AccountInfo, target_currency: &str) -> FundValuation 
     )
 }
 
+fn build_settlement_preview(
+    fund_id: String,
+    orders: Vec<SettlementOrder>,
+    equity_points: Vec<FundStatementEquity>,
+    investor_settings: Vec<FundStatementInvestor>,
+) -> FundSettlementPreview {
+    let latest_equity = equity_points.last().cloned();
+    let final_equity = latest_equity
+        .as_ref()
+        .map(|item| item.equity)
+        .unwrap_or(0.0);
+    let mut investors = investor_settings
+        .into_iter()
+        .map(|item| {
+            (
+                item.name.clone(),
+                SettlementInvestorState {
+                    name: item.name,
+                    referrer: item.referrer,
+                    tax_threshold: item.tax_threshold.unwrap_or(0.0),
+                    tax_rate: item.tax_rate.unwrap_or(0.0),
+                    referrer_rebate_rate: item.referrer_rebate_rate.unwrap_or(0.0),
+                    ..SettlementInvestorState::default()
+                },
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let mut total_units = 0.0;
+    let mut total_deposit = 0.0;
+    let mut latest_order_equity = 0.0;
+    let mut equity_index = 0usize;
+
+    for order in orders {
+        while equity_index < equity_points.len()
+            && equity_points[equity_index].updated_at <= order.updated_at
+        {
+            latest_order_equity = equity_points[equity_index].equity;
+            equity_index += 1;
+        }
+
+        // ASSUMPTION: Legacy fund statements store subscriptions and fund equity
+        // but not explicit share issuance records. If the approximation issues too
+        // many or too few units for an old subscription, the preview changes only
+        // this derived settlement table; raw imported events remain unchanged.
+        let nav_per_unit = if total_units > 0.0 && latest_order_equity > 0.0 {
+            latest_order_equity / total_units
+        } else {
+            1.0
+        };
+        let units = order.deposit / nav_per_unit;
+        let investor = investors
+            .entry(order.investor_name.clone())
+            .or_insert_with(|| SettlementInvestorState {
+                name: order.investor_name,
+                ..SettlementInvestorState::default()
+            });
+
+        investor.deposit += order.deposit;
+        investor.units += units;
+        total_deposit += order.deposit;
+        total_units += units;
+    }
+
+    let mut rows = investors
+        .into_values()
+        .map(|investor| {
+            let ownership = if total_units > 0.0 {
+                investor.units / total_units
+            } else {
+                0.0
+            };
+            let gross_equity = final_equity * ownership;
+            let profit = gross_equity - investor.deposit;
+            let taxable_profit = (profit - investor.tax_threshold).max(0.0);
+            let tax = taxable_profit * investor.tax_rate;
+            let referrer_rebate = tax * investor.referrer_rebate_rate;
+
+            FundInvestorSettlement {
+                name: investor.name,
+                referrer: investor.referrer,
+                deposit: investor.deposit,
+                units: investor.units,
+                ownership,
+                gross_equity,
+                profit,
+                tax_threshold: investor.tax_threshold,
+                tax_rate: investor.tax_rate,
+                tax,
+                referrer_rebate_rate: investor.referrer_rebate_rate,
+                referrer_rebate,
+                net_equity: gross_equity - tax,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    rows.sort_by(|left, right| {
+        right
+            .gross_equity
+            .total_cmp(&left.gross_equity)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+
+    FundSettlementPreview {
+        fund_id,
+        latest_equity,
+        total_deposit,
+        total_units,
+        total_tax: rows.iter().map(|item| item.tax).sum(),
+        total_referrer_rebate: rows.iter().map(|item| item.referrer_rebate).sum(),
+        investors: rows,
+    }
+}
+
 fn validate_fund_request(request: &CreateFundRequest) -> Result<(), AppError> {
     if request.name.trim().is_empty() {
         return Err(AppError::bad_request("missing fund name"));
@@ -520,6 +736,68 @@ mod tests {
         assert_eq!(valuation.equity, 75.0);
         assert_eq!(valuation.positions_count, 2);
         assert_eq!(valuation.unpriced_positions, 0);
+    }
+
+    #[test]
+    fn previews_settlement_with_nav_issued_units_and_tax() {
+        let preview = build_settlement_preview(
+            "fund".to_string(),
+            vec![
+                SettlementOrder {
+                    investor_name: "Alice".to_string(),
+                    deposit: 100.0,
+                    updated_at: "2025-01-01T00:00:00+00:00".to_string(),
+                },
+                SettlementOrder {
+                    investor_name: "Bob".to_string(),
+                    deposit: 120.0,
+                    updated_at: "2025-01-02T00:00:00+00:00".to_string(),
+                },
+            ],
+            vec![
+                FundStatementEquity {
+                    event_index: 1,
+                    equity: 100.0,
+                    updated_at: "2025-01-01T12:00:00+00:00".to_string(),
+                },
+                FundStatementEquity {
+                    event_index: 2,
+                    equity: 240.0,
+                    updated_at: "2025-01-03T00:00:00+00:00".to_string(),
+                },
+            ],
+            vec![FundStatementInvestor {
+                name: "Bob".to_string(),
+                referrer: Some("Alice".to_string()),
+                tax_rate: Some(0.2),
+                referrer_rebate_rate: Some(0.25),
+                tax_threshold: Some(10.0),
+                updated_at: "2025-01-02T00:00:00+00:00".to_string(),
+                source_event_index: 2,
+            }],
+        );
+
+        let alice = preview
+            .investors
+            .iter()
+            .find(|item| item.name == "Alice")
+            .unwrap();
+        let bob = preview
+            .investors
+            .iter()
+            .find(|item| item.name == "Bob")
+            .unwrap();
+
+        assert_close(preview.total_units, 220.0);
+        assert_close(alice.gross_equity, 240.0 * 100.0 / 220.0);
+        assert_close(bob.gross_equity, 240.0 * 120.0 / 220.0);
+        assert_close(bob.tax, (bob.profit - 10.0) * 0.2);
+        assert_close(bob.referrer_rebate, bob.tax * 0.25);
+        assert_close(bob.net_equity, bob.gross_equity - bob.tax);
+    }
+
+    fn assert_close(left: f64, right: f64) {
+        assert!((left - right).abs() < 1e-9, "{left} != {right}");
     }
 
     #[test]

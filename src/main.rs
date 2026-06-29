@@ -130,6 +130,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/funds/sample", post(funds::sample_fund_now))
         .route("/fund-nav", get(funds::list_fund_nav))
         .route("/fund-statements", get(funds::get_fund_statement_summary))
+        .route(
+            "/fund-settlement-preview",
+            get(funds::get_fund_settlement_preview),
+        )
         .route("/trades", get(list_trades))
         .route("/rates", get(list_rates))
         .route("/rates/convert", get(convert_rate))
