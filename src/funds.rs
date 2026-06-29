@@ -94,6 +94,7 @@ pub struct FundStatementSummary {
     investors: Vec<FundStatementInvestor>,
     recent_orders: Vec<FundStatementOrder>,
     latest_equity: Option<FundStatementEquity>,
+    reconciliation: Option<FundEquityReconciliation>,
     tax_modes: Vec<FundStatementTaxMode>,
 }
 
@@ -139,6 +140,16 @@ pub struct FundStatementTaxMode {
     mode: String,
     comment: Option<String>,
     updated_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FundEquityReconciliation {
+    legacy_equity: f64,
+    legacy_updated_at: String,
+    nav_equity: f64,
+    nav_created_at: String,
+    delta: f64,
+    delta_rate: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -434,6 +445,23 @@ pub async fn get_fund_statement_summary(
     .bind(&query.fund_id)
     .fetch_optional(&state.db)
     .await?;
+    let latest_nav = sqlx::query_as::<_, FundNavSnapshot>(
+        r#"
+        SELECT id, fund_id, account_id, equity, target_currency, positions_count,
+               unpriced_positions, created_at
+        FROM fund_nav_snapshots
+        WHERE fund_id = ?1
+        ORDER BY created_at DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(&query.fund_id)
+    .fetch_optional(&state.db)
+    .await?;
+    let reconciliation = latest_equity
+        .as_ref()
+        .zip(latest_nav.as_ref())
+        .map(|(legacy, nav)| reconcile_fund_equity(legacy, nav));
 
     let tax_modes = sqlx::query_as::<_, FundStatementTaxMode>(
         r#"
@@ -459,6 +487,7 @@ pub async fn get_fund_statement_summary(
         investors,
         recent_orders,
         latest_equity,
+        reconciliation,
         tax_modes,
     }))
 }
@@ -1059,6 +1088,27 @@ fn build_settlement_preview(
     }
 }
 
+fn reconcile_fund_equity(
+    legacy: &FundStatementEquity,
+    nav: &FundNavSnapshot,
+) -> FundEquityReconciliation {
+    let delta = nav.equity - legacy.equity;
+    let delta_rate = if legacy.equity != 0.0 {
+        Some(delta / legacy.equity)
+    } else {
+        None
+    };
+
+    FundEquityReconciliation {
+        legacy_equity: legacy.equity,
+        legacy_updated_at: legacy.updated_at.clone(),
+        nav_equity: nav.equity,
+        nav_created_at: nav.created_at.clone(),
+        delta,
+        delta_rate,
+    }
+}
+
 fn settlement_run_csv(detail: &FundSettlementRunDetail) -> String {
     let mut rows = vec![
         vec![
@@ -1337,6 +1387,30 @@ mod tests {
         assert_close(rows[0].tax, 5.0);
         assert_eq!(rows[1].investor, "Alice");
         assert_close(rows[1].tax, 2.0);
+    }
+
+    #[test]
+    fn reconciles_legacy_equity_with_latest_nav() {
+        let reconciliation = reconcile_fund_equity(
+            &FundStatementEquity {
+                event_index: 1,
+                equity: 100.0,
+                updated_at: "2025-01-01T00:00:00+00:00".to_string(),
+            },
+            &FundNavSnapshot {
+                id: "nav".to_string(),
+                fund_id: "fund".to_string(),
+                account_id: "virtual/fund".to_string(),
+                equity: 112.5,
+                target_currency: "USD".to_string(),
+                positions_count: 1,
+                unpriced_positions: 0,
+                created_at: "2025-01-02T00:00:00+00:00".to_string(),
+            },
+        );
+
+        assert_close(reconciliation.delta, 12.5);
+        assert_eq!(reconciliation.delta_rate, Some(0.125));
     }
 
     fn investor_rebate(

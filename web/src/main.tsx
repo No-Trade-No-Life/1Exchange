@@ -217,6 +217,7 @@ type FundStatementSummary = {
   investors: FundStatementInvestor[];
   recent_orders: FundStatementOrder[];
   latest_equity: FundStatementEquity | null;
+  reconciliation: FundEquityReconciliation | null;
   tax_modes: FundStatementTaxMode[];
 };
 
@@ -257,6 +258,15 @@ type FundStatementTaxMode = {
   mode: string;
   comment: string | null;
   updated_at: string;
+};
+
+type FundEquityReconciliation = {
+  legacy_equity: number;
+  legacy_updated_at: string;
+  nav_equity: number;
+  nav_created_at: string;
+  delta: number;
+  delta_rate: number | null;
 };
 
 type FundSettlementPreview = {
@@ -1563,6 +1573,22 @@ function FundDetailPage(props: {
         <Metric label="Deposits" value={statement ? formatNumber(statement.totals.order_deposit) : '-'} />
         <Metric label="Legacy equity" value={statement?.latest_equity ? formatNumber(statement.latest_equity.equity) : '-'} />
         <Metric label="Tax modes" value={statement ? statement.totals.tax_modes.toString() : '-'} />
+      </section>
+
+      <section className="metrics-grid compact" aria-label="Fund equity reconciliation">
+        <Metric label="NAV equity" value={statement?.reconciliation ? formatNumber(statement.reconciliation.nav_equity) : '-'} />
+        <Metric
+          label="NAV delta"
+          value={statement?.reconciliation ? formatNumber(statement.reconciliation.delta) : '-'}
+          tone={statement?.reconciliation && Math.abs(statement.reconciliation.delta) > 0.01 ? 'warn' : 'neutral'}
+        />
+        <Metric
+          label="NAV delta rate"
+          value={statement?.reconciliation?.delta_rate == null ? '-' : formatPercent(statement.reconciliation.delta_rate)}
+          tone={statement?.reconciliation?.delta_rate && Math.abs(statement.reconciliation.delta_rate) > 0.0001 ? 'warn' : 'neutral'}
+        />
+        <Metric label="Legacy time" value={statement?.reconciliation ? formatDate(statement.reconciliation.legacy_updated_at) : '-'} />
+        <Metric label="NAV time" value={statement?.reconciliation ? formatDate(statement.reconciliation.nav_created_at) : '-'} />
       </section>
 
       <section className="metrics-grid compact" aria-label="Fund settlement preview">
