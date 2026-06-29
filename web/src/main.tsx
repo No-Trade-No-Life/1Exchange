@@ -30,7 +30,6 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { cn } from '@/lib/utils';
 import {
   BadgeCheck,
-  BarChart3,
   Ban,
   ChevronDown,
   CircleCheck,
@@ -459,7 +458,7 @@ type BatchLoadState = {
   total: number;
 };
 
-type Page = 'overview' | 'accounts' | 'history' | 'funds' | 'positions' | 'products' | 'exchanges';
+type Page = 'overview' | 'accounts' | 'history' | 'funds' | 'products' | 'exchanges';
 type PageConfig = { id: Page; label: string; hint: string; path: string; icon: LucideIcon; primary?: boolean };
 
 const pages: PageConfig[] = [
@@ -467,7 +466,6 @@ const pages: PageConfig[] = [
   { id: 'accounts', label: 'Accounts', hint: 'Account identities and detail', path: '/accounts', icon: WalletCards, primary: true },
   { id: 'history', label: 'Audit', hint: 'Read-only fill history', path: '/history', icon: History },
   { id: 'funds', label: 'Funds', hint: 'Account equity allocation', path: '/funds', icon: LineChart, primary: true },
-  { id: 'positions', label: 'Positions', hint: 'Assets and open exposure', path: '/positions', icon: BarChart3, primary: true },
   { id: 'products', label: 'Products', hint: 'Exchange product specs', path: '/products', icon: PackageSearch },
   { id: 'exchanges', label: 'Exchanges', hint: 'Schemas and capabilities', path: '/exchanges', icon: BadgeCheck },
 ];
@@ -578,7 +576,7 @@ function App() {
           <Route path="/funds" element={<PageBoundary><FundsRoute /></PageBoundary>} />
           <Route path="/funds/detail" element={<PageBoundary><FundDetailRoute /></PageBoundary>} />
           <Route path="/funds/settlement" element={<PageBoundary><SettlementReportRoute /></PageBoundary>} />
-          <Route path="/positions" element={<PageBoundary><PositionsRoute /></PageBoundary>} />
+          <Route path="/positions" element={<Navigate replace to="/accounts/detail" />} />
           <Route path="/products" element={<PageBoundary><ProductsRoute /></PageBoundary>} />
           <Route path="/exchanges" element={<PageBoundary><ExchangesRoute /></PageBoundary>} />
           <Route path="*" element={<Navigate replace to="/overview" />} />
@@ -832,12 +830,19 @@ function AccountDetailRoute() {
   const [params] = useSearchParams();
   const accountId = params.get('account_id') ?? '';
   const rates = useJson<CurrencyRateSnapshot>('/api/rates?target=USD');
+  const credentials = useJson<Credential[]>('/api/credentials');
+  const accountRefs = useJson<AccountRef[]>('/api/account-refs');
+  const virtualAccounts = useJson<VirtualAccountConfig[]>('/api/virtual-accounts');
   const account = useJson<AccountInfo[]>(accountId ? `/api/accounts?account_id=${encodeURIComponent(accountId)}` : null);
   const accounts = (account.data ?? []).map(accountInfoToAccountSnapshot);
+  const accountOptions = [
+    ...credentialAccounts(credentials.data ?? emptyCredentials, accountRefs.data ?? []),
+    ...virtualAccountSnapshots(virtualAccounts.data ?? emptyVirtualAccountConfigs),
+  ];
 
   return (
-    <RefreshScope resources={[rates, account]}>
-      <AccountDetailPage accounts={accounts} loading={account.loading} rateEdges={rates.data?.edges ?? []} />
+    <RefreshScope resources={[rates, credentials, accountRefs, virtualAccounts, account]}>
+      <AccountDetailPage accountOptions={accountOptions} accounts={accounts} loading={account.loading} rateEdges={rates.data?.edges ?? []} />
     </RefreshScope>
   );
 }
@@ -910,39 +915,6 @@ function SettlementReportRoute() {
   return (
     <RefreshScope resources={[detail]}>
       <SettlementReportPage detail={detail.data ?? null} error={detail.error} loading={detail.loading} runId={runId} />
-    </RefreshScope>
-  );
-}
-
-function PositionsRoute() {
-  const credentials = useJson<Credential[]>('/api/credentials');
-  const accountRefs = useJson<AccountRef[]>('/api/account-refs');
-  const credentialList = credentials.data ?? emptyCredentials;
-  const accountIds = useMemo(
-    () => accountIdsFromRefs(accountRefs.data ?? []),
-    [accountRefs.data],
-  );
-  const [selectedCredentialId, setSelectedCredentialId] = useState('');
-  const positions = useJson<Position[]>(selectedCredentialId ? `/api/positions?credential_id=${encodeURIComponent(selectedCredentialId)}` : null);
-
-  useEffect(() => {
-    if (!selectedCredentialId && credentialList[0]) {
-      setSelectedCredentialId(credentialList[0].id);
-    }
-  }, [credentialList, selectedCredentialId]);
-
-  return (
-    <RefreshScope resources={[credentials, accountRefs, positions]}>
-      <PositionsPage
-        accountIds={accountIds}
-        credentials={credentialList}
-        error={selectedCredentialId ? positions.error : null}
-        exposure={summarizePositions(positions.data ?? [])}
-        loading={selectedCredentialId ? positions.loading : false}
-        positions={selectedCredentialId ? positions.data ?? [] : []}
-        selectedCredentialId={selectedCredentialId}
-        onSelectCredential={setSelectedCredentialId}
-      />
     </RefreshScope>
   );
 }
@@ -1201,8 +1173,8 @@ function CustomAccountSourceInventory(props: { sources: CustomAccountSource[] })
   );
 }
 
-function AccountDetailPage(props: { accounts: AccountSnapshot[]; loading: boolean; rateEdges: CurrencyRateEdge[] }) {
-  const [params] = useSearchParams();
+function AccountDetailPage(props: { accountOptions: AccountSnapshot[]; accounts: AccountSnapshot[]; loading: boolean; rateEdges: CurrencyRateEdge[] }) {
+  const [params, setParams] = useSearchParams();
   const accountId = params.get('account_id') ?? '';
   const account = props.accounts.find((item) => item.accountId === accountId);
   const positions = account?.positions ?? [];
@@ -1210,25 +1182,47 @@ function AccountDetailPage(props: { accounts: AccountSnapshot[]; loading: boolea
   const assetRows = summarizeAccountAssets(positions);
   const usdValue = convertCurrencyTotals(summary.equityByCurrency, 'USD', props.rateEdges);
 
+  function selectAccount(nextAccountId: string) {
+    setParams(nextAccountId ? { account_id: nextAccountId } : {});
+  }
+
+  const header = (
+    <section className="panel account-detail-head">
+      <div>
+        <p className="section-label">Account detail</p>
+        <h2>{accountId ? <code>{accountId}</code> : 'Select an account'}</h2>
+      </div>
+      <div className="account-detail-actions">
+        <AccountSelector accountId={accountId} accounts={props.accountOptions} onSelectAccount={selectAccount} />
+        <Link className="secondary-link" to="/accounts">Back to accounts</Link>
+      </div>
+    </section>
+  );
+
   if (!accountId) {
-    return <AccountDetailEmpty title="Select an account" message="Open the Accounts page and choose an AccountID to inspect positions and metadata." />;
+    return (
+      <div className="page-stack">
+        {header}
+        <AccountDetailEmpty title="Select an account" message="Choose an AccountID above to inspect positions and metadata." />
+      </div>
+    );
   }
 
   if (!account) {
-    return props.loading
+    const empty = props.loading
       ? <AccountDetailEmpty title="Loading account" message="Account data is loading from saved credentials." />
       : <AccountDetailEmpty title="Account not found" message="This AccountID is not available in the current credential registry." />;
+    return (
+      <div className="page-stack">
+        {header}
+        {empty}
+      </div>
+    );
   }
 
   return (
     <div className="page-stack">
-      <section className="panel account-detail-head">
-        <div>
-          <p className="section-label">Account detail</p>
-          <h2><code>{account.accountId}</code></h2>
-        </div>
-        <Link className="secondary-link" to="/accounts">Back to accounts</Link>
-      </section>
+      {header}
 
       <section className="metrics-grid compact" aria-label="Account detail summary">
         <Metric label="Positions" value={summary.total.toString()} />
@@ -1309,13 +1303,28 @@ function AccountDetailPage(props: { accounts: AccountSnapshot[]; loading: boolea
   );
 }
 
+function AccountSelector(props: { accountId: string; accounts: AccountSnapshot[]; onSelectAccount: (value: string) => void }) {
+  return (
+    <label className="account-selector">
+      Account ID
+      <select value={props.accountId} onChange={(event) => props.onSelectAccount(event.target.value)}>
+        <option value="">Select account</option>
+        {props.accounts.map((account) => (
+          <option key={account.accountId} value={account.accountId}>
+            {account.accountId} · {account.credential.name}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 function AccountDetailEmpty(props: { title: string; message: string }) {
   return (
     <section className="panel empty-detail">
       <p className="section-label">Account detail</p>
       <h2>{props.title}</h2>
       <p className="muted">{props.message}</p>
-      <Link className="secondary-link" to="/accounts">Open Accounts</Link>
     </section>
   );
 }
@@ -2446,72 +2455,6 @@ function CredentialInventory(props: { accountIds: AccountIds; credentials: Crede
   );
 }
 
-function PositionsPage(props: {
-  accountIds: AccountIds;
-  credentials: Credential[];
-  error: string | null;
-  exposure: { total: number; long: number; short: number; assets: number };
-  loading: boolean;
-  positions: Position[];
-  selectedCredentialId: string;
-  onSelectCredential: (value: string) => void;
-}) {
-  return (
-    <div className="page-stack">
-      <section className="toolbar-panel">
-        <label>
-          Credential
-          <select value={props.selectedCredentialId} onChange={(event) => props.onSelectCredential(event.target.value)}>
-            <option value="">Select credential</option>
-            {props.credentials.map((credential) => (
-              <option key={credential.id} value={credential.id}>
-                {accountLabel(credential, props.accountIds)}
-              </option>
-            ))}
-          </select>
-        </label>
-      </section>
-
-      <section className="metrics-grid compact" aria-label="Position summary">
-        <Metric label="Rows" value={props.exposure.total.toString()} />
-        <Metric label="Assets" value={props.exposure.assets.toString()} />
-        <Metric label="Long" value={props.exposure.long.toString()} tone="good" />
-        <Metric label="Short" value={props.exposure.short.toString()} tone="warn" />
-      </section>
-
-      <section className="panel">
-        <div className="panel-heading">
-          <div>
-            <p className="section-label">Live read</p>
-            <h2>Positions</h2>
-          </div>
-          <LoadingStatus active={props.loading} label={props.loading ? 'Loading' : `${props.positions.length} rows`} />
-        </div>
-        <InlineError message={props.error} />
-        <DataTable
-          empty="Select a credential to load positions. If a request fails, check API permissions on the exchange key."
-          headers={['Position', 'Product', 'Base', 'Quote', 'Settle', 'Side', 'Volume', 'Free', 'Entry', 'Mark', 'Equity', 'Exposure', 'P/L']}
-          rows={props.positions.map((item) => [
-            item.position_id,
-            <code key="product">{item.product_id}</code>,
-            item.base_currency ?? '-',
-            item.quote_currency ?? '-',
-            settlementCurrency(item),
-            item.direction ? <Badge key="direction">{item.direction}</Badge> : 'Asset',
-            formatNumber(item.volume),
-            formatNumber(item.free_volume),
-            formatNumber(item.position_price),
-            formatNumber(item.closable_price),
-            formatPositionEquity(item),
-            formatPositionExposure(item),
-            <Value key="pnl" value={item.floating_profit} />,
-          ])}
-        />
-      </section>
-    </div>
-  );
-}
-
 function ProductsPage(props: {
   error: string | null;
   exchanges: ExchangeInfo[];
@@ -2838,18 +2781,6 @@ function setSourceAt(
 
 function isSecretCredentialField(field: string) {
   return ['secret', 'key', 'passphrase', 'private', 'signer'].some((part) => field.includes(part));
-}
-
-function summarizePositions(positions: Position[]) {
-  return positions.reduce(
-    (summary, item) => ({
-      total: summary.total + 1,
-      assets: summary.assets + (item.direction ? 0 : 1),
-      long: summary.long + (item.direction === 'LONG' ? 1 : 0),
-      short: summary.short + (item.direction === 'SHORT' ? 1 : 0),
-    }),
-    { total: 0, assets: 0, long: 0, short: 0 },
-  );
 }
 
 function summarizeAccountPositions(positions: Position[]) {
