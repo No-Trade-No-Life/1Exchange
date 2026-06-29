@@ -156,6 +156,7 @@ pub struct FundEquityReconciliation {
 pub struct FundSettlementPreview {
     fund_id: String,
     latest_equity: Option<FundStatementEquity>,
+    basis: Option<FundSettlementBasis>,
     total_deposit: f64,
     total_units: f64,
     total_tax: f64,
@@ -190,6 +191,9 @@ pub struct FundSettlementRun {
     equity_event_index: i64,
     equity: f64,
     equity_updated_at: String,
+    basis_source: String,
+    basis_id: String,
+    basis_updated_at: String,
     total_deposit: f64,
     total_units: f64,
     total_tax: f64,
@@ -216,6 +220,14 @@ pub struct FundSettlementTotals {
     tax: f64,
     referrer_rebate: f64,
     retained_tax: f64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct FundSettlementBasis {
+    source: String,
+    id: String,
+    equity: f64,
+    updated_at: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -524,6 +536,7 @@ pub async fn list_fund_settlement_runs(
         sqlx::query_as::<_, FundSettlementRun>(
             r#"
             SELECT id, fund_id, equity_event_index, equity, equity_updated_at,
+                   basis_source, basis_id, basis_updated_at,
                    total_deposit, total_units, total_tax, total_referrer_rebate,
                    investor_count, status, status_updated_at, created_at
             FROM fund_settlement_runs
@@ -575,6 +588,7 @@ async fn get_fund_settlement_run_detail_by_id(
     let run = sqlx::query_as::<_, FundSettlementRun>(
         r#"
         SELECT id, fund_id, equity_event_index, equity, equity_updated_at,
+               basis_source, basis_id, basis_updated_at,
                total_deposit, total_units, total_tax, total_referrer_rebate,
                investor_count, status, status_updated_at, created_at
         FROM fund_settlement_runs
@@ -623,6 +637,10 @@ pub async fn create_fund_settlement_run(
         .latest_equity
         .as_ref()
         .ok_or_else(|| AppError::bad_request("fund settlement requires legacy equity history"))?;
+    let basis = preview
+        .basis
+        .as_ref()
+        .ok_or_else(|| AppError::bad_request("fund settlement requires an equity basis"))?;
     let run_id = Uuid::new_v4().to_string();
     let created_at = Utc::now().to_rfc3339();
     let mut tx = state.db.begin().await?;
@@ -631,17 +649,21 @@ pub async fn create_fund_settlement_run(
         r#"
         INSERT INTO fund_settlement_runs (
             id, fund_id, equity_event_index, equity, equity_updated_at,
+            basis_source, basis_id, basis_updated_at,
             total_deposit, total_units, total_tax, total_referrer_rebate,
             investor_count, status, status_updated_at, created_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'draft', ?11, ?12)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'draft', ?14, ?15)
         "#,
     )
     .bind(&run_id)
     .bind(&preview.fund_id)
     .bind(equity.event_index)
-    .bind(equity.equity)
-    .bind(&equity.updated_at)
+    .bind(basis.equity)
+    .bind(&basis.updated_at)
+    .bind(&basis.source)
+    .bind(&basis.id)
+    .bind(&basis.updated_at)
     .bind(preview.total_deposit)
     .bind(preview.total_units)
     .bind(preview.total_tax)
@@ -693,8 +715,11 @@ pub async fn create_fund_settlement_run(
                 id: run_id,
                 fund_id: preview.fund_id,
                 equity_event_index: equity.event_index,
-                equity: equity.equity,
-                equity_updated_at: equity.updated_at.clone(),
+                equity: basis.equity,
+                equity_updated_at: basis.updated_at.clone(),
+                basis_source: basis.source.clone(),
+                basis_id: basis.id.clone(),
+                basis_updated_at: basis.updated_at.clone(),
                 total_deposit: preview.total_deposit,
                 total_units: preview.total_units,
                 total_tax: preview.total_tax,
@@ -772,7 +797,8 @@ async fn confirm_fund_settlement_run_status(db: &SqlitePool, run_id: &str) -> Re
               SELECT 1
               FROM fund_settlement_runs confirmed
               WHERE confirmed.fund_id = fund_settlement_runs.fund_id
-                AND confirmed.equity_event_index = fund_settlement_runs.equity_event_index
+                AND confirmed.basis_source = fund_settlement_runs.basis_source
+                AND confirmed.basis_id = fund_settlement_runs.basis_id
                 AND confirmed.status = 'confirmed'
           )
         "#,
@@ -830,12 +856,26 @@ async fn load_fund_settlement_preview(
     .bind(&fund_id)
     .fetch_all(db)
     .await?;
+    let latest_nav = sqlx::query_as::<_, FundNavSnapshot>(
+        r#"
+        SELECT id, fund_id, account_id, equity, target_currency, positions_count,
+               unpriced_positions, created_at
+        FROM fund_nav_snapshots
+        WHERE fund_id = ?1
+        ORDER BY created_at DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(&fund_id)
+    .fetch_optional(db)
+    .await?;
 
     Ok(build_settlement_preview(
         fund_id,
         orders,
         equity_points,
         investors,
+        latest_nav,
     ))
 }
 
@@ -1000,12 +1040,11 @@ fn build_settlement_preview(
     orders: Vec<SettlementOrder>,
     equity_points: Vec<FundStatementEquity>,
     investor_settings: Vec<FundStatementInvestor>,
+    latest_nav: Option<FundNavSnapshot>,
 ) -> FundSettlementPreview {
     let latest_equity = equity_points.last().cloned();
-    let final_equity = latest_equity
-        .as_ref()
-        .map(|item| item.equity)
-        .unwrap_or(0.0);
+    let basis = settlement_basis(latest_equity.as_ref(), latest_nav.as_ref());
+    let final_equity = basis.as_ref().map(|item| item.equity).unwrap_or(0.0);
     let mut investors = investor_settings
         .into_iter()
         .map(|item| {
@@ -1100,6 +1139,7 @@ fn build_settlement_preview(
     FundSettlementPreview {
         fund_id,
         latest_equity,
+        basis,
         total_deposit,
         total_units,
         total_tax: rows.iter().map(|item| item.tax).sum(),
@@ -1132,6 +1172,27 @@ fn reconcile_fund_equity(
     }
 }
 
+fn settlement_basis(
+    legacy: Option<&FundStatementEquity>,
+    nav: Option<&FundNavSnapshot>,
+) -> Option<FundSettlementBasis> {
+    if let Some(nav) = nav {
+        return Some(FundSettlementBasis {
+            source: "live_nav".to_string(),
+            id: nav.id.clone(),
+            equity: nav.equity,
+            updated_at: nav.created_at.clone(),
+        });
+    }
+
+    legacy.map(|item| FundSettlementBasis {
+        source: "legacy_statement".to_string(),
+        id: item.event_index.to_string(),
+        equity: item.equity,
+        updated_at: item.updated_at.clone(),
+    })
+}
+
 fn settlement_run_csv(detail: &FundSettlementRunDetail) -> String {
     let mut rows = vec![
         vec![
@@ -1143,6 +1204,10 @@ fn settlement_run_csv(detail: &FundSettlementRunDetail) -> String {
             detail.run.status.clone(),
             "status_updated_at".to_string(),
             detail.run.status_updated_at.clone().unwrap_or_default(),
+            "basis_source".to_string(),
+            detail.run.basis_source.clone(),
+            "basis_id".to_string(),
+            detail.run.basis_id.clone(),
         ],
         vec![
             "equity".to_string(),
@@ -1377,6 +1442,7 @@ mod tests {
                 updated_at: "2025-01-02T00:00:00+00:00".to_string(),
                 source_event_index: 2,
             }],
+            None,
         );
 
         let alice = preview
@@ -1391,11 +1457,49 @@ mod tests {
             .unwrap();
 
         assert_close(preview.total_units, 220.0);
+        assert_eq!(
+            preview.basis.as_ref().map(|item| item.source.as_str()),
+            Some("legacy_statement")
+        );
         assert_close(alice.gross_equity, 240.0 * 100.0 / 220.0);
         assert_close(bob.gross_equity, 240.0 * 120.0 / 220.0);
         assert_close(bob.tax, (bob.profit - 10.0) * 0.2);
         assert_close(bob.referrer_rebate, bob.tax * 0.25);
         assert_close(bob.net_equity, bob.gross_equity - bob.tax);
+    }
+
+    #[test]
+    fn previews_settlement_against_latest_live_nav_basis() {
+        let preview = build_settlement_preview(
+            "fund".to_string(),
+            vec![SettlementOrder {
+                investor_name: "Alice".to_string(),
+                deposit: 100.0,
+                updated_at: "2025-01-01T00:00:00+00:00".to_string(),
+            }],
+            vec![FundStatementEquity {
+                event_index: 1,
+                equity: 100.0,
+                updated_at: "2025-01-01T12:00:00+00:00".to_string(),
+            }],
+            Vec::new(),
+            Some(FundNavSnapshot {
+                id: "nav-1".to_string(),
+                fund_id: "fund".to_string(),
+                account_id: "virtual/fund".to_string(),
+                equity: 125.0,
+                target_currency: "USD".to_string(),
+                positions_count: 1,
+                unpriced_positions: 0,
+                created_at: "2025-01-02T00:00:00+00:00".to_string(),
+            }),
+        );
+
+        assert_eq!(
+            preview.basis.as_ref().map(|item| item.source.as_str()),
+            Some("live_nav")
+        );
+        assert_close(preview.totals.gross_equity, 125.0);
     }
 
     #[test]

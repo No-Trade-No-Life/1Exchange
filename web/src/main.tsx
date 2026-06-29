@@ -272,6 +272,7 @@ type FundEquityReconciliation = {
 type FundSettlementPreview = {
   fund_id: string;
   latest_equity: FundStatementEquity | null;
+  basis: FundSettlementBasis | null;
   total_deposit: number;
   total_units: number;
   total_tax: number;
@@ -304,6 +305,9 @@ type FundSettlementRun = {
   equity_event_index: number;
   equity: number;
   equity_updated_at: string;
+  basis_source: string;
+  basis_id: string;
+  basis_updated_at: string;
   total_deposit: number;
   total_units: number;
   total_tax: number;
@@ -328,6 +332,13 @@ type FundSettlementTotals = {
   tax: number;
   referrer_rebate: number;
   retained_tax: number;
+};
+
+type FundSettlementBasis = {
+  source: string;
+  id: string;
+  equity: number;
+  updated_at: string;
 };
 
 type FundInvestorTax = {
@@ -1603,6 +1614,8 @@ function FundDetailPage(props: {
       </section>
 
       <section className="metrics-grid compact" aria-label="Fund settlement preview">
+        <Metric label="Basis" value={settlement?.basis ? settlementBasisLabel(settlement.basis.source) : '-'} />
+        <Metric label="Basis time" value={settlement?.basis ? formatDate(settlement.basis.updated_at) : '-'} />
         <Metric label="Issued units" value={settlement ? formatNumber(settlement.total_units) : '-'} />
         <Metric label="Total deposit" value={settlement ? formatNumber(settlement.total_deposit) : '-'} />
         <Metric label="Gross equity" value={settlement ? formatNumber(settlement.totals.gross_equity) : '-'} />
@@ -1688,11 +1701,12 @@ function FundDetailPage(props: {
         <InlineError message={settlementRunError ?? props.settlementRunsError} />
         <DataTable
           empty="No settlement runs have been created yet."
-          headers={['Created', 'Status', 'Status time', 'Equity', 'Investors', 'Deposit', 'Tax', 'Rebate', 'Run ID', 'Action']}
+          headers={['Created', 'Status', 'Status time', 'Basis', 'Equity', 'Investors', 'Deposit', 'Tax', 'Rebate', 'Run ID', 'Action']}
           rows={props.settlementRuns.map((run) => [
             formatDate(run.created_at),
             <UiBadge key="status" variant={run.status === 'confirmed' ? 'default' : 'secondary'}>{run.status}</UiBadge>,
             run.status_updated_at ? formatDate(run.status_updated_at) : '-',
+            settlementBasisLabel(run.basis_source),
             formatNumber(run.equity),
             run.investor_count.toString(),
             formatNumber(run.total_deposit),
@@ -1853,6 +1867,8 @@ function SettlementRunDetailDialog(props: {
             <section className="metrics-grid compact" aria-label="Settlement run detail summary">
               <Metric label="Status" value={run.status} />
               <Metric label="Status time" value={formatDate(run.status_updated_at ?? run.created_at)} />
+              <Metric label="Basis" value={settlementBasisLabel(run.basis_source)} />
+              <Metric label="Basis time" value={formatDate(run.basis_updated_at)} />
               <Metric label="Equity" value={formatNumber(run.equity)} />
               <Metric label="Investors" value={run.investor_count.toString()} />
               <Metric label="Gross equity" value={detail.data ? formatNumber(detail.data.totals.gross_equity) : '-'} />
@@ -2374,6 +2390,16 @@ function sourceTypeLabel(sourceType: AccountSourceType) {
     return 'Virtual account';
   }
   return 'Custom account source';
+}
+
+function settlementBasisLabel(source: string) {
+  if (source === 'live_nav') {
+    return 'Live NAV';
+  }
+  if (source === 'legacy_statement') {
+    return 'Legacy statement';
+  }
+  return source;
 }
 
 function scrollToAccountSource(sourceType: AccountSourceType) {

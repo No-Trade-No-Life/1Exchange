@@ -508,6 +508,9 @@ async fn migrate(db: &SqlitePool) -> anyhow::Result<()> {
             equity_event_index INTEGER NOT NULL,
             equity REAL NOT NULL,
             equity_updated_at TEXT NOT NULL,
+            basis_source TEXT NOT NULL DEFAULT 'legacy_statement',
+            basis_id TEXT,
+            basis_updated_at TEXT,
             total_deposit REAL NOT NULL,
             total_units REAL NOT NULL,
             total_tax REAL NOT NULL,
@@ -537,6 +540,54 @@ async fn migrate(db: &SqlitePool) -> anyhow::Result<()> {
     )
     .execute(db)
     .await?;
+    ensure_column(
+        db,
+        "fund_settlement_runs",
+        "basis_source",
+        "ALTER TABLE fund_settlement_runs ADD COLUMN basis_source TEXT",
+    )
+    .await?;
+    ensure_column(
+        db,
+        "fund_settlement_runs",
+        "basis_id",
+        "ALTER TABLE fund_settlement_runs ADD COLUMN basis_id TEXT",
+    )
+    .await?;
+    ensure_column(
+        db,
+        "fund_settlement_runs",
+        "basis_updated_at",
+        "ALTER TABLE fund_settlement_runs ADD COLUMN basis_updated_at TEXT",
+    )
+    .await?;
+    sqlx::query(
+        r#"
+        UPDATE fund_settlement_runs
+        SET basis_source = 'legacy_statement'
+        WHERE basis_source IS NULL OR basis_source = ''
+        "#,
+    )
+    .execute(db)
+    .await?;
+    sqlx::query(
+        r#"
+        UPDATE fund_settlement_runs
+        SET basis_id = CAST(equity_event_index AS TEXT)
+        WHERE basis_id IS NULL OR basis_id = ''
+        "#,
+    )
+    .execute(db)
+    .await?;
+    sqlx::query(
+        r#"
+        UPDATE fund_settlement_runs
+        SET basis_updated_at = equity_updated_at
+        WHERE basis_updated_at IS NULL OR basis_updated_at = ''
+        "#,
+    )
+    .execute(db)
+    .await?;
 
     sqlx::query(
         r#"
@@ -547,10 +598,14 @@ async fn migrate(db: &SqlitePool) -> anyhow::Result<()> {
     .execute(db)
     .await?;
 
+    sqlx::query("DROP INDEX IF EXISTS idx_fund_settlement_runs_one_confirmed")
+        .execute(db)
+        .await?;
+
     sqlx::query(
         r#"
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_fund_settlement_runs_one_confirmed
-        ON fund_settlement_runs (fund_id, equity_event_index)
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_fund_settlement_runs_one_confirmed_basis
+        ON fund_settlement_runs (fund_id, basis_source, basis_id)
         WHERE status = 'confirmed'
         "#,
     )
