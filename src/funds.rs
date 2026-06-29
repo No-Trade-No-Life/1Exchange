@@ -160,6 +160,7 @@ pub struct FundSettlementPreview {
     total_units: f64,
     total_tax: f64,
     total_referrer_rebate: f64,
+    totals: FundSettlementTotals,
     investor_taxes: Vec<FundInvestorTax>,
     referrer_rebates: Vec<FundReferrerRebate>,
     investors: Vec<FundInvestorSettlement>,
@@ -202,8 +203,18 @@ pub struct FundSettlementRun {
 pub struct FundSettlementRunDetail {
     run: FundSettlementRun,
     investors: Vec<FundInvestorSettlement>,
+    totals: FundSettlementTotals,
     investor_taxes: Vec<FundInvestorTax>,
     referrer_rebates: Vec<FundReferrerRebate>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FundSettlementTotals {
+    gross_equity: f64,
+    net_equity: f64,
+    tax: f64,
+    referrer_rebate: f64,
+    retained_tax: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -588,12 +599,14 @@ async fn get_fund_settlement_run_detail_by_id(
     .into_iter()
     .map(FundInvestorSettlement::from)
     .collect::<Vec<_>>();
+    let totals = summarize_settlement_totals(&investors);
     let investor_taxes = summarize_investor_taxes(&investors);
     let referrer_rebates = summarize_referrer_rebates(&investors);
 
     Ok(FundSettlementRunDetail {
         run,
         investors,
+        totals,
         investor_taxes,
         referrer_rebates,
     })
@@ -667,6 +680,7 @@ pub async fn create_fund_settlement_run(
         .await?;
     }
     tx.commit().await?;
+    let totals = summarize_settlement_totals(&preview.investors);
     let investor_taxes = summarize_investor_taxes(&preview.investors);
     let referrer_rebates = summarize_referrer_rebates(&preview.investors);
 
@@ -687,6 +701,7 @@ pub async fn create_fund_settlement_run(
                 status: "draft".to_string(),
                 created_at,
             },
+            totals,
             investor_taxes,
             referrer_rebates,
             investors: preview.investors,
@@ -1082,6 +1097,7 @@ fn build_settlement_preview(
         total_units,
         total_tax: rows.iter().map(|item| item.tax).sum(),
         total_referrer_rebate: rows.iter().map(|item| item.referrer_rebate).sum(),
+        totals: summarize_settlement_totals(&rows),
         investor_taxes: summarize_investor_taxes(&rows),
         referrer_rebates: summarize_referrer_rebates(&rows),
         investors: rows,
@@ -1126,6 +1142,14 @@ fn settlement_run_csv(detail: &FundSettlementRunDetail) -> String {
             detail.run.equity_updated_at.clone(),
             "created_at".to_string(),
             detail.run.created_at.clone(),
+        ],
+        vec![
+            "gross_equity".to_string(),
+            detail.totals.gross_equity.to_string(),
+            "net_equity".to_string(),
+            detail.totals.net_equity.to_string(),
+            "retained_tax".to_string(),
+            detail.totals.retained_tax.to_string(),
         ],
         Vec::new(),
         vec![
@@ -1189,6 +1213,21 @@ fn settlement_run_csv(detail: &FundSettlementRunDetail) -> String {
         .collect::<Vec<_>>()
         .join("\n")
         + "\n"
+}
+
+fn summarize_settlement_totals(investors: &[FundInvestorSettlement]) -> FundSettlementTotals {
+    let gross_equity = investors.iter().map(|item| item.gross_equity).sum();
+    let net_equity = investors.iter().map(|item| item.net_equity).sum();
+    let tax = investors.iter().map(|item| item.tax).sum();
+    let referrer_rebate = investors.iter().map(|item| item.referrer_rebate).sum();
+
+    FundSettlementTotals {
+        gross_equity,
+        net_equity,
+        tax,
+        referrer_rebate,
+        retained_tax: tax - referrer_rebate,
+    }
 }
 
 fn summarize_investor_taxes(investors: &[FundInvestorSettlement]) -> Vec<FundInvestorTax> {
@@ -1390,6 +1429,21 @@ mod tests {
     }
 
     #[test]
+    fn summarizes_settlement_totals() {
+        let rows = [
+            investor_total("Alice", 10.0, 8.0, 2.0, 0.5),
+            investor_total("Bob", 20.0, 17.0, 3.0, 1.0),
+        ];
+        let totals = summarize_settlement_totals(&rows);
+
+        assert_close(totals.gross_equity, 30.0);
+        assert_close(totals.net_equity, 25.0);
+        assert_close(totals.tax, 5.0);
+        assert_close(totals.referrer_rebate, 1.5);
+        assert_close(totals.retained_tax, 3.5);
+    }
+
+    #[test]
     fn reconciles_legacy_equity_with_latest_nav() {
         let reconciliation = reconcile_fund_equity(
             &FundStatementEquity {
@@ -1439,6 +1493,22 @@ mod tests {
         FundInvestorSettlement {
             tax,
             ..investor_rebate(name, None, 0.0)
+        }
+    }
+
+    fn investor_total(
+        name: &str,
+        gross_equity: f64,
+        net_equity: f64,
+        tax: f64,
+        referrer_rebate: f64,
+    ) -> FundInvestorSettlement {
+        FundInvestorSettlement {
+            gross_equity,
+            net_equity,
+            tax,
+            referrer_rebate,
+            ..investor_rebate(name, None, referrer_rebate)
         }
     }
 

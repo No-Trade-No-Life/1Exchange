@@ -276,6 +276,7 @@ type FundSettlementPreview = {
   total_units: number;
   total_tax: number;
   total_referrer_rebate: number;
+  totals: FundSettlementTotals;
   investor_taxes: FundInvestorTax[];
   referrer_rebates: FundReferrerRebate[];
   investors: FundInvestorSettlement[];
@@ -315,8 +316,17 @@ type FundSettlementRun = {
 type FundSettlementRunDetail = {
   run: FundSettlementRun;
   investors: FundInvestorSettlement[];
+  totals: FundSettlementTotals;
   investor_taxes: FundInvestorTax[];
   referrer_rebates: FundReferrerRebate[];
+};
+
+type FundSettlementTotals = {
+  gross_equity: number;
+  net_equity: number;
+  tax: number;
+  referrer_rebate: number;
+  retained_tax: number;
 };
 
 type FundInvestorTax = {
@@ -1594,8 +1604,11 @@ function FundDetailPage(props: {
       <section className="metrics-grid compact" aria-label="Fund settlement preview">
         <Metric label="Issued units" value={settlement ? formatNumber(settlement.total_units) : '-'} />
         <Metric label="Total deposit" value={settlement ? formatNumber(settlement.total_deposit) : '-'} />
+        <Metric label="Gross equity" value={settlement ? formatNumber(settlement.totals.gross_equity) : '-'} />
+        <Metric label="Net equity" value={settlement ? formatNumber(settlement.totals.net_equity) : '-'} />
         <Metric label="Estimated tax" value={settlement ? formatNumber(settlement.total_tax) : '-'} />
         <Metric label="Referrer rebate" value={settlement ? formatNumber(settlement.total_referrer_rebate) : '-'} />
+        <Metric label="Retained tax" value={settlement ? formatNumber(settlement.totals.retained_tax) : '-'} />
       </section>
 
       <section className="panel">
@@ -1839,8 +1852,11 @@ function SettlementRunDetailDialog(props: {
               <Metric label="Status" value={run.status} />
               <Metric label="Equity" value={formatNumber(run.equity)} />
               <Metric label="Investors" value={run.investor_count.toString()} />
+              <Metric label="Gross equity" value={detail.data ? formatNumber(detail.data.totals.gross_equity) : '-'} />
+              <Metric label="Net equity" value={detail.data ? formatNumber(detail.data.totals.net_equity) : '-'} />
               <Metric label="Tax" value={formatNumber(run.total_tax)} />
               <Metric label="Rebate" value={formatNumber(run.total_referrer_rebate)} />
+              <Metric label="Retained tax" value={detail.data ? formatNumber(detail.data.totals.retained_tax) : '-'} />
             </section>
 
             <section>
