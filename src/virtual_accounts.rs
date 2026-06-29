@@ -1,9 +1,13 @@
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{
+    Json,
+    extract::State,
+    http::{HeaderMap, StatusCode},
+};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, SqlitePool};
 
-use crate::{AppError, AppState, credentials, exchanges, models::AccountInfo};
+use crate::{AppError, AppState, auth, credentials, exchanges, models::AccountInfo};
 
 #[derive(Debug, Deserialize)]
 pub struct CreateVirtualAccountRequest {
@@ -43,20 +47,27 @@ struct VirtualAccountRow {
 
 pub async fn list_virtual_accounts(
     State(state): State<AppState>,
+    headers: HeaderMap,
 ) -> Result<Json<Vec<VirtualAccountConfig>>, AppError> {
-    Ok(Json(list_virtual_account_configs(&state.db).await?))
+    let user = auth::require_user(&state, &headers).await?;
+    Ok(Json(
+        list_virtual_account_configs(&state.db, &user.user_id).await?,
+    ))
 }
 
 pub async fn list_virtual_account_configs(
     db: &SqlitePool,
+    owner_id: &str,
 ) -> Result<Vec<VirtualAccountConfig>, AppError> {
     let rows = sqlx::query_as::<_, VirtualAccountRow>(
         r#"
-        SELECT account_id, name, enabled, sources, created_at, updated_at
+        SELECT account_id, owner_id, name, enabled, sources, created_at, updated_at
         FROM virtual_accounts
+        WHERE owner_id = ?1
         ORDER BY created_at DESC
         "#,
     )
+    .bind(owner_id)
     .fetch_all(db)
     .await?;
 
@@ -67,23 +78,27 @@ pub async fn list_virtual_account_configs(
 
 pub async fn create_virtual_account(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<CreateVirtualAccountRequest>,
 ) -> Result<(StatusCode, Json<VirtualAccountConfig>), AppError> {
+    let user = auth::require_user(&state, &headers).await?;
     validate_request(&request)?;
 
     let sources = serde_json::to_string(&request.sources)?;
     sqlx::query(
         r#"
-        INSERT INTO virtual_accounts (account_id, name, enabled, sources)
-        VALUES (?1, ?2, ?3, ?4)
+        INSERT INTO virtual_accounts (account_id, owner_id, name, enabled, sources)
+        VALUES (?1, ?2, ?3, ?4, ?5)
         ON CONFLICT(account_id) DO UPDATE SET
             name = excluded.name,
             enabled = excluded.enabled,
             sources = excluded.sources,
             updated_at = CURRENT_TIMESTAMP
+        WHERE virtual_accounts.owner_id = excluded.owner_id
         "#,
     )
     .bind(&request.account_id)
+    .bind(&user.user_id)
     .bind(&request.name)
     .bind(if request.enabled { 1 } else { 0 })
     .bind(sources)
@@ -92,36 +107,57 @@ pub async fn create_virtual_account(
 
     Ok((
         StatusCode::CREATED,
-        Json(get_virtual_account_config(&state.db, &request.account_id).await?),
+        Json(get_virtual_account_config(&state.db, &user.user_id, &request.account_id).await?),
     ))
 }
 
 pub async fn compose_virtual_account_by_id(
     db: &SqlitePool,
+    owner_id: &str,
     account_id: &str,
 ) -> Result<Option<AccountInfo>, AppError> {
-    let Some(config) = find_virtual_account_config(db, account_id).await? else {
+    let Some(config) = find_virtual_account_config(db, owner_id, account_id).await? else {
         return Ok(None);
     };
     if !config.enabled {
         return Err(AppError::bad_request("virtual account is disabled"));
     }
 
-    Ok(Some(compose_virtual_account_config(db, config).await?))
+    Ok(Some(
+        compose_virtual_account_config(db, owner_id, config).await?,
+    ))
+}
+
+pub async fn require_virtual_account(
+    db: &SqlitePool,
+    owner_id: &str,
+    account_id: &str,
+) -> Result<(), AppError> {
+    find_virtual_account_config(db, owner_id, account_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::bad_request(
+                "fund account must be a virtual account owned by the current user",
+            )
+        })?;
+
+    Ok(())
 }
 
 async fn find_virtual_account_config(
     db: &SqlitePool,
+    owner_id: &str,
     account_id: &str,
 ) -> Result<Option<VirtualAccountConfig>, AppError> {
     let row = sqlx::query_as::<_, VirtualAccountRow>(
         r#"
-        SELECT account_id, name, enabled, sources, created_at, updated_at
+        SELECT account_id, owner_id, name, enabled, sources, created_at, updated_at
         FROM virtual_accounts
-        WHERE account_id = ?1
+        WHERE account_id = ?1 AND owner_id = ?2
         "#,
     )
     .bind(account_id)
+    .bind(owner_id)
     .fetch_optional(db)
     .await?;
 
@@ -130,16 +166,18 @@ async fn find_virtual_account_config(
 
 async fn get_virtual_account_config(
     db: &SqlitePool,
+    owner_id: &str,
     account_id: &str,
 ) -> Result<VirtualAccountConfig, AppError> {
     let row = sqlx::query_as::<_, VirtualAccountRow>(
         r#"
-        SELECT account_id, name, enabled, sources, created_at, updated_at
+        SELECT account_id, owner_id, name, enabled, sources, created_at, updated_at
         FROM virtual_accounts
-        WHERE account_id = ?1
+        WHERE account_id = ?1 AND owner_id = ?2
         "#,
     )
     .bind(account_id)
+    .bind(owner_id)
     .fetch_one(db)
     .await?;
 
@@ -148,12 +186,14 @@ async fn get_virtual_account_config(
 
 async fn compose_virtual_account_config(
     db: &SqlitePool,
+    owner_id: &str,
     config: VirtualAccountConfig,
 ) -> Result<AccountInfo, AppError> {
     let mut positions = Vec::new();
 
     for source in config.sources.into_iter().filter(|source| source.enabled) {
-        let credential = credentials::get_stored_credential(db, &source.credential_id).await?;
+        let credential =
+            credentials::get_stored_credential(db, owner_id, &source.credential_id).await?;
         let adapter = exchanges::adapter(&credential.exchange).ok_or_else(|| {
             AppError::bad_request(format!("unsupported exchange: {}", credential.exchange))
         })?;

@@ -1,11 +1,15 @@
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{
+    Json,
+    extract::State,
+    http::{HeaderMap, StatusCode},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::{FromRow, SqlitePool};
 use uuid::Uuid;
 
 use crate::{
-    AppError, AppState,
+    AppError, AppState, auth,
     exchanges::{credential_required_fields, is_supported_exchange},
 };
 
@@ -44,14 +48,18 @@ struct CredentialRow {
 
 pub async fn list_credentials(
     State(state): State<AppState>,
+    headers: HeaderMap,
 ) -> Result<Json<Vec<CredentialMeta>>, AppError> {
+    let user = auth::require_user(&state, &headers).await?;
     let rows = sqlx::query_as::<_, CredentialRow>(
         r#"
-        SELECT id, exchange, name, payload, created_at, updated_at
+        SELECT id, owner_id, exchange, name, payload, created_at, updated_at
         FROM credentials
+        WHERE owner_id = ?1
         ORDER BY created_at DESC
         "#,
     )
+    .bind(&user.user_id)
     .fetch_all(&state.db)
     .await?;
 
@@ -60,8 +68,10 @@ pub async fn list_credentials(
 
 pub async fn create_credential(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<CreateCredentialRequest>,
 ) -> Result<(StatusCode, Json<CredentialMeta>), AppError> {
+    let user = auth::require_user(&state, &headers).await?;
     if !is_supported_exchange(&request.exchange) {
         return Err(AppError::bad_request("unsupported exchange"));
     }
@@ -73,33 +83,36 @@ pub async fn create_credential(
 
     sqlx::query(
         r#"
-        INSERT INTO credentials (id, exchange, name, payload)
-        VALUES (?1, ?2, ?3, ?4)
+        INSERT INTO credentials (id, owner_id, exchange, name, payload)
+        VALUES (?1, ?2, ?3, ?4, ?5)
         "#,
     )
     .bind(&id)
+    .bind(&user.user_id)
     .bind(&request.exchange)
     .bind(&request.name)
     .bind(payload)
     .execute(&state.db)
     .await?;
 
-    let credential = get_credential_meta(&state.db, &id).await?;
+    let credential = get_credential_meta(&state.db, &user.user_id, &id).await?;
     Ok((StatusCode::CREATED, Json(credential)))
 }
 
 pub async fn get_stored_credential(
     db: &SqlitePool,
+    owner_id: &str,
     id: &str,
 ) -> Result<StoredCredential, AppError> {
     let row = sqlx::query_as::<_, CredentialRow>(
         r#"
-        SELECT id, exchange, name, payload, created_at, updated_at
+        SELECT id, owner_id, exchange, name, payload, created_at, updated_at
         FROM credentials
-        WHERE id = ?1
+        WHERE id = ?1 AND owner_id = ?2
         "#,
     )
     .bind(id)
+    .bind(owner_id)
     .fetch_one(db)
     .await?;
 
@@ -110,14 +123,19 @@ pub async fn get_stored_credential(
     })
 }
 
-pub async fn list_stored_credentials(db: &SqlitePool) -> Result<Vec<StoredCredential>, AppError> {
+pub async fn list_stored_credentials(
+    db: &SqlitePool,
+    owner_id: &str,
+) -> Result<Vec<StoredCredential>, AppError> {
     let rows = sqlx::query_as::<_, CredentialRow>(
         r#"
-        SELECT id, exchange, name, payload, created_at, updated_at
+        SELECT id, owner_id, exchange, name, payload, created_at, updated_at
         FROM credentials
+        WHERE owner_id = ?1
         ORDER BY created_at DESC
         "#,
     )
+    .bind(owner_id)
     .fetch_all(db)
     .await?;
 
@@ -151,15 +169,20 @@ fn validate_payload(exchange: &str, payload: &Value) -> Result<(), AppError> {
     Ok(())
 }
 
-async fn get_credential_meta(db: &SqlitePool, id: &str) -> Result<CredentialMeta, AppError> {
+async fn get_credential_meta(
+    db: &SqlitePool,
+    owner_id: &str,
+    id: &str,
+) -> Result<CredentialMeta, AppError> {
     let row = sqlx::query_as::<_, CredentialRow>(
         r#"
-        SELECT id, exchange, name, payload, created_at, updated_at
+        SELECT id, owner_id, exchange, name, payload, created_at, updated_at
         FROM credentials
-        WHERE id = ?1
+        WHERE id = ?1 AND owner_id = ?2
         "#,
     )
     .bind(id)
+    .bind(owner_id)
     .fetch_one(db)
     .await?;
 

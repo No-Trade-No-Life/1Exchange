@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use axum::{
     Json,
     extract::State,
-    http::{StatusCode, header},
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use chrono::Utc;
@@ -12,7 +12,7 @@ use sqlx::{FromRow, Sqlite, SqlitePool, Transaction};
 use tokio::time::{Duration, interval};
 use uuid::Uuid;
 
-use crate::{AppError, AppState, models::AccountInfo, rates, virtual_accounts};
+use crate::{AppError, AppState, auth, models::AccountInfo, rates, virtual_accounts};
 
 const DEFAULT_POLL_INTERVAL_SECONDS: i64 = 600;
 const FUND_SCAN_INTERVAL_SECONDS: u64 = 60;
@@ -31,6 +31,7 @@ pub struct CreateFundRequest {
 #[derive(Clone, Debug, Serialize, FromRow)]
 pub struct FundConfig {
     pub id: String,
+    pub owner_id: String,
     pub name: String,
     pub account_id: String,
     pub enabled: bool,
@@ -462,15 +463,23 @@ struct FundValuation {
     unpriced_positions: i64,
 }
 
-pub async fn list_funds(State(state): State<AppState>) -> Result<Json<Vec<FundConfig>>, AppError> {
-    Ok(Json(list_fund_configs(&state.db).await?))
+pub async fn list_funds(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<FundConfig>>, AppError> {
+    let user = auth::require_user(&state, &headers).await?;
+    Ok(Json(list_fund_configs(&state.db, &user.user_id).await?))
 }
 
 pub async fn create_fund(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<CreateFundRequest>,
 ) -> Result<(StatusCode, Json<FundConfig>), AppError> {
+    let user = auth::require_user(&state, &headers).await?;
     validate_fund_request(&request)?;
+    virtual_accounts::require_virtual_account(&state.db, &user.user_id, request.account_id.trim())
+        .await?;
 
     let id = request
         .id
@@ -492,8 +501,8 @@ pub async fn create_fund(
 
     sqlx::query(
         r#"
-        INSERT INTO funds (id, name, account_id, enabled, target_currency, poll_interval_seconds)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        INSERT INTO funds (id, owner_id, name, account_id, enabled, target_currency, poll_interval_seconds)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
         ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
             account_id = excluded.account_id,
@@ -501,9 +510,11 @@ pub async fn create_fund(
             target_currency = excluded.target_currency,
             poll_interval_seconds = excluded.poll_interval_seconds,
             updated_at = CURRENT_TIMESTAMP
+        WHERE funds.owner_id = excluded.owner_id
         "#,
     )
     .bind(&id)
+    .bind(&user.user_id)
     .bind(request.name.trim())
     .bind(request.account_id.trim())
     .bind(request.enabled)
@@ -514,16 +525,19 @@ pub async fn create_fund(
 
     Ok((
         StatusCode::CREATED,
-        Json(get_fund_config(&state.db, &id).await?),
+        Json(get_fund_config(&state.db, &user.user_id, &id).await?),
     ))
 }
 
 pub async fn list_fund_nav(
     State(state): State<AppState>,
+    headers: HeaderMap,
     axum::extract::Query(query): axum::extract::Query<FundNavQuery>,
 ) -> Result<Json<Vec<FundNavSnapshot>>, AppError> {
+    let user = auth::require_user(&state, &headers).await?;
     let limit = query.limit.unwrap_or(200).clamp(1, 1000);
     let rows = if let Some(fund_id) = query.fund_id {
+        get_fund_config(&state.db, &user.user_id, &fund_id).await?;
         sqlx::query_as::<_, FundNavSnapshot>(
             r#"
             SELECT id, fund_id, account_id, equity, target_currency, positions_count,
@@ -544,10 +558,12 @@ pub async fn list_fund_nav(
             SELECT id, fund_id, account_id, equity, target_currency, positions_count,
                    unpriced_positions, created_at
             FROM fund_nav_snapshots
+            WHERE fund_id IN (SELECT id FROM funds WHERE owner_id = ?1)
             ORDER BY created_at DESC
-            LIMIT ?1
+            LIMIT ?2
             "#,
         )
+        .bind(&user.user_id)
         .bind(limit)
         .fetch_all(&state.db)
         .await?
@@ -558,9 +574,11 @@ pub async fn list_fund_nav(
 
 pub async fn get_fund_statement_summary(
     State(state): State<AppState>,
+    headers: HeaderMap,
     axum::extract::Query(query): axum::extract::Query<FundStatementQuery>,
 ) -> Result<Json<FundStatementSummary>, AppError> {
-    get_fund_config(&state.db, &query.fund_id).await?;
+    let user = auth::require_user(&state, &headers).await?;
+    get_fund_config(&state.db, &user.user_id, &query.fund_id).await?;
 
     let (events,): (i64,) =
         sqlx::query_as("SELECT COUNT(*) FROM fund_statement_events WHERE fund_id = ?1")
@@ -746,9 +764,11 @@ pub async fn get_fund_statement_summary(
 
 pub async fn get_fund_settlement_preview(
     State(state): State<AppState>,
+    headers: HeaderMap,
     axum::extract::Query(query): axum::extract::Query<FundSettlementQuery>,
 ) -> Result<Json<FundSettlementPreview>, AppError> {
-    get_fund_config(&state.db, &query.fund_id).await?;
+    let user = auth::require_user(&state, &headers).await?;
+    get_fund_config(&state.db, &user.user_id, &query.fund_id).await?;
     Ok(Json(
         load_fund_settlement_preview(&state.db, query.fund_id).await?,
     ))
@@ -756,9 +776,11 @@ pub async fn get_fund_settlement_preview(
 
 pub async fn list_fund_settlement_runs(
     State(state): State<AppState>,
+    headers: HeaderMap,
     axum::extract::Query(query): axum::extract::Query<FundSettlementQuery>,
 ) -> Result<Json<Vec<FundSettlementRun>>, AppError> {
-    get_fund_config(&state.db, &query.fund_id).await?;
+    let user = auth::require_user(&state, &headers).await?;
+    get_fund_config(&state.db, &user.user_id, &query.fund_id).await?;
 
     Ok(Json(
         sqlx::query_as::<_, FundSettlementRun>(
@@ -782,18 +804,23 @@ pub async fn list_fund_settlement_runs(
 
 pub async fn get_fund_settlement_run_detail(
     State(state): State<AppState>,
+    headers: HeaderMap,
     axum::extract::Query(query): axum::extract::Query<FundSettlementRunQuery>,
 ) -> Result<Json<FundSettlementRunDetail>, AppError> {
-    get_fund_settlement_run_detail_by_id(&state.db, &query.run_id)
+    let user = auth::require_user(&state, &headers).await?;
+    get_fund_settlement_run_detail_by_id(&state.db, &user.user_id, &query.run_id)
         .await
         .map(Json)
 }
 
 pub async fn export_fund_settlement_run_csv(
     State(state): State<AppState>,
+    headers: HeaderMap,
     axum::extract::Query(query): axum::extract::Query<FundSettlementRunQuery>,
 ) -> Result<Response, AppError> {
-    let detail = get_fund_settlement_run_detail_by_id(&state.db, &query.run_id).await?;
+    let user = auth::require_user(&state, &headers).await?;
+    let detail =
+        get_fund_settlement_run_detail_by_id(&state.db, &user.user_id, &query.run_id).await?;
     let filename = format!("fund-settlement-{}.csv", detail.run.id);
     let body = settlement_run_csv(&detail);
 
@@ -812,6 +839,7 @@ pub async fn export_fund_settlement_run_csv(
 
 async fn get_fund_settlement_run_detail_by_id(
     db: &SqlitePool,
+    owner_id: &str,
     run_id: &str,
 ) -> Result<FundSettlementRunDetail, AppError> {
     let run = sqlx::query_as::<_, FundSettlementRun>(
@@ -823,9 +851,11 @@ async fn get_fund_settlement_run_detail_by_id(
                investor_count, status, status_updated_at, created_at
         FROM fund_settlement_runs
         WHERE id = ?1
+          AND fund_id IN (SELECT id FROM funds WHERE owner_id = ?2)
         "#,
     )
     .bind(run_id)
+    .bind(owner_id)
     .fetch_one(db)
     .await?;
     let investors = sqlx::query_as::<_, FundSettlementInvestorRow>(
@@ -861,9 +891,11 @@ async fn get_fund_settlement_run_detail_by_id(
 
 pub async fn create_fund_settlement_run(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<CreateFundSettlementRunRequest>,
 ) -> Result<(StatusCode, Json<FundSettlementRunDetail>), AppError> {
-    get_fund_config(&state.db, &request.fund_id).await?;
+    let user = auth::require_user(&state, &headers).await?;
+    get_fund_config(&state.db, &user.user_id, &request.fund_id).await?;
     let preview = load_fund_settlement_preview(&state.db, request.fund_id).await?;
     let equity = preview
         .latest_equity
@@ -985,9 +1017,11 @@ pub async fn create_fund_settlement_run(
 
 pub async fn confirm_fund_settlement(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<ConfirmFundSettlementRequest>,
 ) -> Result<Json<FundSettlementPreview>, AppError> {
-    get_fund_config(&state.db, &request.fund_id).await?;
+    let user = auth::require_user(&state, &headers).await?;
+    get_fund_config(&state.db, &user.user_id, &request.fund_id).await?;
     let preview = load_fund_settlement_preview(&state.db, request.fund_id).await?;
     let basis = preview
         .basis
@@ -1095,20 +1129,26 @@ async fn reject_duplicate_statement_settlement(
 
 pub async fn confirm_fund_settlement_run(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<UpdateFundSettlementRunRequest>,
 ) -> Result<Json<FundSettlementRunDetail>, AppError> {
+    let user = auth::require_user(&state, &headers).await?;
+    ensure_settlement_run_owner(&state.db, &user.user_id, &request.run_id).await?;
     confirm_fund_settlement_run_status(&state.db, &request.run_id).await?;
-    get_fund_settlement_run_detail_by_id(&state.db, &request.run_id)
+    get_fund_settlement_run_detail_by_id(&state.db, &user.user_id, &request.run_id)
         .await
         .map(Json)
 }
 
 pub async fn void_fund_settlement_run(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<UpdateFundSettlementRunRequest>,
 ) -> Result<Json<FundSettlementRunDetail>, AppError> {
+    let user = auth::require_user(&state, &headers).await?;
+    ensure_settlement_run_owner(&state.db, &user.user_id, &request.run_id).await?;
     update_fund_settlement_run_status(&state.db, &request.run_id, "voided").await?;
-    get_fund_settlement_run_detail_by_id(&state.db, &request.run_id)
+    get_fund_settlement_run_detail_by_id(&state.db, &user.user_id, &request.run_id)
         .await
         .map(Json)
 }
@@ -1136,6 +1176,31 @@ async fn update_fund_settlement_run_status(
         return Err(AppError::bad_request(
             "settlement run must exist and be in draft status",
         ));
+    }
+
+    Ok(())
+}
+
+async fn ensure_settlement_run_owner(
+    db: &SqlitePool,
+    owner_id: &str,
+    run_id: &str,
+) -> Result<(), AppError> {
+    let (count,): (i64,) = sqlx::query_as(
+        r#"
+        SELECT COUNT(*)
+        FROM fund_settlement_runs run
+        JOIN funds fund ON fund.id = run.fund_id
+        WHERE run.id = ?1 AND fund.owner_id = ?2
+        "#,
+    )
+    .bind(run_id)
+    .bind(owner_id)
+    .fetch_one(db)
+    .await?;
+
+    if count == 0 {
+        return Err(AppError::bad_request("settlement run not found"));
     }
 
     Ok(())
@@ -1360,9 +1425,11 @@ async fn load_fund_settlement_preview(
 
 pub async fn sample_fund_now(
     State(state): State<AppState>,
+    headers: HeaderMap,
     axum::extract::Query(query): axum::extract::Query<SampleFundQuery>,
 ) -> Result<Json<FundNavSnapshot>, AppError> {
-    let config = get_fund_config(&state.db, &query.fund_id).await?;
+    let user = auth::require_user(&state, &headers).await?;
+    let config = get_fund_config(&state.db, &user.user_id, &query.fund_id).await?;
     Ok(Json(sample_fund(&state.db, &config).await?))
 }
 
@@ -1377,17 +1444,22 @@ pub fn spawn_fund_polling(state: AppState) {
     });
 }
 
-pub async fn list_fund_configs(db: &SqlitePool) -> Result<Vec<FundConfig>, AppError> {
+pub async fn list_fund_configs(
+    db: &SqlitePool,
+    owner_id: &str,
+) -> Result<Vec<FundConfig>, AppError> {
     Ok(sqlx::query_as::<_, FundConfig>(
         r#"
-        SELECT f.id, f.name, f.account_id, f.enabled, f.target_currency, f.poll_interval_seconds,
+        SELECT f.id, f.owner_id, f.name, f.account_id, f.enabled, f.target_currency, f.poll_interval_seconds,
                f.created_at, f.updated_at, MAX(s.created_at) AS last_sampled_at
         FROM funds f
         LEFT JOIN fund_nav_snapshots s ON s.fund_id = f.id
+        WHERE f.owner_id = ?1
         GROUP BY f.id
         ORDER BY f.created_at DESC
         "#,
     )
+    .bind(owner_id)
     .fetch_all(db)
     .await?)
 }
@@ -1411,7 +1483,7 @@ async fn sample_due_funds(db: &SqlitePool) -> Result<(), AppError> {
 async fn due_fund_configs(db: &SqlitePool) -> Result<Vec<FundConfig>, AppError> {
     Ok(sqlx::query_as::<_, FundConfig>(
         r#"
-        SELECT f.id, f.name, f.account_id, f.enabled, f.target_currency, f.poll_interval_seconds,
+        SELECT f.id, f.owner_id, f.name, f.account_id, f.enabled, f.target_currency, f.poll_interval_seconds,
                f.created_at, f.updated_at, MAX(s.created_at) AS last_sampled_at
         FROM funds f
         LEFT JOIN fund_nav_snapshots s ON s.fund_id = f.id
@@ -1426,27 +1498,35 @@ async fn due_fund_configs(db: &SqlitePool) -> Result<Vec<FundConfig>, AppError> 
     .await?)
 }
 
-async fn get_fund_config(db: &SqlitePool, fund_id: &str) -> Result<FundConfig, AppError> {
+async fn get_fund_config(
+    db: &SqlitePool,
+    owner_id: &str,
+    fund_id: &str,
+) -> Result<FundConfig, AppError> {
     sqlx::query_as::<_, FundConfig>(
         r#"
-        SELECT f.id, f.name, f.account_id, f.enabled, f.target_currency, f.poll_interval_seconds,
+        SELECT f.id, f.owner_id, f.name, f.account_id, f.enabled, f.target_currency, f.poll_interval_seconds,
                f.created_at, f.updated_at, MAX(s.created_at) AS last_sampled_at
         FROM funds f
         LEFT JOIN fund_nav_snapshots s ON s.fund_id = f.id
-        WHERE f.id = ?1
+        WHERE f.id = ?1 AND f.owner_id = ?2
         GROUP BY f.id
         "#,
     )
     .bind(fund_id)
+    .bind(owner_id)
     .fetch_one(db)
     .await
     .map_err(AppError::from)
 }
 
 async fn sample_fund(db: &SqlitePool, config: &FundConfig) -> Result<FundNavSnapshot, AppError> {
-    let account = virtual_accounts::compose_virtual_account_by_id(db, &config.account_id)
-        .await?
-        .ok_or_else(|| AppError::bad_request("fund account must be an enabled virtual account"))?;
+    let account =
+        virtual_accounts::compose_virtual_account_by_id(db, &config.owner_id, &config.account_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::bad_request("fund account must be an enabled virtual account")
+            })?;
     let valuation = value_account(&account, &config.target_currency);
     let id = Uuid::new_v4().to_string();
     let created_at = Utc::now().to_rfc3339();

@@ -1,9 +1,13 @@
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{
+    Json,
+    extract::State,
+    http::{HeaderMap, StatusCode},
+};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, SqlitePool};
 use uuid::Uuid;
 
-use crate::{AppError, AppState, models::AccountInfo};
+use crate::{AppError, AppState, auth, models::AccountInfo};
 
 #[derive(Debug, Deserialize)]
 pub struct CreateCustomAccountSourceRequest {
@@ -34,25 +38,32 @@ struct CustomAccountSourceRow {
 
 pub async fn list_custom_account_sources(
     State(state): State<AppState>,
+    headers: HeaderMap,
 ) -> Result<Json<Vec<CustomAccountSourceConfig>>, AppError> {
-    Ok(Json(list_custom_account_source_configs(&state.db).await?))
+    let user = auth::require_user(&state, &headers).await?;
+    Ok(Json(
+        list_custom_account_source_configs(&state.db, &user.user_id).await?,
+    ))
 }
 
 pub async fn create_custom_account_source(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<CreateCustomAccountSourceRequest>,
 ) -> Result<(StatusCode, Json<CustomAccountSourceConfig>), AppError> {
+    let user = auth::require_user(&state, &headers).await?;
     validate_request(&request)?;
 
     let id = Uuid::new_v4().to_string();
     let base_url = normalized_base_url(&request.base_url);
     sqlx::query(
         r#"
-        INSERT INTO custom_account_sources (id, name, base_url, enabled)
-        VALUES (?1, ?2, ?3, ?4)
+        INSERT INTO custom_account_sources (id, owner_id, name, base_url, enabled)
+        VALUES (?1, ?2, ?3, ?4, ?5)
         "#,
     )
     .bind(&id)
+    .bind(&user.user_id)
     .bind(&request.name)
     .bind(base_url)
     .bind(if request.enabled { 1 } else { 0 })
@@ -61,20 +72,23 @@ pub async fn create_custom_account_source(
 
     Ok((
         StatusCode::CREATED,
-        Json(get_custom_account_source_config(&state.db, &id).await?),
+        Json(get_custom_account_source_config(&state.db, &user.user_id, &id).await?),
     ))
 }
 
 pub async fn list_custom_account_source_configs(
     db: &SqlitePool,
+    owner_id: &str,
 ) -> Result<Vec<CustomAccountSourceConfig>, AppError> {
     let rows = sqlx::query_as::<_, CustomAccountSourceRow>(
         r#"
-        SELECT id, name, base_url, enabled, created_at, updated_at
+        SELECT id, owner_id, name, base_url, enabled, created_at, updated_at
         FROM custom_account_sources
+        WHERE owner_id = ?1
         ORDER BY created_at DESC
         "#,
     )
+    .bind(owner_id)
     .fetch_all(db)
     .await?;
 
@@ -111,16 +125,18 @@ pub async fn read_account(
 
 async fn get_custom_account_source_config(
     db: &SqlitePool,
+    owner_id: &str,
     id: &str,
 ) -> Result<CustomAccountSourceConfig, AppError> {
     let row = sqlx::query_as::<_, CustomAccountSourceRow>(
         r#"
-        SELECT id, name, base_url, enabled, created_at, updated_at
+        SELECT id, owner_id, name, base_url, enabled, created_at, updated_at
         FROM custom_account_sources
-        WHERE id = ?1
+        WHERE id = ?1 AND owner_id = ?2
         "#,
     )
     .bind(id)
+    .bind(owner_id)
     .fetch_one(db)
     .await?;
 

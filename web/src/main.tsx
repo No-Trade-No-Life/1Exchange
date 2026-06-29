@@ -52,6 +52,18 @@ type Health = {
   database: string;
 };
 
+type AuthUser = {
+  user_id: string;
+  email: string;
+};
+
+type AuthSession = {
+  session_id: string;
+  access_token: string;
+  refresh_token: string;
+  expires_in: number;
+};
+
 type ExchangeInfo = {
   id: string;
   name: string;
@@ -474,6 +486,9 @@ const primaryPages = pages.filter((item) => item.primary);
 const emptyCredentials: Credential[] = [];
 const emptyVirtualAccountConfigs: VirtualAccountConfig[] = [];
 const emptyFundConfigs: FundConfig[] = [];
+const authMiniOrigin = import.meta.env.VITE_AUTH_MINI_ORIGIN ?? 'http://127.0.0.1:7777';
+const authSessionStorageKey = 'one-exchange.auth-mini.session.v1';
+let currentAccessToken: string | null = null;
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -483,13 +498,21 @@ const queryClient = new QueryClient({
   },
 });
 
+function apiFetch(input: string | URL, init: RequestInit = {}) {
+  const headers = new Headers(init.headers);
+  if (currentAccessToken) {
+    headers.set('Authorization', 'Bearer ' + currentAccessToken);
+  }
+  return fetch(input, { ...init, headers });
+}
+
 function useJson<T>(path: string | null) {
   const query = useQuery({
     enabled: path !== null,
     queryKey: ['json', path],
     queryFn: async ({ queryKey }) => {
       const requestPath = queryKey[1] as string;
-      const response = await fetch(requestPath);
+      const response = await apiFetch(requestPath);
       if (!response.ok) {
         throw new Error(`${response.status} ${response.statusText}`);
       }
@@ -524,7 +547,7 @@ function useTradeHistory(credentials: Credential[], refreshToken: number) {
 
     async function readCredential(credential: Credential) {
         try {
-          const response = await fetch(`/api/trades?credential_id=${encodeURIComponent(credential.id)}`);
+          const response = await apiFetch(`/api/trades?credential_id=${encodeURIComponent(credential.id)}`);
           if (!response.ok) {
             throw new Error(`${response.status} ${response.statusText}`);
           }
@@ -553,6 +576,194 @@ function useTradeHistory(credentials: Credential[], refreshToken: number) {
   }, [credentials, refreshToken]);
 
   return { accounts, ...loadState };
+}
+
+function AuthGate(props: { children: React.ReactNode }) {
+  const [session, setSession] = useState<AuthSession | null>(() => readStoredAuthSession());
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [email, setEmail] = useState('');
+  const [code, setCode] = useState('');
+  const [codeSent, setCodeSent] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    async function recover() {
+      if (!session) {
+        currentAccessToken = null;
+        return;
+      }
+      currentAccessToken = session.access_token;
+      try {
+        const me = await readCurrentUser(session);
+        if (alive) {
+          setUser(me);
+        }
+      } catch {
+        clearAuthSession();
+        if (alive) {
+          setSession(null);
+          setUser(null);
+        }
+      }
+    }
+    void recover();
+    return () => {
+      alive = false;
+    };
+  }, [session]);
+
+  async function startEmail(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch(authMiniUrl('/email/start'), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email }),
+      });
+      if (!response.ok) {
+        throw new Error(await responseErrorMessage(response));
+      }
+      setCodeSent(true);
+    } catch (caught) {
+      setError((caught as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function verifyEmail(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch(authMiniUrl('/email/verify'), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email, code }),
+      });
+      if (!response.ok) {
+        throw new Error(await responseErrorMessage(response));
+      }
+      const nextSession = await response.json() as AuthSession;
+      storeAuthSession(nextSession);
+      currentAccessToken = nextSession.access_token;
+      setSession(nextSession);
+      setUser(await readCurrentUser(nextSession));
+      await queryClient.invalidateQueries();
+    } catch (caught) {
+      setError((caught as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function signOut() {
+    clearAuthSession();
+    queryClient.clear();
+    setSession(null);
+    setUser(null);
+    setCode('');
+  }
+
+  if (user) {
+    return (
+      <>
+        <div className="border-b bg-background px-7 py-2 text-sm text-muted-foreground max-md:px-4">
+          <div className="mx-auto flex w-full max-w-[1600px] items-center gap-3">
+            <span className="min-w-0 truncate">Signed in as {user.email}</span>
+            <Button className="ml-auto" size="sm" type="button" variant="outline" onClick={signOut}>Sign out</Button>
+          </div>
+        </div>
+        {props.children}
+      </>
+    );
+  }
+
+  return (
+    <main className="mx-auto flex min-h-screen w-full max-w-md flex-col justify-center px-4">
+      <Card>
+        <CardHeader>
+          <CardTitle>Sign in to 1Exchange</CardTitle>
+          <CardDescription>{authMiniOrigin}</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form className="flex flex-col gap-3" onSubmit={codeSent ? verifyEmail : startEmail}>
+            <label className="flex flex-col gap-2 text-sm font-medium">
+              Email
+              <Input required type="email" value={email} onChange={(event) => setEmail(event.target.value)} />
+            </label>
+            {codeSent ? (
+              <label className="flex flex-col gap-2 text-sm font-medium">
+                Verification code
+                <Input required inputMode="numeric" value={code} onChange={(event) => setCode(event.target.value)} />
+              </label>
+            ) : null}
+            <InlineError message={error} />
+            <Button disabled={busy} type="submit">{busy ? 'Working...' : codeSent ? 'Verify code' : 'Send code'}</Button>
+          </form>
+        </CardContent>
+      </Card>
+    </main>
+  );
+}
+
+async function readCurrentUser(session: AuthSession): Promise<AuthUser> {
+  const response = await apiFetch('/api/me', {
+    headers: { Authorization: 'Bearer ' + session.access_token },
+  });
+  if (response.status === 401) {
+    const refreshed = await refreshAuthSession(session);
+    storeAuthSession(refreshed);
+    currentAccessToken = refreshed.access_token;
+    const retry = await apiFetch('/api/me');
+    if (!retry.ok) {
+      throw new Error(await responseErrorMessage(retry));
+    }
+    return await retry.json() as AuthUser;
+  }
+  if (!response.ok) {
+    throw new Error(await responseErrorMessage(response));
+  }
+  return await response.json() as AuthUser;
+}
+
+async function refreshAuthSession(session: AuthSession): Promise<AuthSession> {
+  const response = await fetch(authMiniUrl('/session/refresh'), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ session_id: session.session_id, refresh_token: session.refresh_token }),
+  });
+  if (!response.ok) {
+    throw new Error(await responseErrorMessage(response));
+  }
+  return await response.json() as AuthSession;
+}
+
+function readStoredAuthSession() {
+  const raw = window.localStorage.getItem(authSessionStorageKey);
+  return raw ? JSON.parse(raw) as AuthSession : null;
+}
+
+function storeAuthSession(session: AuthSession) {
+  window.localStorage.setItem(authSessionStorageKey, JSON.stringify(session));
+}
+
+function clearAuthSession() {
+  currentAccessToken = null;
+  window.localStorage.removeItem(authSessionStorageKey);
+}
+
+function authMiniUrl(path: string) {
+  return authMiniOrigin.replace(/\/$/, '') + path;
+}
+
+async function responseErrorMessage(response: Response) {
+  const body = await response.json().catch(() => null) as { error?: string; message?: string } | null;
+  return body?.message ?? body?.error ?? String(response.status) + ' ' + response.statusText;
 }
 
 function App() {
@@ -1118,7 +1329,7 @@ function CustomAccountSourceForm() {
     setSaving(true);
 
     try {
-      const response = await fetch('/api/custom-account-sources', {
+      const response = await apiFetch('/api/custom-account-sources', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ name, base_url: baseUrl, enabled: true }),
@@ -1484,7 +1695,7 @@ function VirtualAccountCreatePanel(props: { accountIds: AccountIds; credentials:
     setSaving(true);
 
     try {
-      const response = await fetch('/api/virtual-accounts', {
+      const response = await apiFetch('/api/virtual-accounts', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ account_id: accountId, name, enabled: true, sources }),
@@ -1598,7 +1809,7 @@ function FundDetailPage(props: {
   const confirmSettlementLabel = settlementConfirmLabel(settlementConfirming, settlement);
 
   async function sampleFund() {
-    const response = await fetch('/api/funds/sample?fund_id=' + encodeURIComponent(props.fundId), { method: 'POST' });
+    const response = await apiFetch('/api/funds/sample?fund_id=' + encodeURIComponent(props.fundId), { method: 'POST' });
     if (!response.ok) {
       const body = await response.json().catch(() => null) as { message?: string } | null;
       throw new Error(body?.message ?? String(response.status) + ' ' + response.statusText);
@@ -1610,7 +1821,7 @@ function FundDetailPage(props: {
     setSettlementConfirmError(null);
     setSettlementConfirming(true);
     try {
-      const response = await fetch('/api/fund-settlement-confirm', {
+      const response = await apiFetch('/api/fund-settlement-confirm', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fund_id: props.fundId }),
@@ -2246,7 +2457,7 @@ function FundCreatePanel(props: { virtualAccounts: VirtualAccountConfig[] }) {
     setSaving(true);
 
     try {
-      const response = await fetch('/api/funds', {
+      const response = await apiFetch('/api/funds', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -2332,7 +2543,7 @@ function CredentialCreatePanel(props: { exchanges: ExchangeInfo[]; onCreated: (c
     setSaving(true);
 
     try {
-      const response = await fetch('/api/credentials', {
+      const response = await apiFetch('/api/credentials', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ exchange: exchangeId, name, payload: credentialPayload(fields, payload) }),
@@ -2983,7 +3194,9 @@ createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
       <HashRouter>
-        <App />
+        <AuthGate>
+          <App />
+        </AuthGate>
       </HashRouter>
     </QueryClientProvider>
   </React.StrictMode>,

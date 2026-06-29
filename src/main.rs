@@ -1,3 +1,4 @@
+mod auth;
 mod credentials;
 mod custom_account_sources;
 mod exchanges;
@@ -17,7 +18,7 @@ use anyhow::Context;
 use axum::{
     Json, Router,
     extract::{OriginalUri, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Redirect, Response},
     routing::{get, post},
 };
@@ -31,6 +32,7 @@ use tower_http::services::ServeDir;
 pub struct AppState {
     db_path: PathBuf,
     pub db: SqlitePool,
+    pub auth_mini_origin: String,
     vite_origin: Option<String>,
 }
 
@@ -101,6 +103,7 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState {
         db_path,
         db,
+        auth_mini_origin: auth_mini_origin(),
         vite_origin: vite
             .as_ref()
             .map(|server| format!("http://{}", server.addr)),
@@ -108,6 +111,7 @@ async fn main() -> anyhow::Result<()> {
     funds::spawn_fund_polling(state.clone());
     let api = Router::new()
         .route("/health", get(health))
+        .route("/me", get(me))
         .route("/exchanges", get(list_exchanges))
         .route(
             "/credentials",
@@ -193,6 +197,12 @@ fn listen_addr() -> anyhow::Result<SocketAddr> {
     Ok(value.parse()?)
 }
 
+fn auth_mini_origin() -> String {
+    std::env::var("ONE_EXCHANGE_AUTH_MINI_ORIGIN")
+        .or_else(|_| std::env::var("VITE_AUTH_MINI_ORIGIN"))
+        .unwrap_or_else(|_| "http://127.0.0.1:7777".to_string())
+}
+
 fn vite_addr() -> anyhow::Result<SocketAddr> {
     if let Ok(value) = std::env::var("ONE_EXCHANGE_VITE_ADDR") {
         return Ok(value.parse()?);
@@ -220,6 +230,7 @@ fn start_vite_dev_server(api_addr: SocketAddr) -> anyhow::Result<Option<ViteDevS
         .arg(addr.port().to_string())
         .arg("--strictPort")
         .env("VITE_API_TARGET", format!("http://{api_addr}"))
+        .env("VITE_AUTH_MINI_ORIGIN", auth_mini_origin())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .spawn()
@@ -298,6 +309,7 @@ async fn migrate(db: &SqlitePool) -> anyhow::Result<()> {
         r#"
         CREATE TABLE IF NOT EXISTS credentials (
             id TEXT PRIMARY KEY NOT NULL,
+            owner_id TEXT NOT NULL DEFAULT '00000000-0000-4000-8000-000000000000',
             exchange TEXT NOT NULL,
             name TEXT NOT NULL,
             payload TEXT NOT NULL,
@@ -308,6 +320,13 @@ async fn migrate(db: &SqlitePool) -> anyhow::Result<()> {
     )
     .execute(db)
     .await?;
+    ensure_column(
+        db,
+        "credentials",
+        "owner_id",
+        "ALTER TABLE credentials ADD COLUMN owner_id TEXT NOT NULL DEFAULT '00000000-0000-4000-8000-000000000000'",
+    )
+    .await?;
 
     sqlx::query(
         r#"
@@ -317,11 +336,20 @@ async fn migrate(db: &SqlitePool) -> anyhow::Result<()> {
     )
     .execute(db)
     .await?;
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_credentials_owner_exchange
+        ON credentials (owner_id, exchange)
+        "#,
+    )
+    .execute(db)
+    .await?;
 
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS virtual_accounts (
             account_id TEXT PRIMARY KEY NOT NULL,
+            owner_id TEXT NOT NULL DEFAULT '00000000-0000-4000-8000-000000000000',
             name TEXT NOT NULL,
             enabled INTEGER NOT NULL DEFAULT 1,
             sources TEXT NOT NULL,
@@ -332,11 +360,27 @@ async fn migrate(db: &SqlitePool) -> anyhow::Result<()> {
     )
     .execute(db)
     .await?;
+    ensure_column(
+        db,
+        "virtual_accounts",
+        "owner_id",
+        "ALTER TABLE virtual_accounts ADD COLUMN owner_id TEXT NOT NULL DEFAULT '00000000-0000-4000-8000-000000000000'",
+    )
+    .await?;
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_virtual_accounts_owner_created
+        ON virtual_accounts (owner_id, created_at DESC)
+        "#,
+    )
+    .execute(db)
+    .await?;
 
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS custom_account_sources (
             id TEXT PRIMARY KEY NOT NULL,
+            owner_id TEXT NOT NULL DEFAULT '00000000-0000-4000-8000-000000000000',
             name TEXT NOT NULL,
             base_url TEXT NOT NULL,
             enabled INTEGER NOT NULL DEFAULT 1,
@@ -347,11 +391,27 @@ async fn migrate(db: &SqlitePool) -> anyhow::Result<()> {
     )
     .execute(db)
     .await?;
+    ensure_column(
+        db,
+        "custom_account_sources",
+        "owner_id",
+        "ALTER TABLE custom_account_sources ADD COLUMN owner_id TEXT NOT NULL DEFAULT '00000000-0000-4000-8000-000000000000'",
+    )
+    .await?;
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_custom_account_sources_owner_created
+        ON custom_account_sources (owner_id, created_at DESC)
+        "#,
+    )
+    .execute(db)
+    .await?;
 
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS funds (
             id TEXT PRIMARY KEY NOT NULL,
+            owner_id TEXT NOT NULL DEFAULT '00000000-0000-4000-8000-000000000000',
             name TEXT NOT NULL,
             account_id TEXT NOT NULL,
             enabled INTEGER NOT NULL DEFAULT 1,
@@ -364,11 +424,26 @@ async fn migrate(db: &SqlitePool) -> anyhow::Result<()> {
     )
     .execute(db)
     .await?;
+    ensure_column(
+        db,
+        "funds",
+        "owner_id",
+        "ALTER TABLE funds ADD COLUMN owner_id TEXT NOT NULL DEFAULT '00000000-0000-4000-8000-000000000000'",
+    )
+    .await?;
 
     sqlx::query(
         r#"
         CREATE INDEX IF NOT EXISTS idx_funds_account_id
         ON funds (account_id)
+        "#,
+    )
+    .execute(db)
+    .await?;
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_funds_owner_created
+        ON funds (owner_id, created_at DESC)
         "#,
     )
     .execute(db)
@@ -753,15 +828,24 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     })
 }
 
+async fn me(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<auth::AuthUser>, AppError> {
+    Ok(Json(auth::require_user(&state, &headers).await?))
+}
+
 async fn list_exchanges() -> Json<Vec<exchanges::ExchangeInfo>> {
     Json(exchanges::list_exchanges())
 }
 
 async fn list_account_refs(
     State(state): State<AppState>,
+    headers: HeaderMap,
 ) -> Result<Json<Vec<AccountRef>>, AppError> {
+    let user = auth::require_user(&state, &headers).await?;
     let mut refs = Vec::new();
-    for credential in credentials::list_stored_credentials(&state.db).await? {
+    for credential in credentials::list_stored_credentials(&state.db, &user.user_id).await? {
         let result = match exchanges::adapter(&credential.exchange) {
             Some(adapter) => adapter.get_account_id(&credential.payload).await,
             None => Err(anyhow::anyhow!(
@@ -785,28 +869,42 @@ async fn list_account_refs(
 
 async fn list_accounts(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(query): Query<AccountQuery>,
 ) -> Result<Json<Vec<AccountInfo>>, AppError> {
+    let user = auth::require_user(&state, &headers).await?;
     if query.credential_id.is_none() && query.account_id.is_none() {
-        return Ok(Json(read_all_accounts(&state.db).await?));
+        return Ok(Json(read_all_accounts(&state.db, &user.user_id).await?));
     }
 
-    Ok(Json(vec![read_account(&state.db, query).await?]))
+    Ok(Json(vec![
+        read_account(&state.db, &user.user_id, query).await?,
+    ]))
 }
 
 async fn list_positions(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(query): Query<AccountQuery>,
 ) -> Result<Json<Vec<Position>>, AppError> {
-    Ok(Json(read_account(&state.db, query).await?.positions))
+    let user = auth::require_user(&state, &headers).await?;
+    Ok(Json(
+        read_account(&state.db, &user.user_id, query)
+            .await?
+            .positions,
+    ))
 }
 
-async fn read_account(db: &SqlitePool, query: AccountQuery) -> Result<AccountInfo, AppError> {
+async fn read_account(
+    db: &SqlitePool,
+    owner_id: &str,
+    query: AccountQuery,
+) -> Result<AccountInfo, AppError> {
     if let Some(credential_id) = query.credential_id {
-        return read_credential_account(db, &credential_id).await;
+        return read_credential_account(db, owner_id, &credential_id).await;
     }
     if let Some(account_id) = query.account_id {
-        return read_account_by_account_id(db, &account_id).await;
+        return read_account_by_account_id(db, owner_id, &account_id).await;
     }
 
     Err(AppError::bad_request(
@@ -816,9 +914,10 @@ async fn read_account(db: &SqlitePool, query: AccountQuery) -> Result<AccountInf
 
 async fn read_credential_account(
     db: &SqlitePool,
+    owner_id: &str,
     credential_id: &str,
 ) -> Result<AccountInfo, AppError> {
-    let credential = credentials::get_stored_credential(db, credential_id).await?;
+    let credential = credentials::get_stored_credential(db, owner_id, credential_id).await?;
     let adapter = exchanges::adapter(&credential.exchange).ok_or_else(|| {
         AppError::bad_request(format!("unsupported exchange: {}", credential.exchange))
     })?;
@@ -832,13 +931,16 @@ async fn read_credential_account(
 
 async fn read_account_by_account_id(
     db: &SqlitePool,
+    owner_id: &str,
     account_id: &str,
 ) -> Result<AccountInfo, AppError> {
-    if let Some(account) = virtual_accounts::compose_virtual_account_by_id(db, account_id).await? {
+    if let Some(account) =
+        virtual_accounts::compose_virtual_account_by_id(db, owner_id, account_id).await?
+    {
         return Ok(account);
     }
 
-    for credential in credentials::list_stored_credentials(db).await? {
+    for credential in credentials::list_stored_credentials(db, owner_id).await? {
         let adapter = exchanges::adapter(&credential.exchange).ok_or_else(|| {
             AppError::bad_request(format!("unsupported exchange: {}", credential.exchange))
         })?;
@@ -855,7 +957,7 @@ async fn read_account_by_account_id(
         }
     }
 
-    let sources = custom_account_sources::list_custom_account_source_configs(db).await?;
+    let sources = custom_account_sources::list_custom_account_source_configs(db, owner_id).await?;
     if let Some(account) = custom_account_sources::read_account(&sources, account_id).await? {
         return Ok(account);
     }
@@ -865,9 +967,9 @@ async fn read_account_by_account_id(
     )))
 }
 
-async fn read_all_accounts(db: &SqlitePool) -> Result<Vec<AccountInfo>, AppError> {
+async fn read_all_accounts(db: &SqlitePool, owner_id: &str) -> Result<Vec<AccountInfo>, AppError> {
     let mut accounts = Vec::new();
-    for credential in credentials::list_stored_credentials(db).await? {
+    for credential in credentials::list_stored_credentials(db, owner_id).await? {
         let adapter = exchanges::adapter(&credential.exchange).ok_or_else(|| {
             AppError::bad_request(format!("unsupported exchange: {}", credential.exchange))
         })?;
@@ -880,19 +982,20 @@ async fn read_all_accounts(db: &SqlitePool) -> Result<Vec<AccountInfo>, AppError
         );
     }
 
-    for config in virtual_accounts::list_virtual_account_configs(db)
+    for config in virtual_accounts::list_virtual_account_configs(db, owner_id)
         .await?
         .into_iter()
         .filter(|config| config.enabled)
     {
         if let Some(account) =
-            virtual_accounts::compose_virtual_account_by_id(db, &config.account_id).await?
+            virtual_accounts::compose_virtual_account_by_id(db, owner_id, &config.account_id)
+                .await?
         {
             accounts.push(account);
         }
     }
 
-    let sources = custom_account_sources::list_custom_account_source_configs(db).await?;
+    let sources = custom_account_sources::list_custom_account_source_configs(db, owner_id).await?;
     accounts.extend(
         custom_account_sources::discover_accounts(&sources)
             .await?
@@ -905,9 +1008,12 @@ async fn read_all_accounts(db: &SqlitePool) -> Result<Vec<AccountInfo>, AppError
 
 async fn list_trades(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(query): Query<CredentialQuery>,
 ) -> Result<Json<Vec<TradeFill>>, AppError> {
-    let credential = credentials::get_stored_credential(&state.db, &query.credential_id).await?;
+    let user = auth::require_user(&state, &headers).await?;
+    let credential =
+        credentials::get_stored_credential(&state.db, &user.user_id, &query.credential_id).await?;
     let adapter = exchanges::adapter(&credential.exchange).ok_or_else(|| {
         AppError::bad_request(format!("unsupported exchange: {}", credential.exchange))
     })?;
@@ -947,6 +1053,13 @@ async fn list_products(Query(query): Query<ProductsQuery>) -> Result<Json<Vec<Pr
 }
 
 impl AppError {
+    pub fn unauthorized(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            message: message.into(),
+        }
+    }
+
     pub fn bad_request(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
