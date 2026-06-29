@@ -236,6 +236,9 @@ pub struct FundSettlementRun {
     total_units: f64,
     total_tax: f64,
     total_referrer_rebate: f64,
+    capped_cash_flows: i64,
+    capped_units: f64,
+    capped_cash_amount: f64,
     investor_count: i64,
     status: String,
     status_updated_at: Option<String>,
@@ -251,7 +254,7 @@ pub struct FundSettlementRunDetail {
     referrer_rebates: Vec<FundReferrerRebate>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct FundSettlementTotals {
     gross_equity: f64,
     net_equity: f64,
@@ -259,6 +262,9 @@ pub struct FundSettlementTotals {
     referrer_rebate: f64,
     retained_tax: f64,
     overdrawn_investors: i64,
+    capped_cash_flows: i64,
+    capped_units: f64,
+    capped_cash_amount: f64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -657,6 +663,7 @@ pub async fn list_fund_settlement_runs(
             SELECT id, fund_id, equity_event_index, equity, equity_updated_at,
                    basis_source, basis_id, basis_updated_at,
                    total_deposit, total_units, total_tax, total_referrer_rebate,
+                   capped_cash_flows, capped_units, capped_cash_amount,
                    investor_count, status, status_updated_at, created_at
             FROM fund_settlement_runs
             WHERE fund_id = ?1
@@ -709,6 +716,7 @@ async fn get_fund_settlement_run_detail_by_id(
         SELECT id, fund_id, equity_event_index, equity, equity_updated_at,
                basis_source, basis_id, basis_updated_at,
                total_deposit, total_units, total_tax, total_referrer_rebate,
+               capped_cash_flows, capped_units, capped_cash_amount,
                investor_count, status, status_updated_at, created_at
         FROM fund_settlement_runs
         WHERE id = ?1
@@ -734,6 +742,7 @@ async fn get_fund_settlement_run_detail_by_id(
     .map(FundInvestorSettlement::from)
     .collect::<Vec<_>>();
     let totals = summarize_settlement_totals(&investors);
+    let totals = settlement_totals_with_capped_run(totals, &run);
     let investor_taxes = summarize_investor_taxes(&investors);
     let referrer_rebates = summarize_referrer_rebates(&investors);
 
@@ -770,9 +779,10 @@ pub async fn create_fund_settlement_run(
             id, fund_id, equity_event_index, equity, equity_updated_at,
             basis_source, basis_id, basis_updated_at,
             total_deposit, total_units, total_tax, total_referrer_rebate,
+            capped_cash_flows, capped_units, capped_cash_amount,
             investor_count, status, status_updated_at, created_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'draft', ?14, ?15)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 'draft', ?17, ?18)
         "#,
     )
     .bind(&run_id)
@@ -787,6 +797,9 @@ pub async fn create_fund_settlement_run(
     .bind(preview.total_units)
     .bind(preview.total_tax)
     .bind(preview.total_referrer_rebate)
+    .bind(preview.totals.capped_cash_flows)
+    .bind(preview.totals.capped_units)
+    .bind(preview.totals.capped_cash_amount)
     .bind(preview.investors.len() as i64)
     .bind(&created_at)
     .bind(&created_at)
@@ -823,7 +836,7 @@ pub async fn create_fund_settlement_run(
         .await?;
     }
     tx.commit().await?;
-    let totals = summarize_settlement_totals(&preview.investors);
+    let totals = preview.totals.clone();
     let investor_taxes = summarize_investor_taxes(&preview.investors);
     let referrer_rebates = summarize_referrer_rebates(&preview.investors);
 
@@ -843,6 +856,9 @@ pub async fn create_fund_settlement_run(
                 total_units: preview.total_units,
                 total_tax: preview.total_tax,
                 total_referrer_rebate: preview.total_referrer_rebate,
+                capped_cash_flows: preview.totals.capped_cash_flows,
+                capped_units: preview.totals.capped_units,
+                capped_cash_amount: preview.totals.capped_cash_amount,
                 investor_count: preview.investors.len() as i64,
                 status: "draft".to_string(),
                 status_updated_at: Some(created_at.clone()),
@@ -1188,6 +1204,12 @@ fn build_settlement_preview(
         .collect::<HashMap<_, _>>();
     let mut total_deposit = 0.0;
     let cash_flows = build_cash_flow_ledger(&orders, &equity_points);
+    let capped_cash_flows = cash_flows
+        .iter()
+        .filter(|item| item.capped_units > 1e-9)
+        .count() as i64;
+    let capped_units = cash_flows.iter().map(|item| item.capped_units).sum();
+    let capped_cash_amount = cash_flows.iter().map(|item| item.capped_cash_amount).sum();
 
     for order in cash_flows {
         let investor = investors
@@ -1242,6 +1264,13 @@ fn build_settlement_preview(
             .then_with(|| left.name.cmp(&right.name))
     });
 
+    let totals = settlement_totals_with_capped_values(
+        summarize_settlement_totals(&rows),
+        capped_cash_flows,
+        capped_units,
+        capped_cash_amount,
+    );
+
     FundSettlementPreview {
         fund_id,
         latest_equity,
@@ -1250,7 +1279,7 @@ fn build_settlement_preview(
         total_units,
         total_tax: rows.iter().map(|item| item.tax).sum(),
         total_referrer_rebate: rows.iter().map(|item| item.referrer_rebate).sum(),
-        totals: summarize_settlement_totals(&rows),
+        totals,
         investor_taxes: summarize_investor_taxes(&rows),
         referrer_rebates: summarize_referrer_rebates(&rows),
         investors: rows,
@@ -1429,6 +1458,8 @@ fn settlement_run_csv(detail: &FundSettlementRunDetail) -> String {
             detail.run.basis_source.clone(),
             "basis_id".to_string(),
             detail.run.basis_id.clone(),
+            "capped_cash_flows".to_string(),
+            detail.run.capped_cash_flows.to_string(),
         ],
         vec![
             "equity".to_string(),
@@ -1437,6 +1468,10 @@ fn settlement_run_csv(detail: &FundSettlementRunDetail) -> String {
             detail.run.equity_updated_at.clone(),
             "created_at".to_string(),
             detail.run.created_at.clone(),
+            "capped_units".to_string(),
+            detail.run.capped_units.to_string(),
+            "capped_cash_amount".to_string(),
+            detail.run.capped_cash_amount.to_string(),
         ],
         vec![
             "gross_equity".to_string(),
@@ -1524,7 +1559,34 @@ fn summarize_settlement_totals(investors: &[FundInvestorSettlement]) -> FundSett
         referrer_rebate,
         retained_tax: tax - referrer_rebate,
         overdrawn_investors,
+        capped_cash_flows: 0,
+        capped_units: 0.0,
+        capped_cash_amount: 0.0,
     }
+}
+
+fn settlement_totals_with_capped_run(
+    totals: FundSettlementTotals,
+    run: &FundSettlementRun,
+) -> FundSettlementTotals {
+    settlement_totals_with_capped_values(
+        totals,
+        run.capped_cash_flows,
+        run.capped_units,
+        run.capped_cash_amount,
+    )
+}
+
+fn settlement_totals_with_capped_values(
+    mut totals: FundSettlementTotals,
+    capped_cash_flows: i64,
+    capped_units: f64,
+    capped_cash_amount: f64,
+) -> FundSettlementTotals {
+    totals.capped_cash_flows = capped_cash_flows;
+    totals.capped_units = capped_units;
+    totals.capped_cash_amount = capped_cash_amount;
+    totals
 }
 
 fn summarize_investor_taxes(investors: &[FundInvestorSettlement]) -> Vec<FundInvestorTax> {

@@ -515,6 +515,9 @@ async fn migrate(db: &SqlitePool) -> anyhow::Result<()> {
             total_units REAL NOT NULL,
             total_tax REAL NOT NULL,
             total_referrer_rebate REAL NOT NULL,
+            capped_cash_flows INTEGER NOT NULL DEFAULT 0,
+            capped_units REAL NOT NULL DEFAULT 0,
+            capped_cash_amount REAL NOT NULL DEFAULT 0,
             investor_count INTEGER NOT NULL,
             status TEXT NOT NULL DEFAULT 'draft',
             status_updated_at TEXT,
@@ -587,6 +590,27 @@ async fn migrate(db: &SqlitePool) -> anyhow::Result<()> {
         "#,
     )
     .execute(db)
+    .await?;
+    ensure_column(
+        db,
+        "fund_settlement_runs",
+        "capped_cash_flows",
+        "ALTER TABLE fund_settlement_runs ADD COLUMN capped_cash_flows INTEGER NOT NULL DEFAULT 0",
+    )
+    .await?;
+    ensure_column(
+        db,
+        "fund_settlement_runs",
+        "capped_units",
+        "ALTER TABLE fund_settlement_runs ADD COLUMN capped_units REAL NOT NULL DEFAULT 0",
+    )
+    .await?;
+    ensure_column(
+        db,
+        "fund_settlement_runs",
+        "capped_cash_amount",
+        "ALTER TABLE fund_settlement_runs ADD COLUMN capped_cash_amount REAL NOT NULL DEFAULT 0",
+    )
     .await?;
 
     sqlx::query(

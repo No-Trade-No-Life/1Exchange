@@ -341,6 +341,9 @@ type FundSettlementRun = {
   total_units: number;
   total_tax: number;
   total_referrer_rebate: number;
+  capped_cash_flows: number;
+  capped_units: number;
+  capped_cash_amount: number;
   investor_count: number;
   status: string;
   status_updated_at: string | null;
@@ -362,6 +365,9 @@ type FundSettlementTotals = {
   referrer_rebate: number;
   retained_tax: number;
   overdrawn_investors: number;
+  capped_cash_flows: number;
+  capped_units: number;
+  capped_cash_amount: number;
 };
 
 type FundSettlementBasis = {
@@ -1675,6 +1681,12 @@ function FundDetailPage(props: {
         <Metric label="Referrer rebate" value={settlement ? formatNumber(settlement.total_referrer_rebate) : '-'} />
         <Metric label="Retained tax" value={settlement ? formatNumber(settlement.totals.retained_tax) : '-'} />
         <Metric
+          label="Capped flows"
+          value={settlement ? settlement.totals.capped_cash_flows.toString() : '-'}
+          tone={settlement?.totals.capped_cash_flows ? 'warn' : 'neutral'}
+        />
+        <Metric label="Capped cash" value={settlement ? formatNumber(settlement.totals.capped_cash_amount) : '-'} />
+        <Metric
           label="Overdrawn investors"
           value={settlement ? settlement.totals.overdrawn_investors.toString() : '-'}
           tone={settlement?.totals.overdrawn_investors ? 'warn' : 'neutral'}
@@ -1757,7 +1769,7 @@ function FundDetailPage(props: {
         <InlineError message={settlementRunError ?? props.settlementRunsError} />
         <DataTable
           empty="No settlement runs have been created yet."
-          headers={['Created', 'Status', 'Status time', 'Basis', 'Equity', 'Investors', 'Deposit', 'Tax', 'Rebate', 'Run ID', 'Action']}
+          headers={['Created', 'Status', 'Status time', 'Basis', 'Equity', 'Investors', 'Deposit', 'Capped cash', 'Tax', 'Rebate', 'Run ID', 'Action']}
           rows={props.settlementRuns.map((run) => [
             formatDate(run.created_at),
             <UiBadge key="status" variant={run.status === 'confirmed' ? 'default' : 'secondary'}>{run.status}</UiBadge>,
@@ -1766,6 +1778,7 @@ function FundDetailPage(props: {
             formatNumber(run.equity),
             run.investor_count.toString(),
             formatNumber(run.total_deposit),
+            formatNumber(run.capped_cash_amount),
             formatNumber(run.total_tax),
             formatNumber(run.total_referrer_rebate),
             <span className="font-mono text-xs" key="run-id">{run.id}</span>,
@@ -1960,6 +1973,12 @@ function SettlementRunDetailDialog(props: {
               <Metric label="Tax" value={formatNumber(run.total_tax)} />
               <Metric label="Rebate" value={formatNumber(run.total_referrer_rebate)} />
               <Metric label="Retained tax" value={detail.data ? formatNumber(detail.data.totals.retained_tax) : '-'} />
+              <Metric
+                label="Capped flows"
+                value={run.capped_cash_flows.toString()}
+                tone={run.capped_cash_flows ? 'warn' : 'neutral'}
+              />
+              <Metric label="Capped cash" value={formatNumber(run.capped_cash_amount)} />
               <Metric
                 label="Overdrawn investors"
                 value={detail.data ? detail.data.totals.overdrawn_investors.toString() : '-'}
