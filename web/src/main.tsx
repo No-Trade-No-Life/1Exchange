@@ -42,6 +42,7 @@ import {
   LineChart,
   Menu,
   PackageSearch,
+  Printer,
   WalletCards,
   type LucideIcon,
 } from 'lucide-react';
@@ -2090,15 +2091,21 @@ function SettlementReportPage(props: {
   const run = props.detail?.run;
 
   return (
-    <div className="page-stack">
+    <div className="page-stack settlement-report-page">
       <section className="page-hero compact">
         <div>
           <p className="section-label">Settlement report</p>
           <h1>{run ? run.fund_id : 'Fund settlement'}</h1>
           <p>{run ? run.status + ' · ' + formatDate(run.status_updated_at ?? run.created_at) : props.loading ? 'Loading settlement report' : props.runId}</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2" data-print-hidden>
           {run ? <Link className="secondary-link" to={fundDetailPath(run.fund_id)}>Back to fund</Link> : null}
+          {run ? (
+            <Button variant="outline" type="button" onClick={() => window.print()}>
+              <Printer data-icon="inline-start" />
+              Print
+            </Button>
+          ) : null}
           {run ? (
             <Button variant="outline" type="button" render={<a href={settlementRunExportPath(run.id)} />}>
               <Download data-icon="inline-start" />

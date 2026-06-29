@@ -275,3 +275,36 @@
 
   }
 }
+
+@media print {
+  header,
+  [data-print-hidden] {
+    display: none !important;
+  }
+
+  body {
+    background: white !important;
+    color: black !important;
+  }
+
+  main {
+    max-width: none !important;
+    padding: 0 !important;
+  }
+
+  .settlement-report-page {
+    gap: 12px !important;
+  }
+
+  .settlement-report-page .page-hero,
+  .settlement-report-page .panel,
+  .settlement-report-page .metrics-grid > * {
+    break-inside: avoid;
+    box-shadow: none !important;
+    border-color: #d4d4d4 !important;
+  }
+
+  .settlement-report-page table {
+    font-size: 10px;
+  }
+}
