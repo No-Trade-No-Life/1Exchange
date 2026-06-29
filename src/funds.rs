@@ -1419,8 +1419,8 @@ fn build_settlement_preview(
                 0.0
             };
             let gross_equity = final_equity * ownership;
-            let profit = gross_equity - investor.deposit;
-            let taxable_profit = (profit - investor.tax_threshold).max(0.0);
+            let profit = gross_equity - investor.tax_threshold;
+            let taxable_profit = profit.max(0.0);
             let tax = taxable_profit * investor.tax_rate;
             let referrer_rebate = tax * investor.referrer_rebate_rate;
 
@@ -2194,7 +2194,7 @@ mod tests {
             None,
             settlement_event_state(vec![
                 event_investor("Alice", None, 100.0, 100.0, 0.0, 0.0),
-                event_investor_with_rebate("Bob", Some("Alice"), 120.0, 120.0, 10.0, 0.2, 0.25),
+                event_investor_with_rebate("Bob", Some("Alice"), 120.0, 120.0, 110.0, 0.2, 0.25),
             ]),
         );
 
@@ -2216,9 +2216,44 @@ mod tests {
         );
         assert_close(alice.gross_equity, 240.0 * 100.0 / 220.0);
         assert_close(bob.gross_equity, 240.0 * 120.0 / 220.0);
-        assert_close(bob.tax, (bob.profit - 10.0) * 0.2);
+        assert_close(bob.tax, bob.profit * 0.2);
         assert_close(bob.referrer_rebate, bob.tax * 0.25);
         assert_close(bob.net_equity, bob.gross_equity - bob.tax);
+    }
+
+    #[test]
+    fn previews_settlement_tax_against_tax_threshold_not_cash_deposit() {
+        let preview = build_settlement_preview(
+            "fund".to_string(),
+            vec![FundStatementEquity {
+                event_index: 1,
+                equity: 150.0,
+                updated_at: "2025-01-01T12:00:00+00:00".to_string(),
+            }],
+            None,
+            settlement_event_state(vec![
+                event_investor("Active", None, 100.0, 100.0, 90.0, 0.2),
+                event_investor("Exited", None, -500.0, 0.0, 0.0, 0.2),
+            ]),
+        );
+
+        let active = preview
+            .investors
+            .iter()
+            .find(|item| item.name == "Active")
+            .unwrap();
+        let exited = preview
+            .investors
+            .iter()
+            .find(|item| item.name == "Exited")
+            .unwrap();
+
+        assert_close(active.profit, 60.0);
+        assert_close(active.tax, 12.0);
+        assert_close(exited.gross_equity, 0.0);
+        assert_close(exited.profit, 0.0);
+        assert_close(exited.tax, 0.0);
+        assert_close(preview.total_tax, 12.0);
     }
 
     #[test]
