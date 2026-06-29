@@ -217,6 +217,7 @@ type FundNavSnapshot = {
 type FundStatementSummary = {
   totals: FundStatementTotals;
   investors: FundStatementInvestor[];
+  investor_ledger: FundStatementInvestorLedger[];
   recent_orders: FundStatementOrder[];
   latest_equity: FundStatementEquity | null;
   reconciliation: FundEquityReconciliation | null;
@@ -252,6 +253,18 @@ type FundStatementInvestor = {
   tax_threshold: number | null;
   updated_at: string;
   source_event_index: number;
+};
+
+type FundStatementInvestorLedger = {
+  investor_name: string;
+  deposit: number;
+  effective_deposit: number;
+  inflow_amount: number;
+  outflow_amount: number;
+  capped_cash_amount: number;
+  units: number;
+  flow_count: number;
+  last_flow_at: string;
 };
 
 type FundStatementOrder = {
@@ -1838,6 +1851,30 @@ function FundDetailPage(props: {
         open={selectedSettlementRunId !== null}
         runId={selectedSettlementRunId}
       />
+
+      <section className="panel">
+        <PanelTitle
+          label="Legacy statement"
+          title="Investor cash and units"
+          action={statement ? statement.investor_ledger.length + ' investors' : undefined}
+        />
+        <InlineError message={props.statementError} />
+        <DataTable
+          empty="No legacy investor cash ledger is available for this fund."
+          headers={['Investor', 'Net cash', 'Effective cash', 'Inflows', 'Outflows', 'Capped cash', 'Units', 'Flows', 'Last flow']}
+          rows={(statement?.investor_ledger ?? []).map((investor) => [
+            investor.investor_name,
+            <Value key="deposit" value={investor.deposit} />,
+            <Value key="effective-deposit" value={investor.effective_deposit} />,
+            formatNumber(investor.inflow_amount),
+            formatNumber(investor.outflow_amount),
+            formatNumber(investor.capped_cash_amount),
+            formatNumber(investor.units),
+            investor.flow_count.toString(),
+            formatDate(investor.last_flow_at),
+          ])}
+        />
+      </section>
 
       <section className="panel">
         <PanelTitle

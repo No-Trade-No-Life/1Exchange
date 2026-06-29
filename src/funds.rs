@@ -92,6 +92,7 @@ pub struct SampleFundQuery {
 pub struct FundStatementSummary {
     totals: FundStatementTotals,
     investors: Vec<FundStatementInvestor>,
+    investor_ledger: Vec<FundStatementInvestorLedger>,
     recent_orders: Vec<FundStatementOrder>,
     latest_equity: Option<FundStatementEquity>,
     reconciliation: Option<FundEquityReconciliation>,
@@ -129,6 +130,19 @@ pub struct FundStatementInvestor {
     tax_threshold: Option<f64>,
     updated_at: String,
     source_event_index: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FundStatementInvestorLedger {
+    investor_name: String,
+    deposit: f64,
+    effective_deposit: f64,
+    inflow_amount: f64,
+    outflow_amount: f64,
+    capped_cash_amount: f64,
+    units: f64,
+    flow_count: i64,
+    last_flow_at: String,
 }
 
 #[derive(Clone, Debug, FromRow)]
@@ -556,28 +570,27 @@ pub async fn get_fund_statement_summary(
     .bind(&query.fund_id)
     .fetch_all(&state.db)
     .await?;
-    let mut recent_orders = build_cash_flow_ledger(&statement_orders, &statement_equity);
-    let overdrawn_cash_flows = recent_orders
+    let ledger = build_cash_flow_ledger(&statement_orders, &statement_equity);
+    let investor_ledger = summarize_statement_investor_ledger(&ledger);
+    let overdrawn_cash_flows = ledger
         .iter()
         .filter(|item| item.investor_units_after < -1e-9)
         .count() as i64;
     let mut final_investor_units = HashMap::<&str, f64>::new();
-    for item in &recent_orders {
+    for item in &ledger {
         final_investor_units.insert(item.investor_name.as_str(), item.investor_units_after);
     }
     let overdrawn_investors = final_investor_units
         .values()
         .filter(|units| **units < -1e-9)
         .count() as i64;
-    let capped_cash_flows = recent_orders
+    let capped_cash_flows = ledger
         .iter()
         .filter(|item| item.capped_units > 1e-9)
         .count() as i64;
-    let capped_units = recent_orders.iter().map(|item| item.capped_units).sum();
-    let capped_cash_amount = recent_orders
-        .iter()
-        .map(|item| item.capped_cash_amount)
-        .sum();
+    let capped_units = ledger.iter().map(|item| item.capped_units).sum();
+    let capped_cash_amount = ledger.iter().map(|item| item.capped_cash_amount).sum();
+    let mut recent_orders = ledger;
     recent_orders.reverse();
     recent_orders.truncate(50);
     let latest_nav = sqlx::query_as::<_, FundNavSnapshot>(
@@ -637,6 +650,7 @@ pub async fn get_fund_statement_summary(
             capped_cash_amount,
         },
         investors,
+        investor_ledger,
         recent_orders,
         latest_equity,
         reconciliation,
@@ -1374,6 +1388,44 @@ fn build_cash_flow_ledger(
         .collect()
 }
 
+fn summarize_statement_investor_ledger(
+    ledger: &[FundStatementOrder],
+) -> Vec<FundStatementInvestorLedger> {
+    let mut investors = HashMap::<String, FundStatementInvestorLedger>::new();
+    for flow in ledger {
+        let investor =
+            investors
+                .entry(flow.investor_name.clone())
+                .or_insert(FundStatementInvestorLedger {
+                    investor_name: flow.investor_name.clone(),
+                    deposit: 0.0,
+                    effective_deposit: 0.0,
+                    inflow_amount: 0.0,
+                    outflow_amount: 0.0,
+                    capped_cash_amount: 0.0,
+                    units: 0.0,
+                    flow_count: 0,
+                    last_flow_at: flow.updated_at.clone(),
+                });
+
+        investor.deposit += flow.deposit;
+        investor.effective_deposit += flow.effective_deposit;
+        if flow.deposit >= 0.0 {
+            investor.inflow_amount += flow.deposit;
+        } else {
+            investor.outflow_amount += -flow.deposit;
+        }
+        investor.capped_cash_amount += flow.capped_cash_amount;
+        investor.units = flow.investor_units_after;
+        investor.flow_count += 1;
+        investor.last_flow_at = flow.updated_at.clone();
+    }
+
+    let mut rows = investors.into_values().collect::<Vec<_>>();
+    rows.sort_by(|left, right| left.investor_name.cmp(&right.investor_name));
+    rows
+}
+
 fn capped_unit_delta(requested_unit_delta: f64, current_investor_units: f64) -> f64 {
     if requested_unit_delta < -current_investor_units {
         -current_investor_units
@@ -1874,6 +1926,59 @@ mod tests {
         assert_close(ledger[2].capped_cash_amount, 200.0);
         assert_close(ledger[2].investor_units_after, 0.0);
         assert_close(ledger[2].total_units_after, 0.0);
+    }
+
+    #[test]
+    fn summarizes_statement_investor_ledger_from_cash_flows() {
+        let ledger = build_cash_flow_ledger(
+            &[
+                SettlementOrder {
+                    event_index: 1,
+                    investor_name: "Alice".to_string(),
+                    deposit: 100.0,
+                    updated_at: "2025-01-01T00:00:00+00:00".to_string(),
+                },
+                SettlementOrder {
+                    event_index: 2,
+                    investor_name: "Alice".to_string(),
+                    deposit: -300.0,
+                    updated_at: "2025-01-02T00:00:00+00:00".to_string(),
+                },
+                SettlementOrder {
+                    event_index: 3,
+                    investor_name: "Bob".to_string(),
+                    deposit: 50.0,
+                    updated_at: "2025-01-03T00:00:00+00:00".to_string(),
+                },
+            ],
+            &[FundStatementEquity {
+                event_index: 1,
+                equity: 200.0,
+                updated_at: "2025-01-01T12:00:00+00:00".to_string(),
+            }],
+        );
+
+        let rows = summarize_statement_investor_ledger(&ledger);
+        let alice = rows
+            .iter()
+            .find(|item| item.investor_name == "Alice")
+            .unwrap();
+        let bob = rows
+            .iter()
+            .find(|item| item.investor_name == "Bob")
+            .unwrap();
+
+        assert_eq!(rows.len(), 2);
+        assert_close(alice.deposit, -200.0);
+        assert_close(alice.effective_deposit, -100.0);
+        assert_close(alice.inflow_amount, 100.0);
+        assert_close(alice.outflow_amount, 300.0);
+        assert_close(alice.capped_cash_amount, 100.0);
+        assert_close(alice.units, 0.0);
+        assert_eq!(alice.flow_count, 2);
+        assert_eq!(alice.last_flow_at, "2025-01-02T00:00:00+00:00");
+        assert_close(bob.deposit, 50.0);
+        assert_close(bob.units, 50.0);
     }
 
     #[test]
