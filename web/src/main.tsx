@@ -239,6 +239,7 @@ type FundStatementTotals = {
   overdrawn_investors: number;
   capped_cash_flows: number;
   capped_units: number;
+  capped_cash_amount: number;
 };
 
 type FundStatementInvestor = {
@@ -255,6 +256,8 @@ type FundStatementOrder = {
   event_index: number;
   investor_name: string;
   deposit: number;
+  effective_deposit: number;
+  capped_cash_amount: number;
   direction: string;
   nav_per_unit: number;
   requested_unit_delta: number;
@@ -1640,6 +1643,7 @@ function FundDetailPage(props: {
           tone={statement?.totals.capped_cash_flows ? 'warn' : 'neutral'}
         />
         <Metric label="Capped units" value={statement ? formatNumber(statement.totals.capped_units) : '-'} />
+        <Metric label="Capped cash" value={statement ? formatNumber(statement.totals.capped_cash_amount) : '-'} />
         <Metric label="Legacy equity" value={statement?.latest_equity ? formatNumber(statement.latest_equity.equity) : '-'} />
         <Metric label="Tax modes" value={statement ? statement.totals.tax_modes.toString() : '-'} />
       </section>
@@ -1836,12 +1840,14 @@ function FundDetailPage(props: {
         />
         <DataTable
           empty="No imported statement orders are available for this fund."
-          headers={['Time', 'Investor', 'Direction', 'Amount', 'NAV/unit', 'Requested units', 'Unit delta', 'Capped units', 'Investor units', 'Fund units', 'Event']}
+          headers={['Time', 'Investor', 'Direction', 'Amount', 'Effective amount', 'Capped cash', 'NAV/unit', 'Requested units', 'Unit delta', 'Capped units', 'Investor units', 'Fund units', 'Event']}
           rows={(statement?.recent_orders ?? []).map((order) => [
             formatDate(order.updated_at),
             order.investor_name,
             cashFlowDirectionLabel(order.direction),
             <Value key="amount" value={order.deposit} />,
+            <Value key="effective-amount" value={order.effective_deposit} />,
+            formatNumber(order.capped_cash_amount),
             formatNumber(order.nav_per_unit),
             <Value key="requested-unit-delta" value={order.requested_unit_delta} />,
             <Value key="unit-delta" value={order.unit_delta} />,
