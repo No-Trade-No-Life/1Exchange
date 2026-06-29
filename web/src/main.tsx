@@ -1847,7 +1847,7 @@ function FundDetailPage(props: {
         />
         <InlineError message={props.statementError} />
         <DataTable
-          empty="No imported statement investors are available for this fund."
+          empty="No legacy statement investors are available for this fund."
           headers={['Investor', 'Referrer', 'Tax rate', 'Rebate rate', 'Tax threshold', 'Updated']}
           rows={(statement?.investors ?? []).map((investor) => [
             investor.name,
@@ -1886,7 +1886,7 @@ function FundDetailPage(props: {
           action={statement ? statement.recent_orders.length + ' flows' : undefined}
         />
         <DataTable
-          empty="No imported statement orders are available for this fund."
+          empty="No legacy statement cash flows are available for this fund."
           headers={['Time', 'Investor', 'Direction', 'Amount', 'Effective amount', 'Capped cash', 'NAV/unit', 'Requested units', 'Unit delta', 'Capped units', 'Investor units', 'Fund units', 'Event']}
           rows={(statement?.recent_orders ?? []).map((order) => [
             formatDate(order.updated_at),
@@ -1913,7 +1913,7 @@ function FundDetailPage(props: {
           action={statement ? statement.tax_modes.length + ' markers' : undefined}
         />
         <DataTable
-          empty="No imported tax mode markers are available for this fund."
+          empty="No legacy tax mode markers are available for this fund."
           headers={['Time', 'Mode', 'Comment', 'Event']}
           rows={(statement?.tax_modes ?? []).map((mode) => [
             formatDate(mode.updated_at),
