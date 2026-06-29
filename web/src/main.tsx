@@ -235,6 +235,8 @@ type FundStatementTotals = {
   tax_modes: number;
   tax_threshold_adjustments: number;
   tax_threshold_amount: number;
+  overdrawn_cash_flows: number;
+  overdrawn_investors: number;
 };
 
 type FundStatementInvestor = {
@@ -252,6 +254,10 @@ type FundStatementOrder = {
   investor_name: string;
   deposit: number;
   direction: string;
+  nav_per_unit: number;
+  unit_delta: number;
+  investor_units_after: number;
+  total_units_after: number;
   updated_at: string;
 };
 
@@ -1613,6 +1619,16 @@ function FundDetailPage(props: {
         <Metric label="Investor outflows" value={statement ? formatNumber(statement.totals.outflow_amount) : '-'} />
         <Metric label="Net cash flow" value={statement ? formatNumber(statement.totals.order_deposit) : '-'} />
         <Metric label="Tax threshold" value={statement ? formatNumber(statement.totals.tax_threshold_amount) : '-'} />
+        <Metric
+          label="Overdrawn flows"
+          value={statement ? statement.totals.overdrawn_cash_flows.toString() : '-'}
+          tone={statement?.totals.overdrawn_cash_flows ? 'warn' : 'neutral'}
+        />
+        <Metric
+          label="Overdrawn investors"
+          value={statement ? statement.totals.overdrawn_investors.toString() : '-'}
+          tone={statement?.totals.overdrawn_investors ? 'warn' : 'neutral'}
+        />
         <Metric label="Legacy equity" value={statement?.latest_equity ? formatNumber(statement.latest_equity.equity) : '-'} />
         <Metric label="Tax modes" value={statement ? statement.totals.tax_modes.toString() : '-'} />
       </section>
@@ -1804,12 +1820,16 @@ function FundDetailPage(props: {
         />
         <DataTable
           empty="No imported statement orders are available for this fund."
-          headers={['Time', 'Investor', 'Direction', 'Amount', 'Event']}
+          headers={['Time', 'Investor', 'Direction', 'Amount', 'NAV/unit', 'Unit delta', 'Investor units', 'Fund units', 'Event']}
           rows={(statement?.recent_orders ?? []).map((order) => [
             formatDate(order.updated_at),
             order.investor_name,
             cashFlowDirectionLabel(order.direction),
             <Value key="amount" value={order.deposit} />,
+            formatNumber(order.nav_per_unit),
+            <Value key="unit-delta" value={order.unit_delta} />,
+            formatNumber(order.investor_units_after),
+            formatNumber(order.total_units_after),
             '#' + order.event_index,
           ])}
         />

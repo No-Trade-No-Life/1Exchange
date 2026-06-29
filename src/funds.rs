@@ -113,6 +113,8 @@ pub struct FundStatementTotals {
     tax_modes: i64,
     tax_threshold_adjustments: i64,
     tax_threshold_amount: f64,
+    overdrawn_cash_flows: i64,
+    overdrawn_investors: i64,
 }
 
 #[derive(Debug, Serialize, FromRow)]
@@ -126,12 +128,24 @@ pub struct FundStatementInvestor {
     source_event_index: i64,
 }
 
-#[derive(Debug, Serialize, FromRow)]
+#[derive(Clone, Debug, FromRow)]
+struct SettlementOrder {
+    event_index: i64,
+    investor_name: String,
+    deposit: f64,
+    updated_at: String,
+}
+
+#[derive(Debug, Serialize)]
 pub struct FundStatementOrder {
     event_index: i64,
     investor_name: String,
     deposit: f64,
     direction: String,
+    nav_per_unit: f64,
+    unit_delta: f64,
+    investor_units_after: f64,
+    total_units_after: f64,
     updated_at: String,
 }
 
@@ -294,13 +308,6 @@ impl From<FundSettlementInvestorRow> for FundInvestorSettlement {
             net_equity: row.net_equity,
         }
     }
-}
-
-#[derive(Clone, Debug, FromRow)]
-struct SettlementOrder {
-    investor_name: String,
-    deposit: f64,
-    updated_at: String,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -496,17 +503,12 @@ pub async fn get_fund_statement_summary(
     .fetch_all(&state.db)
     .await?;
 
-    let recent_orders = sqlx::query_as::<_, FundStatementOrder>(
+    let statement_orders = sqlx::query_as::<_, SettlementOrder>(
         r#"
-        SELECT event_index,
-               investor_name,
-               deposit,
-               CASE WHEN deposit < 0 THEN 'outflow' ELSE 'inflow' END AS direction,
-               updated_at
+        SELECT event_index, investor_name, deposit, updated_at
         FROM fund_statement_orders
         WHERE fund_id = ?1
-        ORDER BY updated_at DESC, event_index DESC
-        LIMIT 50
+        ORDER BY updated_at ASC, event_index ASC
         "#,
     )
     .bind(&query.fund_id)
@@ -525,6 +527,32 @@ pub async fn get_fund_statement_summary(
     .bind(&query.fund_id)
     .fetch_optional(&state.db)
     .await?;
+    let statement_equity = sqlx::query_as::<_, FundStatementEquity>(
+        r#"
+        SELECT event_index, equity, updated_at
+        FROM fund_statement_equity
+        WHERE fund_id = ?1
+        ORDER BY updated_at ASC, event_index ASC
+        "#,
+    )
+    .bind(&query.fund_id)
+    .fetch_all(&state.db)
+    .await?;
+    let mut recent_orders = build_cash_flow_ledger(&statement_orders, &statement_equity);
+    let overdrawn_cash_flows = recent_orders
+        .iter()
+        .filter(|item| item.investor_units_after < -1e-9)
+        .count() as i64;
+    let mut final_investor_units = HashMap::<&str, f64>::new();
+    for item in &recent_orders {
+        final_investor_units.insert(item.investor_name.as_str(), item.investor_units_after);
+    }
+    let overdrawn_investors = final_investor_units
+        .values()
+        .filter(|units| **units < -1e-9)
+        .count() as i64;
+    recent_orders.reverse();
+    recent_orders.truncate(50);
     let latest_nav = sqlx::query_as::<_, FundNavSnapshot>(
         r#"
         SELECT id, fund_id, account_id, equity, target_currency, positions_count,
@@ -575,6 +603,8 @@ pub async fn get_fund_statement_summary(
             tax_modes: tax_mode_count,
             tax_threshold_adjustments: tax_threshold_adjustments.len() as i64,
             tax_threshold_amount,
+            overdrawn_cash_flows,
+            overdrawn_investors,
         },
         investors,
         recent_orders,
@@ -892,7 +922,7 @@ async fn load_fund_settlement_preview(
 ) -> Result<FundSettlementPreview, AppError> {
     let orders = sqlx::query_as::<_, SettlementOrder>(
         r#"
-        SELECT investor_name, deposit, updated_at
+        SELECT event_index, investor_name, deposit, updated_at
         FROM fund_statement_orders
         WHERE fund_id = ?1
         ORDER BY updated_at ASC, event_index ASC
@@ -1130,29 +1160,10 @@ fn build_settlement_preview(
             )
         })
         .collect::<HashMap<_, _>>();
-    let mut total_units = 0.0;
     let mut total_deposit = 0.0;
-    let mut latest_order_equity = 0.0;
-    let mut equity_index = 0usize;
+    let cash_flows = build_cash_flow_ledger(&orders, &equity_points);
 
-    for order in orders {
-        while equity_index < equity_points.len()
-            && equity_points[equity_index].updated_at <= order.updated_at
-        {
-            latest_order_equity = equity_points[equity_index].equity;
-            equity_index += 1;
-        }
-
-        // ASSUMPTION: Legacy fund statements store subscriptions and fund equity
-        // but not explicit share issuance records. If the approximation issues too
-        // many or too few units for an old subscription, the preview changes only
-        // this derived settlement table; raw imported events remain unchanged.
-        let nav_per_unit = if total_units > 0.0 && latest_order_equity > 0.0 {
-            latest_order_equity / total_units
-        } else {
-            1.0
-        };
-        let units = order.deposit / nav_per_unit;
+    for order in cash_flows {
         let investor = investors
             .entry(order.investor_name.clone())
             .or_insert_with(|| SettlementInvestorState {
@@ -1161,11 +1172,11 @@ fn build_settlement_preview(
             });
 
         investor.deposit += order.deposit;
-        investor.units += units;
+        investor.units += order.unit_delta;
         total_deposit += order.deposit;
-        total_units += units;
     }
 
+    let total_units = investors.values().map(|item| item.units).sum::<f64>();
     let mut rows = investors
         .into_values()
         .map(|investor| {
@@ -1239,6 +1250,61 @@ fn reconcile_fund_equity(
         delta,
         delta_rate,
     }
+}
+
+fn build_cash_flow_ledger(
+    orders: &[SettlementOrder],
+    equity_points: &[FundStatementEquity],
+) -> Vec<FundStatementOrder> {
+    let mut investor_units = HashMap::<String, f64>::new();
+    let mut total_units = 0.0;
+    let mut latest_order_equity = 0.0;
+    let mut equity_index = 0usize;
+
+    orders
+        .iter()
+        .map(|order| {
+            while equity_index < equity_points.len()
+                && equity_points[equity_index].updated_at <= order.updated_at
+            {
+                latest_order_equity = equity_points[equity_index].equity;
+                equity_index += 1;
+            }
+
+            // ASSUMPTION: Legacy fund statements store investor cash flows and
+            // fund equity, but not explicit share issuance records. If the
+            // approximation issues too many or too few units for an old flow,
+            // only derived ledgers and settlement previews change; raw imported
+            // events remain unchanged for audit and re-derivation.
+            let nav_per_unit = if total_units > 0.0 && latest_order_equity > 0.0 {
+                latest_order_equity / total_units
+            } else {
+                1.0
+            };
+            let unit_delta = order.deposit / nav_per_unit;
+            let investor_units_after = investor_units
+                .entry(order.investor_name.clone())
+                .or_default();
+            *investor_units_after += unit_delta;
+            total_units += unit_delta;
+
+            FundStatementOrder {
+                event_index: order.event_index,
+                investor_name: order.investor_name.clone(),
+                deposit: order.deposit,
+                direction: cash_flow_direction(order.deposit).to_string(),
+                nav_per_unit,
+                unit_delta,
+                investor_units_after: *investor_units_after,
+                total_units_after: total_units,
+                updated_at: order.updated_at.clone(),
+            }
+        })
+        .collect()
+}
+
+fn cash_flow_direction(deposit: f64) -> &'static str {
+    if deposit < 0.0 { "outflow" } else { "inflow" }
 }
 
 async fn load_tax_threshold_adjustments(
@@ -1523,11 +1589,13 @@ mod tests {
             "fund".to_string(),
             vec![
                 SettlementOrder {
+                    event_index: 1,
                     investor_name: "Alice".to_string(),
                     deposit: 100.0,
                     updated_at: "2025-01-01T00:00:00+00:00".to_string(),
                 },
                 SettlementOrder {
+                    event_index: 2,
                     investor_name: "Bob".to_string(),
                     deposit: 120.0,
                     updated_at: "2025-01-02T00:00:00+00:00".to_string(),
@@ -1585,6 +1653,7 @@ mod tests {
         let preview = build_settlement_preview(
             "fund".to_string(),
             vec![SettlementOrder {
+                event_index: 1,
                 investor_name: "Alice".to_string(),
                 deposit: 100.0,
                 updated_at: "2025-01-01T00:00:00+00:00".to_string(),
@@ -1612,6 +1681,40 @@ mod tests {
             Some("live_nav")
         );
         assert_close(preview.totals.gross_equity, 125.0);
+    }
+
+    #[test]
+    fn derives_cash_flow_units_for_outflows() {
+        let ledger = build_cash_flow_ledger(
+            &[
+                SettlementOrder {
+                    event_index: 1,
+                    investor_name: "Alice".to_string(),
+                    deposit: 100.0,
+                    updated_at: "2025-01-01T00:00:00+00:00".to_string(),
+                },
+                SettlementOrder {
+                    event_index: 2,
+                    investor_name: "Alice".to_string(),
+                    deposit: -20.0,
+                    updated_at: "2025-01-02T00:00:00+00:00".to_string(),
+                },
+            ],
+            &[FundStatementEquity {
+                event_index: 1,
+                equity: 200.0,
+                updated_at: "2025-01-01T12:00:00+00:00".to_string(),
+            }],
+        );
+
+        assert_close(ledger[0].nav_per_unit, 1.0);
+        assert_close(ledger[0].unit_delta, 100.0);
+        assert_eq!(ledger[0].direction, "inflow");
+        assert_close(ledger[1].nav_per_unit, 2.0);
+        assert_close(ledger[1].unit_delta, -10.0);
+        assert_eq!(ledger[1].direction, "outflow");
+        assert_close(ledger[1].investor_units_after, 90.0);
+        assert_close(ledger[1].total_units_after, 90.0);
     }
 
     #[test]
