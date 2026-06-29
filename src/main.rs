@@ -371,6 +371,110 @@ async fn migrate(db: &SqlitePool) -> anyhow::Result<()> {
     .execute(db)
     .await?;
 
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS fund_statement_events (
+            fund_id TEXT NOT NULL,
+            event_index INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            PRIMARY KEY (fund_id, event_index)
+        )
+        "#,
+    )
+    .execute(db)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_fund_statement_events_fund_updated
+        ON fund_statement_events (fund_id, updated_at)
+        "#,
+    )
+    .execute(db)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS fund_statement_orders (
+            fund_id TEXT NOT NULL,
+            event_index INTEGER NOT NULL,
+            investor_name TEXT NOT NULL,
+            deposit REAL NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (fund_id, event_index)
+        )
+        "#,
+    )
+    .execute(db)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_fund_statement_orders_fund_investor
+        ON fund_statement_orders (fund_id, investor_name, updated_at)
+        "#,
+    )
+    .execute(db)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS fund_statement_equity (
+            fund_id TEXT NOT NULL,
+            event_index INTEGER NOT NULL,
+            equity REAL NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (fund_id, event_index)
+        )
+        "#,
+    )
+    .execute(db)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_fund_statement_equity_fund_updated
+        ON fund_statement_equity (fund_id, updated_at)
+        "#,
+    )
+    .execute(db)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS fund_statement_investors (
+            fund_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            referrer TEXT,
+            tax_rate REAL,
+            referrer_rebate_rate REAL,
+            tax_threshold REAL,
+            updated_at TEXT NOT NULL,
+            source_event_index INTEGER NOT NULL,
+            PRIMARY KEY (fund_id, name)
+        )
+        "#,
+    )
+    .execute(db)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS fund_statement_tax_modes (
+            fund_id TEXT NOT NULL,
+            event_index INTEGER NOT NULL,
+            mode TEXT NOT NULL,
+            comment TEXT,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (fund_id, event_index)
+        )
+        "#,
+    )
+    .execute(db)
+    .await?;
+
     Ok(())
 }
 
