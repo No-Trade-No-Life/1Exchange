@@ -1705,7 +1705,7 @@ async fn load_statement_event_state(
         SELECT event_index, updated_at, payload
         FROM fund_statement_events
         WHERE fund_id = ?1
-        ORDER BY updated_at ASC, event_index ASC
+        ORDER BY event_index ASC
         "#,
     )
     .bind(fund_id)
@@ -2995,6 +2995,65 @@ mod tests {
         assert_eq!(tax_event_index, 2);
         assert_eq!(mode, "taxation/v2");
         assert_eq!(comment, "Settlement run run-1");
+    }
+
+    #[tokio::test]
+    async fn folds_statement_events_by_event_index_not_timestamp() {
+        let db = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"
+            CREATE TABLE fund_statement_events (
+                fund_id TEXT NOT NULL,
+                event_index INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                PRIMARY KEY (fund_id, event_index)
+            )
+            "#,
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        for (event_index, updated_at, payload) in [
+            (
+                0,
+                "2025-01-02T00:00:00+00:00",
+                r#"{"type":"order","order":{"name":"Alice","deposit":100}}"#,
+            ),
+            (
+                1,
+                "2025-01-01T00:00:00+00:00",
+                r#"{"type":"equity","fund_equity":{"equity":150}}"#,
+            ),
+        ] {
+            sqlx::query(
+                r#"
+                INSERT INTO fund_statement_events (fund_id, event_index, event_type, updated_at, payload)
+                VALUES ('fund', ?1, 'test', ?2, ?3)
+                "#,
+            )
+            .bind(event_index)
+            .bind(updated_at)
+            .bind(payload)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+
+        let summary = load_statement_event_state(&db, "fund").await.unwrap();
+        let alice = summary
+            .investors
+            .iter()
+            .find(|item| item.name == "Alice")
+            .unwrap();
+
+        assert_close(summary.total_assets, 150.0);
+        assert_close(alice.share, 100.0);
     }
 
     fn investor_rebate(
