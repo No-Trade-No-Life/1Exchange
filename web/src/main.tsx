@@ -1597,9 +1597,11 @@ function FundDetailPage(props: {
   const latestSnapshot = props.snapshots[0];
   const statement = props.statementSummary;
   const settlement = props.settlementPreview;
-  const draftSettlementRuns = props.settlementRuns.filter((run) => run.status === 'draft');
-  const confirmedSettlementRuns = props.settlementRuns.filter((run) => run.status === 'confirmed');
-  const voidedSettlementRuns = props.settlementRuns.filter((run) => run.status === 'voided');
+  const currentSettlementRuns = props.settlementRuns.filter((run) => run.settlement_model === 'event_state_v1');
+  const legacySettlementRuns = props.settlementRuns.filter((run) => run.settlement_model !== 'event_state_v1');
+  const draftSettlementRuns = currentSettlementRuns.filter((run) => run.status === 'draft');
+  const confirmedSettlementRuns = currentSettlementRuns.filter((run) => run.status === 'confirmed');
+  const voidedSettlementRuns = currentSettlementRuns.filter((run) => run.status === 'voided');
 
   async function sampleFund() {
     const response = await fetch('/api/funds/sample?fund_id=' + encodeURIComponent(props.fundId), { method: 'POST' });
@@ -1863,6 +1865,22 @@ function FundDetailPage(props: {
           actioningRunId={settlementRunActionId}
           empty="No voided settlement runs are recorded yet."
           runs={voidedSettlementRuns}
+          onConfirm={(runId) => void updateSettlementRunStatus(runId, 'confirm')}
+          onInspect={setSelectedSettlementRunId}
+          onVoid={(runId) => void updateSettlementRunStatus(runId, 'void')}
+        />
+      </section>
+
+      <section className="panel">
+        <PanelTitle
+          label="Settlement runs"
+          title="Legacy model runs"
+          action={legacySettlementRuns.length + ' runs'}
+        />
+        <SettlementRunsTable
+          actioningRunId={settlementRunActionId}
+          empty="No legacy model settlement runs are recorded."
+          runs={legacySettlementRuns}
           onConfirm={(runId) => void updateSettlementRunStatus(runId, 'confirm')}
           onInspect={setSelectedSettlementRunId}
           onVoid={(runId) => void updateSettlementRunStatus(runId, 'void')}
