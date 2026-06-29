@@ -36,6 +36,7 @@ import {
   CircleCheck,
   Download,
   Eye,
+  FileText,
   History,
   LayoutDashboard,
   LineChart,
@@ -529,6 +530,7 @@ function App() {
           <Route path="/virtual-accounts" element={<Navigate replace to="/accounts" />} />
           <Route path="/funds" element={<PageBoundary><FundsRoute /></PageBoundary>} />
           <Route path="/funds/detail" element={<PageBoundary><FundDetailRoute /></PageBoundary>} />
+          <Route path="/funds/settlement" element={<PageBoundary><SettlementReportRoute /></PageBoundary>} />
           <Route path="/positions" element={<PageBoundary><PositionsRoute /></PageBoundary>} />
           <Route path="/products" element={<PageBoundary><ProductsRoute /></PageBoundary>} />
           <Route path="/exchanges" element={<PageBoundary><ExchangesRoute /></PageBoundary>} />
@@ -852,6 +854,18 @@ function FundDetailRoute() {
         statementSummary={statements.data ?? null}
         snapshots={nav.data ?? []}
       />
+    </RefreshScope>
+  );
+}
+
+function SettlementReportRoute() {
+  const [params] = useSearchParams();
+  const runId = params.get('run_id') ?? '';
+  const detail = useJson<FundSettlementRunDetail>(runId ? '/api/fund-settlement-runs/detail?run_id=' + encodeURIComponent(runId) : null);
+
+  return (
+    <RefreshScope resources={[detail]}>
+      <SettlementReportPage detail={detail.data ?? null} error={detail.error} loading={detail.loading} runId={runId} />
     </RefreshScope>
   );
 }
@@ -1925,6 +1939,10 @@ function SettlementRunActions(props: {
         <Eye data-icon="inline-start" />
         View
       </Button>
+      <Button size="sm" variant="outline" type="button" render={<Link to={settlementReportPath(props.runId)} />}>
+        <FileText data-icon="inline-start" />
+        Report
+      </Button>
       {props.status === 'draft' ? (
         <>
           <Button size="sm" type="button" disabled={props.actioning} onClick={props.onConfirm}>
@@ -1988,65 +2006,120 @@ function SettlementRunDetailDialog(props: {
               />
             </section>
 
-            <section>
-              <PanelTitle label="Settlement report" title="Settlement summary" action={run.status} />
-              <DataTable
-                empty="No settlement summary is available for this run."
-                headers={['Line item', 'Amount']}
-                rows={settlementReportRows(detail.data).map((row) => [
-                  row.label,
-                  <Value key={row.label} value={row.amount} />,
-                ])}
-              />
-            </section>
-
-            <section>
-              <PanelTitle label="Run detail" title="Tax payable" action={(detail.data?.investor_taxes.length ?? 0) + ' investors'} />
-              <DataTable
-                empty="No investor tax is recorded for this run."
-                headers={['Investor', 'Tax']}
-                rows={(detail.data?.investor_taxes ?? []).map((tax) => [
-                  tax.investor,
-                  formatNumber(tax.tax),
-                ])}
-              />
-            </section>
-
-            <section>
-              <PanelTitle label="Run detail" title="Referrer rebates" action={(detail.data?.referrer_rebates.length ?? 0) + ' referrers'} />
-              <DataTable
-                empty="No referrer rebate is recorded for this run."
-                headers={['Referrer', 'Rebate']}
-                rows={(detail.data?.referrer_rebates ?? []).map((rebate) => [
-                  rebate.referrer,
-                  formatNumber(rebate.rebate),
-                ])}
-              />
-            </section>
-
-            <section>
-              <PanelTitle label="Run detail" title="Investor allocation" action={(detail.data?.investors.length ?? 0) + ' investors'} />
-              <DataTable
-                empty="No investor rows are recorded for this run."
-                headers={['Investor', 'Referrer', 'Deposit', 'Capped cash', 'Ownership', 'Gross equity', 'Profit', 'Tax', 'Rebate', 'Net equity']}
-                rows={(detail.data?.investors ?? []).map((investor) => [
-                  investor.name,
-                  investor.referrer ?? '-',
-                  formatNumber(investor.deposit),
-                  formatNumber(investor.capped_cash_amount),
-                  formatPercent(investor.ownership),
-                  formatNumber(investor.gross_equity),
-                  <Value key="profit" value={investor.profit} />,
-                  formatNumber(investor.tax),
-                  formatNumber(investor.referrer_rebate),
-                  formatNumber(investor.net_equity),
-                ])}
-              />
-            </section>
+            <SettlementReportContent detail={detail.data} />
           </div>
         ) : null}
       </DialogContent>
     </Dialog>
+  );
+}
+
+function SettlementReportPage(props: {
+  detail: FundSettlementRunDetail | null;
+  error: string | null;
+  loading: boolean;
+  runId: string;
+}) {
+  const run = props.detail?.run;
+
+  return (
+    <div className="page-stack">
+      <section className="page-hero compact">
+        <div>
+          <p className="section-label">Settlement report</p>
+          <h1>{run ? run.fund_id : 'Fund settlement'}</h1>
+          <p>{run ? run.status + ' · ' + formatDate(run.status_updated_at ?? run.created_at) : props.loading ? 'Loading settlement report' : props.runId}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          {run ? <Link className="secondary-link" to={fundDetailPath(run.fund_id)}>Back to fund</Link> : null}
+          {run ? (
+            <Button variant="outline" type="button" render={<a href={settlementRunExportPath(run.id)} />}>
+              <Download data-icon="inline-start" />
+              CSV
+            </Button>
+          ) : null}
+        </div>
+      </section>
+
+      <InlineError message={props.error} />
+      {run ? (
+        <>
+          <section className="metrics-grid compact" aria-label="Settlement report summary">
+            <Metric label="Status" value={run.status} />
+            <Metric label="Basis" value={settlementBasisLabel(run.basis_source)} />
+            <Metric label="Equity" value={formatNumber(run.equity)} />
+            <Metric label="Investors" value={run.investor_count.toString()} />
+            <Metric label="Net equity" value={formatNumber(props.detail?.totals.net_equity ?? 0)} />
+            <Metric label="Tax" value={formatNumber(run.total_tax)} />
+            <Metric label="Rebate" value={formatNumber(run.total_referrer_rebate)} />
+            <Metric label="Capped cash" value={formatNumber(run.capped_cash_amount)} />
+          </section>
+          <SettlementReportContent detail={props.detail} />
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+function SettlementReportContent(props: { detail: FundSettlementRunDetail | null }) {
+  return (
+    <>
+      <section>
+        <PanelTitle label="Settlement report" title="Settlement summary" action={props.detail?.run.status} />
+        <DataTable
+          empty="No settlement summary is available for this run."
+          headers={['Line item', 'Amount']}
+          rows={settlementReportRows(props.detail).map((row) => [
+            row.label,
+            <Value key={row.label} value={row.amount} />,
+          ])}
+        />
+      </section>
+
+      <section>
+        <PanelTitle label="Run detail" title="Tax payable" action={(props.detail?.investor_taxes.length ?? 0) + ' investors'} />
+        <DataTable
+          empty="No investor tax is recorded for this run."
+          headers={['Investor', 'Tax']}
+          rows={(props.detail?.investor_taxes ?? []).map((tax) => [
+            tax.investor,
+            formatNumber(tax.tax),
+          ])}
+        />
+      </section>
+
+      <section>
+        <PanelTitle label="Run detail" title="Referrer rebates" action={(props.detail?.referrer_rebates.length ?? 0) + ' referrers'} />
+        <DataTable
+          empty="No referrer rebate is recorded for this run."
+          headers={['Referrer', 'Rebate']}
+          rows={(props.detail?.referrer_rebates ?? []).map((rebate) => [
+            rebate.referrer,
+            formatNumber(rebate.rebate),
+          ])}
+        />
+      </section>
+
+      <section>
+        <PanelTitle label="Run detail" title="Investor allocation" action={(props.detail?.investors.length ?? 0) + ' investors'} />
+        <DataTable
+          empty="No investor rows are recorded for this run."
+          headers={['Investor', 'Referrer', 'Deposit', 'Capped cash', 'Ownership', 'Gross equity', 'Profit', 'Tax', 'Rebate', 'Net equity']}
+          rows={(props.detail?.investors ?? []).map((investor) => [
+            investor.name,
+            investor.referrer ?? '-',
+            formatNumber(investor.deposit),
+            formatNumber(investor.capped_cash_amount),
+            formatPercent(investor.ownership),
+            formatNumber(investor.gross_equity),
+            <Value key="profit" value={investor.profit} />,
+            formatNumber(investor.tax),
+            formatNumber(investor.referrer_rebate),
+            formatNumber(investor.net_equity),
+          ])}
+        />
+      </section>
+    </>
   );
 }
 
@@ -2613,6 +2686,10 @@ function accountDetailPath(accountId: string) {
 
 function fundDetailPath(fundId: string) {
   return `/funds/detail?fund_id=${encodeURIComponent(fundId)}`;
+}
+
+function settlementReportPath(runId: string) {
+  return `/funds/settlement?run_id=${encodeURIComponent(runId)}`;
 }
 
 function settlementRunExportPath(runId: string) {
