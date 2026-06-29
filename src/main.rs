@@ -653,12 +653,20 @@ async fn migrate(db: &SqlitePool) -> anyhow::Result<()> {
             tax REAL NOT NULL,
             referrer_rebate_rate REAL NOT NULL,
             referrer_rebate REAL NOT NULL,
+            capped_cash_amount REAL NOT NULL DEFAULT 0,
             net_equity REAL NOT NULL,
             PRIMARY KEY (run_id, investor_name)
         )
         "#,
     )
     .execute(db)
+    .await?;
+    ensure_column(
+        db,
+        "fund_settlement_investor_rows",
+        "capped_cash_amount",
+        "ALTER TABLE fund_settlement_investor_rows ADD COLUMN capped_cash_amount REAL NOT NULL DEFAULT 0",
+    )
     .await?;
 
     Ok(())

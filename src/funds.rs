@@ -219,6 +219,7 @@ pub struct FundInvestorSettlement {
     tax: f64,
     referrer_rebate_rate: f64,
     referrer_rebate: f64,
+    capped_cash_amount: f64,
     net_equity: f64,
 }
 
@@ -301,6 +302,7 @@ struct FundSettlementInvestorRow {
     tax: f64,
     referrer_rebate_rate: f64,
     referrer_rebate: f64,
+    capped_cash_amount: f64,
     net_equity: f64,
 }
 
@@ -319,6 +321,7 @@ impl From<FundSettlementInvestorRow> for FundInvestorSettlement {
             tax: row.tax,
             referrer_rebate_rate: row.referrer_rebate_rate,
             referrer_rebate: row.referrer_rebate,
+            capped_cash_amount: row.capped_cash_amount,
             net_equity: row.net_equity,
         }
     }
@@ -330,6 +333,7 @@ struct SettlementInvestorState {
     referrer: Option<String>,
     deposit: f64,
     units: f64,
+    capped_cash_amount: f64,
     tax_threshold: f64,
     tax_rate: f64,
     referrer_rebate_rate: f64,
@@ -729,7 +733,7 @@ async fn get_fund_settlement_run_detail_by_id(
         r#"
         SELECT investor_name AS name, referrer, deposit, units, ownership,
                gross_equity, profit, tax_threshold, tax_rate, tax,
-               referrer_rebate_rate, referrer_rebate, net_equity
+               referrer_rebate_rate, referrer_rebate, capped_cash_amount, net_equity
         FROM fund_settlement_investor_rows
         WHERE run_id = ?1
         ORDER BY gross_equity DESC, investor_name ASC
@@ -812,9 +816,9 @@ pub async fn create_fund_settlement_run(
             INSERT INTO fund_settlement_investor_rows (
                 run_id, fund_id, investor_name, referrer, deposit, units, ownership,
                 gross_equity, profit, tax_threshold, tax_rate, tax,
-                referrer_rebate_rate, referrer_rebate, net_equity
+                referrer_rebate_rate, referrer_rebate, capped_cash_amount, net_equity
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
             "#,
         )
         .bind(&run_id)
@@ -831,6 +835,7 @@ pub async fn create_fund_settlement_run(
         .bind(investor.tax)
         .bind(investor.referrer_rebate_rate)
         .bind(investor.referrer_rebate)
+        .bind(investor.capped_cash_amount)
         .bind(investor.net_equity)
         .execute(&mut *tx)
         .await?;
@@ -1221,6 +1226,7 @@ fn build_settlement_preview(
 
         investor.deposit += order.effective_deposit;
         investor.units += order.unit_delta;
+        investor.capped_cash_amount += order.capped_cash_amount;
         total_deposit += order.effective_deposit;
     }
 
@@ -1252,6 +1258,7 @@ fn build_settlement_preview(
                 tax,
                 referrer_rebate_rate: investor.referrer_rebate_rate,
                 referrer_rebate,
+                capped_cash_amount: investor.capped_cash_amount,
                 net_equity: gross_equity - tax,
             }
         })
@@ -1344,7 +1351,7 @@ fn build_cash_flow_ledger(
             let unit_delta = capped_unit_delta(requested_unit_delta, current_investor_units);
             let capped_units = (unit_delta - requested_unit_delta).max(0.0);
             let effective_deposit = unit_delta * nav_per_unit;
-            let capped_cash_amount = (effective_deposit - order.deposit).max(0.0);
+            let capped_cash_amount = normalized_positive_amount(effective_deposit - order.deposit);
             *investor_units_after += unit_delta;
             total_units += unit_delta;
 
@@ -1373,6 +1380,10 @@ fn capped_unit_delta(requested_unit_delta: f64, current_investor_units: f64) -> 
     } else {
         requested_unit_delta
     }
+}
+
+fn normalized_positive_amount(value: f64) -> f64 {
+    if value > 1e-9 { value } else { 0.0 }
 }
 
 fn cash_flow_direction(deposit: f64) -> &'static str {
@@ -1495,6 +1506,7 @@ fn settlement_run_csv(detail: &FundSettlementRunDetail) -> String {
             "tax".to_string(),
             "referrer_rebate_rate".to_string(),
             "referrer_rebate".to_string(),
+            "capped_cash_amount".to_string(),
             "net_equity".to_string(),
         ],
     ];
@@ -1513,6 +1525,7 @@ fn settlement_run_csv(detail: &FundSettlementRunDetail) -> String {
             investor.tax.to_string(),
             investor.referrer_rebate_rate.to_string(),
             investor.referrer_rebate.to_string(),
+            investor.capped_cash_amount.to_string(),
             investor.net_equity.to_string(),
         ]
     }));
@@ -1957,6 +1970,7 @@ mod tests {
             tax: 0.0,
             referrer_rebate_rate: 0.0,
             referrer_rebate,
+            capped_cash_amount: 0.0,
             net_equity: 0.0,
         }
     }

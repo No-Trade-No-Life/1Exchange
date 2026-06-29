@@ -325,6 +325,7 @@ type FundInvestorSettlement = {
   tax: number;
   referrer_rebate_rate: number;
   referrer_rebate: number;
+  capped_cash_amount: number;
   net_equity: number;
 };
 
@@ -1713,11 +1714,12 @@ function FundDetailPage(props: {
         <InlineError message={props.settlementError} />
         <DataTable
           empty="No settlement preview is available for this fund."
-          headers={['Investor', 'Referrer', 'Deposit', 'Ownership', 'Gross equity', 'Profit', 'Tax', 'Rebate', 'Net equity']}
+          headers={['Investor', 'Referrer', 'Deposit', 'Capped cash', 'Ownership', 'Gross equity', 'Profit', 'Tax', 'Rebate', 'Net equity']}
           rows={(settlement?.investors ?? []).map((investor) => [
             investor.name,
             investor.referrer ?? '-',
             formatNumber(investor.deposit),
+            formatNumber(investor.capped_cash_amount),
             formatPercent(investor.ownership),
             formatNumber(investor.gross_equity),
             <Value key="profit" value={investor.profit} />,
@@ -2014,11 +2016,12 @@ function SettlementRunDetailDialog(props: {
               <PanelTitle label="Run detail" title="Investor allocation" action={(detail.data?.investors.length ?? 0) + ' investors'} />
               <DataTable
                 empty="No investor rows are recorded for this run."
-                headers={['Investor', 'Referrer', 'Deposit', 'Ownership', 'Gross equity', 'Profit', 'Tax', 'Rebate', 'Net equity']}
+                headers={['Investor', 'Referrer', 'Deposit', 'Capped cash', 'Ownership', 'Gross equity', 'Profit', 'Tax', 'Rebate', 'Net equity']}
                 rows={(detail.data?.investors ?? []).map((investor) => [
                   investor.name,
                   investor.referrer ?? '-',
                   formatNumber(investor.deposit),
+                  formatNumber(investor.capped_cash_amount),
                   formatPercent(investor.ownership),
                   formatNumber(investor.gross_equity),
                   <Value key="profit" value={investor.profit} />,
