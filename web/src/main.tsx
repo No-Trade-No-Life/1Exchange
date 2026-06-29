@@ -1552,6 +1552,8 @@ function FundDetailPage(props: {
   const latestSnapshot = props.snapshots[0];
   const statement = props.statementSummary;
   const settlement = props.settlementPreview;
+  const draftSettlementRuns = props.settlementRuns.filter((run) => run.status === 'draft');
+  const historicalSettlementRuns = props.settlementRuns.filter((run) => run.status !== 'draft');
 
   async function sampleFund() {
     const response = await fetch('/api/funds/sample?fund_id=' + encodeURIComponent(props.fundId), { method: 'POST' });
@@ -1779,35 +1781,36 @@ function FundDetailPage(props: {
       <section className="panel">
         <PanelTitle
           label="Settlement runs"
-          title="Draft history"
-          action={props.settlementRuns.length + ' runs'}
+          title="Draft workflow"
+          action={draftSettlementRuns.length + ' drafts'}
         />
         <InlineError message={settlementRunError ?? props.settlementRunsError} />
+        <SettlementRunsTable
+          actioningRunId={settlementRunActionId}
+          empty="No draft settlement runs are waiting for action."
+          runs={draftSettlementRuns}
+          onConfirm={(runId) => void updateSettlementRunStatus(runId, 'confirm')}
+          onInspect={setSelectedSettlementRunId}
+          onVoid={(runId) => void updateSettlementRunStatus(runId, 'void')}
+        />
+      </section>
+
+      <section className="panel">
+        <PanelTitle
+          label="Settlement runs"
+          title="Settlement history"
+          action={historicalSettlementRuns.length + ' runs'}
+        />
         <DataTable
-          empty="No settlement runs have been created yet."
-          headers={['Created', 'Status', 'Status time', 'Basis', 'Equity', 'Investors', 'Deposit', 'Capped cash', 'Tax', 'Rebate', 'Run ID', 'Action']}
-          rows={props.settlementRuns.map((run) => [
-            formatDate(run.created_at),
-            <UiBadge key="status" variant={run.status === 'confirmed' ? 'default' : 'secondary'}>{run.status}</UiBadge>,
-            run.status_updated_at ? formatDate(run.status_updated_at) : '-',
-            settlementBasisLabel(run.basis_source),
-            formatNumber(run.equity),
-            run.investor_count.toString(),
-            formatNumber(run.total_deposit),
-            formatNumber(run.capped_cash_amount),
-            formatNumber(run.total_tax),
-            formatNumber(run.total_referrer_rebate),
-            <span className="font-mono text-xs" key="run-id">{run.id}</span>,
-            <SettlementRunActions
-              actioning={settlementRunActionId === run.id}
-              key="action"
-              onConfirm={() => void updateSettlementRunStatus(run.id, 'confirm')}
-              onInspect={() => setSelectedSettlementRunId(run.id)}
-              onVoid={() => void updateSettlementRunStatus(run.id, 'void')}
-              runId={run.id}
-              status={run.status}
-            />,
-          ])}
+          empty="No confirmed or voided settlement runs are recorded yet."
+          headers={settlementRunHeaders}
+          rows={settlementRunRows({
+            actioningRunId: settlementRunActionId,
+            onConfirm: (runId) => void updateSettlementRunStatus(runId, 'confirm'),
+            onInspect: setSelectedSettlementRunId,
+            onVoid: (runId) => void updateSettlementRunStatus(runId, 'void'),
+            runs: historicalSettlementRuns,
+          })}
         />
       </section>
 
@@ -1961,6 +1964,56 @@ function SettlementRunActions(props: {
       </Button>
     </div>
   );
+}
+
+const settlementRunHeaders = ['Created', 'Status', 'Status time', 'Basis', 'Equity', 'Investors', 'Deposit', 'Capped cash', 'Tax', 'Rebate', 'Run ID', 'Action'];
+
+function SettlementRunsTable(props: {
+  actioningRunId: string | null;
+  empty: string;
+  runs: FundSettlementRun[];
+  onConfirm: (runId: string) => void;
+  onInspect: (runId: string) => void;
+  onVoid: (runId: string) => void;
+}) {
+  return (
+    <DataTable
+      empty={props.empty}
+      headers={settlementRunHeaders}
+      rows={settlementRunRows(props)}
+    />
+  );
+}
+
+function settlementRunRows(props: {
+  actioningRunId: string | null;
+  runs: FundSettlementRun[];
+  onConfirm: (runId: string) => void;
+  onInspect: (runId: string) => void;
+  onVoid: (runId: string) => void;
+}) {
+  return props.runs.map((run) => [
+    formatDate(run.created_at),
+    <UiBadge key="status" variant={run.status === 'confirmed' ? 'default' : 'secondary'}>{run.status}</UiBadge>,
+    run.status_updated_at ? formatDate(run.status_updated_at) : '-',
+    settlementBasisLabel(run.basis_source),
+    formatNumber(run.equity),
+    run.investor_count.toString(),
+    formatNumber(run.total_deposit),
+    formatNumber(run.capped_cash_amount),
+    formatNumber(run.total_tax),
+    formatNumber(run.total_referrer_rebate),
+    <span className="font-mono text-xs" key="run-id">{run.id}</span>,
+    <SettlementRunActions
+      actioning={props.actioningRunId === run.id}
+      key="action"
+      onConfirm={() => props.onConfirm(run.id)}
+      onInspect={() => props.onInspect(run.id)}
+      onVoid={() => props.onVoid(run.id)}
+      runId={run.id}
+      status={run.status}
+    />,
+  ]);
 }
 
 function SettlementRunDetailDialog(props: {
