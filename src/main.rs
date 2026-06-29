@@ -23,7 +23,7 @@ use axum::{
 };
 use models::{AccountInfo, Position, Product, TradeFill};
 use serde::{Serialize, ser::SerializeStruct};
-use sqlx::{SqlitePool, sqlite::SqliteConnectOptions};
+use sqlx::{Row, SqlitePool, sqlite::SqliteConnectOptions};
 use tokio::net::TcpListener;
 use tower_http::services::ServeDir;
 
@@ -514,8 +514,25 @@ async fn migrate(db: &SqlitePool) -> anyhow::Result<()> {
             total_referrer_rebate REAL NOT NULL,
             investor_count INTEGER NOT NULL,
             status TEXT NOT NULL DEFAULT 'draft',
+            status_updated_at TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
+        "#,
+    )
+    .execute(db)
+    .await?;
+    ensure_column(
+        db,
+        "fund_settlement_runs",
+        "status_updated_at",
+        "ALTER TABLE fund_settlement_runs ADD COLUMN status_updated_at TEXT",
+    )
+    .await?;
+    sqlx::query(
+        r#"
+        UPDATE fund_settlement_runs
+        SET status_updated_at = created_at
+        WHERE status_updated_at IS NULL
         "#,
     )
     .execute(db)
@@ -564,6 +581,27 @@ async fn migrate(db: &SqlitePool) -> anyhow::Result<()> {
     )
     .execute(db)
     .await?;
+
+    Ok(())
+}
+
+async fn ensure_column(
+    db: &SqlitePool,
+    table: &str,
+    column: &str,
+    alter_statement: &str,
+) -> anyhow::Result<()> {
+    let pragma = format!("PRAGMA table_info({table})");
+    let rows = sqlx::query(&pragma).fetch_all(db).await?;
+    let exists = rows.iter().any(|row| {
+        row.try_get::<String, _>("name")
+            .map(|name| name == column)
+            .unwrap_or(false)
+    });
+
+    if !exists {
+        sqlx::query(alter_statement).execute(db).await?;
+    }
 
     Ok(())
 }

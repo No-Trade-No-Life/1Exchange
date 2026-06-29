@@ -196,6 +196,7 @@ pub struct FundSettlementRun {
     total_referrer_rebate: f64,
     investor_count: i64,
     status: String,
+    status_updated_at: Option<String>,
     created_at: String,
 }
 
@@ -524,7 +525,7 @@ pub async fn list_fund_settlement_runs(
             r#"
             SELECT id, fund_id, equity_event_index, equity, equity_updated_at,
                    total_deposit, total_units, total_tax, total_referrer_rebate,
-                   investor_count, status, created_at
+                   investor_count, status, status_updated_at, created_at
             FROM fund_settlement_runs
             WHERE fund_id = ?1
             ORDER BY created_at DESC
@@ -575,7 +576,7 @@ async fn get_fund_settlement_run_detail_by_id(
         r#"
         SELECT id, fund_id, equity_event_index, equity, equity_updated_at,
                total_deposit, total_units, total_tax, total_referrer_rebate,
-               investor_count, status, created_at
+               investor_count, status, status_updated_at, created_at
         FROM fund_settlement_runs
         WHERE id = ?1
         "#,
@@ -631,9 +632,9 @@ pub async fn create_fund_settlement_run(
         INSERT INTO fund_settlement_runs (
             id, fund_id, equity_event_index, equity, equity_updated_at,
             total_deposit, total_units, total_tax, total_referrer_rebate,
-            investor_count, status, created_at
+            investor_count, status, status_updated_at, created_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'draft', ?11)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'draft', ?11, ?12)
         "#,
     )
     .bind(&run_id)
@@ -646,6 +647,7 @@ pub async fn create_fund_settlement_run(
     .bind(preview.total_tax)
     .bind(preview.total_referrer_rebate)
     .bind(preview.investors.len() as i64)
+    .bind(&created_at)
     .bind(&created_at)
     .execute(&mut *tx)
     .await?;
@@ -699,6 +701,7 @@ pub async fn create_fund_settlement_run(
                 total_referrer_rebate: preview.total_referrer_rebate,
                 investor_count: preview.investors.len() as i64,
                 status: "draft".to_string(),
+                status_updated_at: Some(created_at.clone()),
                 created_at,
             },
             totals,
@@ -734,14 +737,16 @@ async fn update_fund_settlement_run_status(
     run_id: &str,
     status: &str,
 ) -> Result<(), AppError> {
+    let status_updated_at = Utc::now().to_rfc3339();
     let result = sqlx::query(
         r#"
         UPDATE fund_settlement_runs
-        SET status = ?1
-        WHERE id = ?2 AND status = 'draft'
+        SET status = ?1, status_updated_at = ?2
+        WHERE id = ?3 AND status = 'draft'
         "#,
     )
     .bind(status)
+    .bind(&status_updated_at)
     .bind(run_id)
     .execute(db)
     .await?;
@@ -756,11 +761,12 @@ async fn update_fund_settlement_run_status(
 }
 
 async fn confirm_fund_settlement_run_status(db: &SqlitePool, run_id: &str) -> Result<(), AppError> {
+    let status_updated_at = Utc::now().to_rfc3339();
     let result = sqlx::query(
         r#"
         UPDATE fund_settlement_runs
-        SET status = 'confirmed'
-        WHERE id = ?1
+        SET status = 'confirmed', status_updated_at = ?1
+        WHERE id = ?2
           AND status = 'draft'
           AND NOT EXISTS (
               SELECT 1
@@ -771,6 +777,7 @@ async fn confirm_fund_settlement_run_status(db: &SqlitePool, run_id: &str) -> Re
           )
         "#,
     )
+    .bind(&status_updated_at)
     .bind(run_id)
     .execute(db)
     .await?;
@@ -1134,6 +1141,8 @@ fn settlement_run_csv(detail: &FundSettlementRunDetail) -> String {
             detail.run.fund_id.clone(),
             "status".to_string(),
             detail.run.status.clone(),
+            "status_updated_at".to_string(),
+            detail.run.status_updated_at.clone().unwrap_or_default(),
         ],
         vec![
             "equity".to_string(),

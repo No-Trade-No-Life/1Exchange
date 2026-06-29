@@ -310,6 +310,7 @@ type FundSettlementRun = {
   total_referrer_rebate: number;
   investor_count: number;
   status: string;
+  status_updated_at: string | null;
   created_at: string;
 };
 
@@ -1687,10 +1688,11 @@ function FundDetailPage(props: {
         <InlineError message={settlementRunError ?? props.settlementRunsError} />
         <DataTable
           empty="No settlement runs have been created yet."
-          headers={['Created', 'Status', 'Equity', 'Investors', 'Deposit', 'Tax', 'Rebate', 'Run ID', 'Action']}
+          headers={['Created', 'Status', 'Status time', 'Equity', 'Investors', 'Deposit', 'Tax', 'Rebate', 'Run ID', 'Action']}
           rows={props.settlementRuns.map((run) => [
             formatDate(run.created_at),
             <UiBadge key="status" variant={run.status === 'confirmed' ? 'default' : 'secondary'}>{run.status}</UiBadge>,
+            run.status_updated_at ? formatDate(run.status_updated_at) : '-',
             formatNumber(run.equity),
             run.investor_count.toString(),
             formatNumber(run.total_deposit),
@@ -1843,13 +1845,14 @@ function SettlementRunDetailDialog(props: {
       <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-5xl">
         <DialogHeader>
           <DialogTitle>Settlement run detail</DialogTitle>
-          <DialogDescription>{run ? run.status + ' · ' + formatDate(run.created_at) : 'Loading settlement run'}</DialogDescription>
+          <DialogDescription>{run ? run.status + ' · ' + formatDate(run.status_updated_at ?? run.created_at) : 'Loading settlement run'}</DialogDescription>
         </DialogHeader>
         <InlineError message={detail.error} />
         {run ? (
           <div className="flex flex-col gap-4">
             <section className="metrics-grid compact" aria-label="Settlement run detail summary">
               <Metric label="Status" value={run.status} />
+              <Metric label="Status time" value={formatDate(run.status_updated_at ?? run.created_at)} />
               <Metric label="Equity" value={formatNumber(run.equity)} />
               <Metric label="Investors" value={run.investor_count.toString()} />
               <Metric label="Gross equity" value={detail.data ? formatNumber(detail.data.totals.gross_equity) : '-'} />
