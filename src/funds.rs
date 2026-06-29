@@ -2319,6 +2319,92 @@ mod tests {
     }
 
     #[test]
+    fn previews_settlement_post_equity_as_taxation_v2_event_state() {
+        let mut state = YuanFundState::default();
+        for event in [
+            FundStatementEventPayload {
+                event_type: None,
+                comment: None,
+                fund_equity: None,
+                order: Some(FundStatementOrderPayload {
+                    name: "Alice".to_string(),
+                    deposit: 100.0,
+                }),
+                investor: None,
+            },
+            FundStatementEventPayload {
+                event_type: None,
+                comment: None,
+                fund_equity: None,
+                order: Some(FundStatementOrderPayload {
+                    name: "Bob".to_string(),
+                    deposit: 100.0,
+                }),
+                investor: None,
+            },
+            FundStatementEventPayload {
+                event_type: None,
+                comment: None,
+                fund_equity: Some(FundStatementEquityPayload { equity: 300.0 }),
+                order: None,
+                investor: None,
+            },
+            FundStatementEventPayload {
+                event_type: Some("update".to_string()),
+                comment: None,
+                fund_equity: None,
+                order: None,
+                investor: Some(FundStatementInvestorPayload {
+                    name: "Alice".to_string(),
+                    tax_rate: Some(0.2),
+                    add_tax_threshold: None,
+                    referrer: Some("Bob".to_string()),
+                    referrer_rebate_rate: Some(0.5),
+                }),
+            },
+        ] {
+            apply_yuan_fund_event(&mut state, event);
+            recompute_yuan_derived(&mut state);
+        }
+
+        let preview = build_settlement_preview(
+            "fund".to_string(),
+            vec![FundStatementEquity {
+                event_index: 1,
+                equity: 300.0,
+                updated_at: "2025-01-01T00:00:00+00:00".to_string(),
+            }],
+            None,
+            yuan_event_state_summary(state.clone()),
+        );
+
+        apply_yuan_fund_event(
+            &mut state,
+            FundStatementEventPayload {
+                event_type: Some("taxation/v2".to_string()),
+                comment: None,
+                fund_equity: None,
+                order: None,
+                investor: None,
+            },
+        );
+        recompute_yuan_derived(&mut state);
+        let after_tax = yuan_event_state_summary(state);
+
+        for preview_investor in preview.investors {
+            let after_tax_investor = after_tax
+                .investors
+                .iter()
+                .find(|item| item.name == preview_investor.name)
+                .unwrap();
+            assert_close(
+                preview_investor.net_equity,
+                after_tax_investor.after_tax_assets,
+            );
+        }
+    }
+
+    #[test]
     fn previews_settlement_against_latest_live_nav_basis() {
         let preview = build_settlement_preview(
             "fund".to_string(),
