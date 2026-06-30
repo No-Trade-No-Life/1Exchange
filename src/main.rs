@@ -112,6 +112,8 @@ async fn main() -> anyhow::Result<()> {
     let api = Router::new()
         .route("/health", get(health))
         .route("/me", get(me))
+        .route("/setup/status", get(setup_status))
+        .route("/setup/initialize", post(initialize_setup))
         .route("/exchanges", get(list_exchanges))
         .route(
             "/credentials",
@@ -835,6 +837,22 @@ async fn me(
     Ok(Json(auth::require_user(&state, &headers).await?))
 }
 
+async fn setup_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<auth::SetupState>, AppError> {
+    let user = auth::require_user(&state, &headers).await?;
+    Ok(Json(auth::setup_state(&state.db, &user).await?))
+}
+
+async fn initialize_setup(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<auth::SetupState>, AppError> {
+    let user = auth::require_user(&state, &headers).await?;
+    Ok(Json(auth::initialize_setup(&state.db, &user).await?))
+}
+
 async fn list_exchanges() -> Json<Vec<exchanges::ExchangeInfo>> {
     Json(exchanges::list_exchanges())
 }
@@ -843,7 +861,7 @@ async fn list_account_refs(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<AccountRef>>, AppError> {
-    let user = auth::require_user(&state, &headers).await?;
+    let user = auth::require_initialized_user(&state, &headers).await?;
     let mut refs = Vec::new();
     for credential in credentials::list_stored_credentials(&state.db, &user.user_id).await? {
         let result = match exchanges::adapter(&credential.exchange) {
@@ -872,7 +890,7 @@ async fn list_accounts(
     headers: HeaderMap,
     Query(query): Query<AccountQuery>,
 ) -> Result<Json<Vec<AccountInfo>>, AppError> {
-    let user = auth::require_user(&state, &headers).await?;
+    let user = auth::require_initialized_user(&state, &headers).await?;
     if query.credential_id.is_none() && query.account_id.is_none() {
         return Ok(Json(read_all_accounts(&state.db, &user.user_id).await?));
     }
@@ -887,7 +905,7 @@ async fn list_positions(
     headers: HeaderMap,
     Query(query): Query<AccountQuery>,
 ) -> Result<Json<Vec<Position>>, AppError> {
-    let user = auth::require_user(&state, &headers).await?;
+    let user = auth::require_initialized_user(&state, &headers).await?;
     Ok(Json(
         read_account(&state.db, &user.user_id, query)
             .await?
@@ -1011,7 +1029,7 @@ async fn list_trades(
     headers: HeaderMap,
     Query(query): Query<CredentialQuery>,
 ) -> Result<Json<Vec<TradeFill>>, AppError> {
-    let user = auth::require_user(&state, &headers).await?;
+    let user = auth::require_initialized_user(&state, &headers).await?;
     let credential =
         credentials::get_stored_credential(&state.db, &user.user_id, &query.credential_id).await?;
     let adapter = exchanges::adapter(&credential.exchange).ok_or_else(|| {
@@ -1056,6 +1074,13 @@ impl AppError {
     pub fn unauthorized(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::UNAUTHORIZED,
+            message: message.into(),
+        }
+    }
+
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
             message: message.into(),
         }
     }

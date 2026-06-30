@@ -64,6 +64,13 @@ type AuthSession = {
   expires_in: number;
 };
 
+type SetupState = {
+  initialized: boolean;
+  admin_user_id: string | null;
+  is_admin: boolean;
+  legacy_records: number;
+};
+
 type ExchangeInfo = {
   id: string;
   name: string;
@@ -581,6 +588,7 @@ function useTradeHistory(credentials: Credential[], refreshToken: number) {
 function AuthGate(props: { children: React.ReactNode }) {
   const [session, setSession] = useState<AuthSession | null>(() => readStoredAuthSession());
   const [user, setUser] = useState<AuthUser | null>(null);
+  const [setup, setSetup] = useState<SetupState | null>(null);
   const [email, setEmail] = useState('');
   const [code, setCode] = useState('');
   const [codeSent, setCodeSent] = useState(false);
@@ -597,14 +605,17 @@ function AuthGate(props: { children: React.ReactNode }) {
       currentAccessToken = session.access_token;
       try {
         const me = await readCurrentUser(session);
+        const nextSetup = await readSetupState();
         if (alive) {
           setUser(me);
+          setSetup(nextSetup);
         }
       } catch {
         clearAuthSession();
         if (alive) {
           setSession(null);
           setUser(null);
+          setSetup(null);
         }
       }
     }
@@ -653,6 +664,7 @@ function AuthGate(props: { children: React.ReactNode }) {
       currentAccessToken = nextSession.access_token;
       setSession(nextSession);
       setUser(await readCurrentUser(nextSession));
+      setSetup(await readSetupState());
       await queryClient.invalidateQueries();
     } catch (caught) {
       setError((caught as Error).message);
@@ -666,20 +678,66 @@ function AuthGate(props: { children: React.ReactNode }) {
     queryClient.clear();
     setSession(null);
     setUser(null);
+    setSetup(null);
     setCode('');
   }
 
-  if (user) {
+  async function initialize() {
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await apiFetch('/api/setup/initialize', { method: 'POST' });
+      if (!response.ok) {
+        throw new Error(await responseErrorMessage(response));
+      }
+      setSetup(await response.json() as SetupState);
+      await queryClient.invalidateQueries();
+    } catch (caught) {
+      setError((caught as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (user && setup?.initialized) {
     return (
       <>
         <div className="border-b bg-background px-7 py-2 text-sm text-muted-foreground max-md:px-4">
           <div className="mx-auto flex w-full max-w-[1600px] items-center gap-3">
             <span className="min-w-0 truncate">Signed in as {user.email}</span>
+            {setup.is_admin ? <UiBadge variant="secondary">Admin</UiBadge> : null}
             <Button className="ml-auto" size="sm" type="button" variant="outline" onClick={signOut}>Sign out</Button>
           </div>
         </div>
         {props.children}
       </>
+    );
+  }
+
+  if (user) {
+    return (
+      <main className="mx-auto flex min-h-screen w-full max-w-md flex-col justify-center px-4">
+        <Card>
+          <CardHeader>
+            <CardTitle>Initialize 1Exchange</CardTitle>
+            <CardDescription>{user.email}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="flex flex-col gap-3">
+              <Alert>
+                <AlertDescription>
+                  {setup ? setup.legacy_records + ' legacy records will be assigned to this user.' : 'Checking setup state...'}
+                </AlertDescription>
+              </Alert>
+              <InlineError message={error} />
+              <Button disabled={busy || setup === null} type="button" onClick={() => void initialize()}>
+                {busy ? 'Initializing...' : 'Initialize'}
+              </Button>
+              <Button variant="outline" type="button" onClick={signOut}>Sign out</Button>
+            </div>
+          </CardContent>
+        </Card>
+      </main>
     );
   }
 
@@ -729,6 +787,14 @@ async function readCurrentUser(session: AuthSession): Promise<AuthUser> {
     throw new Error(await responseErrorMessage(response));
   }
   return await response.json() as AuthUser;
+}
+
+async function readSetupState(): Promise<SetupState> {
+  const response = await apiFetch('/api/setup/status');
+  if (!response.ok) {
+    throw new Error(await responseErrorMessage(response));
+  }
+  return await response.json() as SetupState;
 }
 
 async function refreshAuthSession(session: AuthSession): Promise<AuthSession> {

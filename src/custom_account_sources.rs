@@ -40,7 +40,7 @@ pub async fn list_custom_account_sources(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<CustomAccountSourceConfig>>, AppError> {
-    let user = auth::require_user(&state, &headers).await?;
+    let user = auth::require_initialized_user(&state, &headers).await?;
     Ok(Json(
         list_custom_account_source_configs(&state.db, &user.user_id).await?,
     ))
@@ -51,7 +51,7 @@ pub async fn create_custom_account_source(
     headers: HeaderMap,
     Json(request): Json<CreateCustomAccountSourceRequest>,
 ) -> Result<(StatusCode, Json<CustomAccountSourceConfig>), AppError> {
-    let user = auth::require_user(&state, &headers).await?;
+    let user = auth::require_initialized_user(&state, &headers).await?;
     validate_request(&request)?;
 
     let id = Uuid::new_v4().to_string();

@@ -50,7 +50,7 @@ pub async fn list_credentials(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<CredentialMeta>>, AppError> {
-    let user = auth::require_user(&state, &headers).await?;
+    let user = auth::require_initialized_user(&state, &headers).await?;
     let rows = sqlx::query_as::<_, CredentialRow>(
         r#"
         SELECT id, owner_id, exchange, name, payload, created_at, updated_at
@@ -71,7 +71,7 @@ pub async fn create_credential(
     headers: HeaderMap,
     Json(request): Json<CreateCredentialRequest>,
 ) -> Result<(StatusCode, Json<CredentialMeta>), AppError> {
-    let user = auth::require_user(&state, &headers).await?;
+    let user = auth::require_initialized_user(&state, &headers).await?;
     if !is_supported_exchange(&request.exchange) {
         return Err(AppError::bad_request("unsupported exchange"));
     }

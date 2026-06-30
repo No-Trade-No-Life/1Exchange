@@ -467,7 +467,7 @@ pub async fn list_funds(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<FundConfig>>, AppError> {
-    let user = auth::require_user(&state, &headers).await?;
+    let user = auth::require_initialized_user(&state, &headers).await?;
     Ok(Json(list_fund_configs(&state.db, &user.user_id).await?))
 }
 
@@ -476,7 +476,7 @@ pub async fn create_fund(
     headers: HeaderMap,
     Json(request): Json<CreateFundRequest>,
 ) -> Result<(StatusCode, Json<FundConfig>), AppError> {
-    let user = auth::require_user(&state, &headers).await?;
+    let user = auth::require_initialized_user(&state, &headers).await?;
     validate_fund_request(&request)?;
     virtual_accounts::require_virtual_account(&state.db, &user.user_id, request.account_id.trim())
         .await?;
@@ -534,7 +534,7 @@ pub async fn list_fund_nav(
     headers: HeaderMap,
     axum::extract::Query(query): axum::extract::Query<FundNavQuery>,
 ) -> Result<Json<Vec<FundNavSnapshot>>, AppError> {
-    let user = auth::require_user(&state, &headers).await?;
+    let user = auth::require_initialized_user(&state, &headers).await?;
     let limit = query.limit.unwrap_or(200).clamp(1, 1000);
     let rows = if let Some(fund_id) = query.fund_id {
         get_fund_config(&state.db, &user.user_id, &fund_id).await?;
@@ -577,7 +577,7 @@ pub async fn get_fund_statement_summary(
     headers: HeaderMap,
     axum::extract::Query(query): axum::extract::Query<FundStatementQuery>,
 ) -> Result<Json<FundStatementSummary>, AppError> {
-    let user = auth::require_user(&state, &headers).await?;
+    let user = auth::require_initialized_user(&state, &headers).await?;
     get_fund_config(&state.db, &user.user_id, &query.fund_id).await?;
 
     let (events,): (i64,) =
@@ -767,7 +767,7 @@ pub async fn get_fund_settlement_preview(
     headers: HeaderMap,
     axum::extract::Query(query): axum::extract::Query<FundSettlementQuery>,
 ) -> Result<Json<FundSettlementPreview>, AppError> {
-    let user = auth::require_user(&state, &headers).await?;
+    let user = auth::require_initialized_user(&state, &headers).await?;
     get_fund_config(&state.db, &user.user_id, &query.fund_id).await?;
     Ok(Json(
         load_fund_settlement_preview(&state.db, query.fund_id).await?,
@@ -779,7 +779,7 @@ pub async fn list_fund_settlement_runs(
     headers: HeaderMap,
     axum::extract::Query(query): axum::extract::Query<FundSettlementQuery>,
 ) -> Result<Json<Vec<FundSettlementRun>>, AppError> {
-    let user = auth::require_user(&state, &headers).await?;
+    let user = auth::require_initialized_user(&state, &headers).await?;
     get_fund_config(&state.db, &user.user_id, &query.fund_id).await?;
 
     Ok(Json(
@@ -807,7 +807,7 @@ pub async fn get_fund_settlement_run_detail(
     headers: HeaderMap,
     axum::extract::Query(query): axum::extract::Query<FundSettlementRunQuery>,
 ) -> Result<Json<FundSettlementRunDetail>, AppError> {
-    let user = auth::require_user(&state, &headers).await?;
+    let user = auth::require_initialized_user(&state, &headers).await?;
     get_fund_settlement_run_detail_by_id(&state.db, &user.user_id, &query.run_id)
         .await
         .map(Json)
@@ -818,7 +818,7 @@ pub async fn export_fund_settlement_run_csv(
     headers: HeaderMap,
     axum::extract::Query(query): axum::extract::Query<FundSettlementRunQuery>,
 ) -> Result<Response, AppError> {
-    let user = auth::require_user(&state, &headers).await?;
+    let user = auth::require_initialized_user(&state, &headers).await?;
     let detail =
         get_fund_settlement_run_detail_by_id(&state.db, &user.user_id, &query.run_id).await?;
     let filename = format!("fund-settlement-{}.csv", detail.run.id);
@@ -894,7 +894,7 @@ pub async fn create_fund_settlement_run(
     headers: HeaderMap,
     Json(request): Json<CreateFundSettlementRunRequest>,
 ) -> Result<(StatusCode, Json<FundSettlementRunDetail>), AppError> {
-    let user = auth::require_user(&state, &headers).await?;
+    let user = auth::require_initialized_user(&state, &headers).await?;
     get_fund_config(&state.db, &user.user_id, &request.fund_id).await?;
     let preview = load_fund_settlement_preview(&state.db, request.fund_id).await?;
     let equity = preview
@@ -1020,7 +1020,7 @@ pub async fn confirm_fund_settlement(
     headers: HeaderMap,
     Json(request): Json<ConfirmFundSettlementRequest>,
 ) -> Result<Json<FundSettlementPreview>, AppError> {
-    let user = auth::require_user(&state, &headers).await?;
+    let user = auth::require_initialized_user(&state, &headers).await?;
     get_fund_config(&state.db, &user.user_id, &request.fund_id).await?;
     let preview = load_fund_settlement_preview(&state.db, request.fund_id).await?;
     let basis = preview
@@ -1132,7 +1132,7 @@ pub async fn confirm_fund_settlement_run(
     headers: HeaderMap,
     Json(request): Json<UpdateFundSettlementRunRequest>,
 ) -> Result<Json<FundSettlementRunDetail>, AppError> {
-    let user = auth::require_user(&state, &headers).await?;
+    let user = auth::require_initialized_user(&state, &headers).await?;
     ensure_settlement_run_owner(&state.db, &user.user_id, &request.run_id).await?;
     confirm_fund_settlement_run_status(&state.db, &request.run_id).await?;
     get_fund_settlement_run_detail_by_id(&state.db, &user.user_id, &request.run_id)
@@ -1145,7 +1145,7 @@ pub async fn void_fund_settlement_run(
     headers: HeaderMap,
     Json(request): Json<UpdateFundSettlementRunRequest>,
 ) -> Result<Json<FundSettlementRunDetail>, AppError> {
-    let user = auth::require_user(&state, &headers).await?;
+    let user = auth::require_initialized_user(&state, &headers).await?;
     ensure_settlement_run_owner(&state.db, &user.user_id, &request.run_id).await?;
     update_fund_settlement_run_status(&state.db, &request.run_id, "voided").await?;
     get_fund_settlement_run_detail_by_id(&state.db, &user.user_id, &request.run_id)
@@ -1428,7 +1428,7 @@ pub async fn sample_fund_now(
     headers: HeaderMap,
     axum::extract::Query(query): axum::extract::Query<SampleFundQuery>,
 ) -> Result<Json<FundNavSnapshot>, AppError> {
-    let user = auth::require_user(&state, &headers).await?;
+    let user = auth::require_initialized_user(&state, &headers).await?;
     let config = get_fund_config(&state.db, &user.user_id, &query.fund_id).await?;
     Ok(Json(sample_fund(&state.db, &config).await?))
 }

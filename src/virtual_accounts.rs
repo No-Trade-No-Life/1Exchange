@@ -49,7 +49,7 @@ pub async fn list_virtual_accounts(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<VirtualAccountConfig>>, AppError> {
-    let user = auth::require_user(&state, &headers).await?;
+    let user = auth::require_initialized_user(&state, &headers).await?;
     Ok(Json(
         list_virtual_account_configs(&state.db, &user.user_id).await?,
     ))
@@ -81,7 +81,7 @@ pub async fn create_virtual_account(
     headers: HeaderMap,
     Json(request): Json<CreateVirtualAccountRequest>,
 ) -> Result<(StatusCode, Json<VirtualAccountConfig>), AppError> {
-    let user = auth::require_user(&state, &headers).await?;
+    let user = auth::require_initialized_user(&state, &headers).await?;
     validate_request(&request)?;
 
     let sources = serde_json::to_string(&request.sources)?;
