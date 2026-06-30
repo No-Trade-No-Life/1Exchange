@@ -64,6 +64,10 @@ type AuthSession = {
   expires_in: number;
 };
 
+type AuthConfig = {
+  auth_mini_base_url: string;
+};
+
 type SetupState = {
   initialized: boolean;
   admin_user_id: string | null;
@@ -493,7 +497,6 @@ const primaryPages = pages.filter((item) => item.primary);
 const emptyCredentials: Credential[] = [];
 const emptyVirtualAccountConfigs: VirtualAccountConfig[] = [];
 const emptyFundConfigs: FundConfig[] = [];
-const authMiniOrigin = import.meta.env.VITE_AUTH_MINI_ORIGIN ?? 'http://127.0.0.1:7777';
 const authSessionStorageKey = 'one-exchange.auth-mini.session.v1';
 let currentAccessToken: string | null = null;
 const queryClient = new QueryClient({
@@ -586,6 +589,7 @@ function useTradeHistory(credentials: Credential[], refreshToken: number) {
 }
 
 function AuthGate(props: { children: React.ReactNode }) {
+  const [authConfig, setAuthConfig] = useState<AuthConfig | null>(null);
   const [session, setSession] = useState<AuthSession | null>(() => readStoredAuthSession());
   const [user, setUser] = useState<AuthUser | null>(null);
   const [setup, setSetup] = useState<SetupState | null>(null);
@@ -598,13 +602,18 @@ function AuthGate(props: { children: React.ReactNode }) {
   useEffect(() => {
     let alive = true;
     async function recover() {
+      const nextAuthConfig = await readAuthConfig();
+      if (!alive) {
+        return;
+      }
+      setAuthConfig(nextAuthConfig);
       if (!session) {
         currentAccessToken = null;
         return;
       }
       currentAccessToken = session.access_token;
       try {
-        const me = await readCurrentUser(session);
+        const me = await readCurrentUser(session, nextAuthConfig.auth_mini_base_url);
         const nextSetup = await readSetupState();
         if (alive) {
           setUser(me);
@@ -619,7 +628,11 @@ function AuthGate(props: { children: React.ReactNode }) {
         }
       }
     }
-    void recover();
+    void recover().catch((caught) => {
+      if (alive) {
+        setError((caught as Error).message);
+      }
+    });
     return () => {
       alive = false;
     };
@@ -630,7 +643,7 @@ function AuthGate(props: { children: React.ReactNode }) {
     setBusy(true);
     setError(null);
     try {
-      const response = await fetch(authMiniUrl('/email/start'), {
+      const response = await fetch(authMiniUrl(requireAuthMiniBaseUrl(authConfig), '/email/start'), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ email }),
@@ -651,7 +664,8 @@ function AuthGate(props: { children: React.ReactNode }) {
     setBusy(true);
     setError(null);
     try {
-      const response = await fetch(authMiniUrl('/email/verify'), {
+      const authMiniBaseUrl = requireAuthMiniBaseUrl(authConfig);
+      const response = await fetch(authMiniUrl(authMiniBaseUrl, '/email/verify'), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ email, code }),
@@ -663,7 +677,7 @@ function AuthGate(props: { children: React.ReactNode }) {
       storeAuthSession(nextSession);
       currentAccessToken = nextSession.access_token;
       setSession(nextSession);
-      setUser(await readCurrentUser(nextSession));
+      setUser(await readCurrentUser(nextSession, authMiniBaseUrl));
       setSetup(await readSetupState());
       await queryClient.invalidateQueries();
     } catch (caught) {
@@ -741,12 +755,28 @@ function AuthGate(props: { children: React.ReactNode }) {
     );
   }
 
+  if (!authConfig) {
+    return (
+      <main className="mx-auto flex min-h-screen w-full max-w-md flex-col justify-center px-4">
+        <Card>
+          <CardHeader>
+            <CardTitle>Sign in to 1Exchange</CardTitle>
+            <CardDescription>Loading auth settings...</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <InlineError message={error} />
+          </CardContent>
+        </Card>
+      </main>
+    );
+  }
+
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-md flex-col justify-center px-4">
       <Card>
         <CardHeader>
           <CardTitle>Sign in to 1Exchange</CardTitle>
-          <CardDescription>{authMiniOrigin}</CardDescription>
+          <CardDescription>{authConfig.auth_mini_base_url}</CardDescription>
         </CardHeader>
         <CardContent>
           <form className="flex flex-col gap-3" onSubmit={codeSent ? verifyEmail : startEmail}>
@@ -769,12 +799,20 @@ function AuthGate(props: { children: React.ReactNode }) {
   );
 }
 
-async function readCurrentUser(session: AuthSession): Promise<AuthUser> {
+async function readAuthConfig(): Promise<AuthConfig> {
+  const response = await fetch('/api/auth/config');
+  if (!response.ok) {
+    throw new Error(await responseErrorMessage(response));
+  }
+  return await response.json() as AuthConfig;
+}
+
+async function readCurrentUser(session: AuthSession, authMiniBaseUrl: string): Promise<AuthUser> {
   const response = await apiFetch('/api/me', {
     headers: { Authorization: 'Bearer ' + session.access_token },
   });
   if (response.status === 401) {
-    const refreshed = await refreshAuthSession(session);
+    const refreshed = await refreshAuthSession(session, authMiniBaseUrl);
     storeAuthSession(refreshed);
     currentAccessToken = refreshed.access_token;
     const retry = await apiFetch('/api/me');
@@ -797,8 +835,8 @@ async function readSetupState(): Promise<SetupState> {
   return await response.json() as SetupState;
 }
 
-async function refreshAuthSession(session: AuthSession): Promise<AuthSession> {
-  const response = await fetch(authMiniUrl('/session/refresh'), {
+async function refreshAuthSession(session: AuthSession, authMiniBaseUrl: string): Promise<AuthSession> {
+  const response = await fetch(authMiniUrl(authMiniBaseUrl, '/session/refresh'), {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ session_id: session.session_id, refresh_token: session.refresh_token }),
@@ -823,8 +861,15 @@ function clearAuthSession() {
   window.localStorage.removeItem(authSessionStorageKey);
 }
 
-function authMiniUrl(path: string) {
-  return authMiniOrigin.replace(/\/$/, '') + path;
+function requireAuthMiniBaseUrl(authConfig: AuthConfig | null) {
+  if (!authConfig) {
+    throw new Error('Auth Mini is not configured');
+  }
+  return authConfig.auth_mini_base_url;
+}
+
+function authMiniUrl(authMiniBaseUrl: string, path: string) {
+  return authMiniBaseUrl.replace(/\/$/, '') + path;
 }
 
 async function responseErrorMessage(response: Response) {

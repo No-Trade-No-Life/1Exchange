@@ -6,6 +6,8 @@ use uuid::Uuid;
 use crate::{AppError, AppState};
 
 pub const ADMIN_USER_ID_META_KEY: &str = "admin_user_id";
+pub const AUTH_MINI_BASE_URL_META_KEY: &str = "auth_mini_base_url";
+pub const DEFAULT_AUTH_MINI_BASE_URL: &str = "https://auth.ntnl.io";
 pub const LEGACY_OWNER_ID: &str = "00000000-0000-4000-8000-000000000000";
 
 #[derive(Clone, Debug, Serialize)]
@@ -22,6 +24,11 @@ pub struct SetupState {
     pub legacy_records: i64,
 }
 
+#[derive(Debug, Serialize)]
+pub struct AuthConfig {
+    pub auth_mini_base_url: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct MeResponse {
     user_id: String,
@@ -30,11 +37,9 @@ struct MeResponse {
 
 pub async fn require_user(state: &AppState, headers: &HeaderMap) -> Result<AuthUser, AppError> {
     let token = bearer_token(headers)?;
+    let auth_mini_base_url = auth_mini_base_url(&state.db).await?;
     let response = reqwest::Client::new()
-        .get(format!(
-            "{}/me",
-            state.auth_mini_origin.trim_end_matches('/')
-        ))
+        .get(format!("{}/me", auth_mini_base_url.trim_end_matches('/')))
         .bearer_auth(token)
         .send()
         .await?;
@@ -58,6 +63,18 @@ pub async fn require_user(state: &AppState, headers: &HeaderMap) -> Result<AuthU
         user_id: me.user_id,
         email: me.email,
     })
+}
+
+pub async fn auth_config(db: &SqlitePool) -> Result<AuthConfig, AppError> {
+    Ok(AuthConfig {
+        auth_mini_base_url: auth_mini_base_url(db).await?,
+    })
+}
+
+pub async fn auth_mini_base_url(db: &SqlitePool) -> Result<String, AppError> {
+    meta_value(db, AUTH_MINI_BASE_URL_META_KEY)
+        .await?
+        .ok_or_else(|| AppError::bad_gateway(anyhow::anyhow!("missing auth-mini base URL")))
 }
 
 pub async fn require_initialized_user(
@@ -125,8 +142,12 @@ pub async fn initialize_setup(db: &SqlitePool, user: &AuthUser) -> Result<SetupS
 }
 
 async fn admin_user_id(db: &SqlitePool) -> Result<Option<String>, AppError> {
+    meta_value(db, ADMIN_USER_ID_META_KEY).await
+}
+
+async fn meta_value(db: &SqlitePool, key: &str) -> Result<Option<String>, AppError> {
     let row = sqlx::query("SELECT value FROM app_meta WHERE key = ?1")
-        .bind(ADMIN_USER_ID_META_KEY)
+        .bind(key)
         .fetch_optional(db)
         .await?;
 

@@ -32,7 +32,6 @@ use tower_http::services::ServeDir;
 pub struct AppState {
     db_path: PathBuf,
     pub db: SqlitePool,
-    pub auth_mini_origin: String,
     vite_origin: Option<String>,
 }
 
@@ -103,7 +102,6 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState {
         db_path,
         db,
-        auth_mini_origin: auth_mini_origin(),
         vite_origin: vite
             .as_ref()
             .map(|server| format!("http://{}", server.addr)),
@@ -111,6 +109,7 @@ async fn main() -> anyhow::Result<()> {
     funds::spawn_fund_polling(state.clone());
     let api = Router::new()
         .route("/health", get(health))
+        .route("/auth/config", get(auth_config))
         .route("/me", get(me))
         .route("/setup/status", get(setup_status))
         .route("/setup/initialize", post(initialize_setup))
@@ -202,7 +201,7 @@ fn listen_addr() -> anyhow::Result<SocketAddr> {
 fn auth_mini_origin() -> String {
     std::env::var("ONE_EXCHANGE_AUTH_MINI_ORIGIN")
         .or_else(|_| std::env::var("VITE_AUTH_MINI_ORIGIN"))
-        .unwrap_or_else(|_| "http://127.0.0.1:7777".to_string())
+        .unwrap_or_else(|_| auth::DEFAULT_AUTH_MINI_BASE_URL.to_string())
 }
 
 fn vite_addr() -> anyhow::Result<SocketAddr> {
@@ -304,6 +303,16 @@ async fn migrate(db: &SqlitePool) -> anyhow::Result<()> {
         )
         "#,
     )
+    .execute(db)
+    .await?;
+    sqlx::query(
+        r#"
+        INSERT OR IGNORE INTO app_meta (key, value, updated_at)
+        VALUES (?1, ?2, CURRENT_TIMESTAMP)
+        "#,
+    )
+    .bind(auth::AUTH_MINI_BASE_URL_META_KEY)
+    .bind(auth_mini_origin())
     .execute(db)
     .await?;
 
@@ -835,6 +844,10 @@ async fn me(
     headers: HeaderMap,
 ) -> Result<Json<auth::AuthUser>, AppError> {
     Ok(Json(auth::require_user(&state, &headers).await?))
+}
+
+async fn auth_config(State(state): State<AppState>) -> Result<Json<auth::AuthConfig>, AppError> {
+    Ok(Json(auth::auth_config(&state.db).await?))
 }
 
 async fn setup_status(
