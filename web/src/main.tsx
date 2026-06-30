@@ -62,6 +62,7 @@ type AuthSession = {
   access_token: string;
   refresh_token: string;
   expires_in: number;
+  token_type?: string;
 };
 
 type AuthConfig = {
@@ -498,6 +499,7 @@ const emptyCredentials: Credential[] = [];
 const emptyVirtualAccountConfigs: VirtualAccountConfig[] = [];
 const emptyFundConfigs: FundConfig[] = [];
 const authSessionStorageKey = 'one-exchange.auth-mini.session.v1';
+const authReturnStorageKey = 'one-exchange.auth-mini.return-to.v1';
 let currentAccessToken: string | null = null;
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -593,9 +595,6 @@ function AuthGate(props: { children: React.ReactNode }) {
   const [session, setSession] = useState<AuthSession | null>(() => readStoredAuthSession());
   const [user, setUser] = useState<AuthUser | null>(null);
   const [setup, setSetup] = useState<SetupState | null>(null);
-  const [email, setEmail] = useState('');
-  const [code, setCode] = useState('');
-  const [codeSent, setCodeSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -606,9 +605,18 @@ function AuthGate(props: { children: React.ReactNode }) {
       if (!alive) {
         return;
       }
+      const callbackSession = readAuthCallbackSession();
+      if (callbackSession) {
+        storeAuthSession(callbackSession, nextAuthConfig.auth_mini_base_url);
+        setSession(callbackSession);
+        removeAuthCallbackParams();
+        return;
+      }
+
       setAuthConfig(nextAuthConfig);
       if (!session) {
         currentAccessToken = null;
+        redirectToAuthMini(nextAuthConfig.auth_mini_base_url);
         return;
       }
       currentAccessToken = session.access_token;
@@ -620,11 +628,12 @@ function AuthGate(props: { children: React.ReactNode }) {
           setSetup(nextSetup);
         }
       } catch {
-        clearAuthSession();
+        clearAuthSession(nextAuthConfig.auth_mini_base_url);
         if (alive) {
           setSession(null);
           setUser(null);
           setSetup(null);
+          redirectToAuthMini(nextAuthConfig.auth_mini_base_url);
         }
       }
     }
@@ -638,62 +647,15 @@ function AuthGate(props: { children: React.ReactNode }) {
     };
   }, [session]);
 
-  async function startEmail(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setBusy(true);
-    setError(null);
-    try {
-      const response = await fetch(authMiniUrl(requireAuthMiniBaseUrl(authConfig), '/email/start'), {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ email }),
-      });
-      if (!response.ok) {
-        throw new Error(await responseErrorMessage(response));
-      }
-      setCodeSent(true);
-    } catch (caught) {
-      setError((caught as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function verifyEmail(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setBusy(true);
-    setError(null);
-    try {
-      const authMiniBaseUrl = requireAuthMiniBaseUrl(authConfig);
-      const response = await fetch(authMiniUrl(authMiniBaseUrl, '/email/verify'), {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ email, code }),
-      });
-      if (!response.ok) {
-        throw new Error(await responseErrorMessage(response));
-      }
-      const nextSession = await response.json() as AuthSession;
-      storeAuthSession(nextSession);
-      currentAccessToken = nextSession.access_token;
-      setSession(nextSession);
-      setUser(await readCurrentUser(nextSession, authMiniBaseUrl));
-      setSetup(await readSetupState());
-      await queryClient.invalidateQueries();
-    } catch (caught) {
-      setError((caught as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
   function signOut() {
-    clearAuthSession();
+    clearAuthSession(authConfig?.auth_mini_base_url ?? null);
     queryClient.clear();
     setSession(null);
     setUser(null);
     setSetup(null);
-    setCode('');
+    if (authConfig) {
+      redirectToAuthMini(authConfig.auth_mini_base_url);
+    }
   }
 
   async function initialize() {
@@ -755,44 +717,20 @@ function AuthGate(props: { children: React.ReactNode }) {
     );
   }
 
-  if (!authConfig) {
-    return (
-      <main className="mx-auto flex min-h-screen w-full max-w-md flex-col justify-center px-4">
-        <Card>
-          <CardHeader>
-            <CardTitle>Sign in to 1Exchange</CardTitle>
-            <CardDescription>Loading auth settings...</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <InlineError message={error} />
-          </CardContent>
-        </Card>
-      </main>
-    );
-  }
-
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-md flex-col justify-center px-4">
       <Card>
         <CardHeader>
-          <CardTitle>Sign in to 1Exchange</CardTitle>
-          <CardDescription>{authConfig.auth_mini_base_url}</CardDescription>
+          <CardTitle>Opening Auth Mini</CardTitle>
+          <CardDescription>{authConfig?.auth_mini_base_url ?? 'Loading auth settings...'}</CardDescription>
         </CardHeader>
-        <CardContent>
-          <form className="flex flex-col gap-3" onSubmit={codeSent ? verifyEmail : startEmail}>
-            <label className="flex flex-col gap-2 text-sm font-medium">
-              Email
-              <Input required type="email" value={email} onChange={(event) => setEmail(event.target.value)} />
-            </label>
-            {codeSent ? (
-              <label className="flex flex-col gap-2 text-sm font-medium">
-                Verification code
-                <Input required inputMode="numeric" value={code} onChange={(event) => setCode(event.target.value)} />
-              </label>
-            ) : null}
-            <InlineError message={error} />
-            <Button disabled={busy} type="submit">{busy ? 'Working...' : codeSent ? 'Verify code' : 'Send code'}</Button>
-          </form>
+        <CardContent className="flex flex-col gap-3">
+          <InlineError message={error} />
+          {authConfig ? (
+            <Button type="button" onClick={() => redirectToAuthMini(authConfig.auth_mini_base_url)}>
+              Continue to Auth Mini
+            </Button>
+          ) : null}
         </CardContent>
       </Card>
     </main>
@@ -813,7 +751,7 @@ async function readCurrentUser(session: AuthSession, authMiniBaseUrl: string): P
   });
   if (response.status === 401) {
     const refreshed = await refreshAuthSession(session, authMiniBaseUrl);
-    storeAuthSession(refreshed);
+    storeAuthSession(refreshed, authMiniBaseUrl);
     currentAccessToken = refreshed.access_token;
     const retry = await apiFetch('/api/me');
     if (!retry.ok) {
@@ -852,24 +790,107 @@ function readStoredAuthSession() {
   return raw ? JSON.parse(raw) as AuthSession : null;
 }
 
-function storeAuthSession(session: AuthSession) {
+function storeAuthSession(session: AuthSession, authMiniBaseUrl: string) {
   window.localStorage.setItem(authSessionStorageKey, JSON.stringify(session));
+  window.localStorage.setItem(authMiniSdkStorageKey(authMiniBaseUrl), JSON.stringify(toAuthMiniSdkSession(session)));
 }
 
-function clearAuthSession() {
+function clearAuthSession(authMiniBaseUrl: string | null) {
   currentAccessToken = null;
   window.localStorage.removeItem(authSessionStorageKey);
-}
-
-function requireAuthMiniBaseUrl(authConfig: AuthConfig | null) {
-  if (!authConfig) {
-    throw new Error('Auth Mini is not configured');
+  if (authMiniBaseUrl) {
+    window.localStorage.removeItem(authMiniSdkStorageKey(authMiniBaseUrl));
   }
-  return authConfig.auth_mini_base_url;
 }
 
 function authMiniUrl(authMiniBaseUrl: string, path: string) {
   return authMiniBaseUrl.replace(/\/$/, '') + path;
+}
+
+function authMiniSdkStorageKey(authMiniBaseUrl: string) {
+  const url = new URL(authMiniBaseUrl);
+  url.search = '';
+  url.hash = '';
+  url.pathname = url.pathname.endsWith('/') ? url.pathname : url.pathname + '/';
+  return 'auth-mini.sdk:' + url.toString();
+}
+
+function toAuthMiniSdkSession(session: AuthSession) {
+  const receivedAt = new Date().toISOString();
+  const expiresAt = new Date(Date.now() + session.expires_in * 1000).toISOString();
+  return {
+    sessionId: session.session_id,
+    accessToken: session.access_token,
+    refreshToken: session.refresh_token,
+    receivedAt,
+    expiresAt,
+  };
+}
+
+function redirectToAuthMini(authMiniBaseUrl: string) {
+  const returnTo = window.location.href;
+  window.localStorage.setItem(authReturnStorageKey, returnTo);
+  const loginUrl = new URL('/web/', authMiniBaseUrl);
+  loginUrl.hash = '/login?' + new URLSearchParams({
+    return_to: returnTo,
+    redirect_uri: returnTo,
+    callback_url: returnTo,
+  }).toString();
+  window.location.assign(loginUrl.toString());
+}
+
+function readAuthCallbackSession() {
+  const params = currentAuthParams();
+  const encodedSession = params.get('session');
+  const session = encodedSession ? parseEncodedAuthSession(encodedSession) : sessionFromParams(params);
+  return session && isAuthSession(session) ? session : null;
+}
+
+function currentAuthParams() {
+  const params = new URLSearchParams(window.location.search);
+  const hashQuery = window.location.hash.indexOf('?');
+  if (hashQuery >= 0) {
+    const hashParams = new URLSearchParams(window.location.hash.slice(hashQuery + 1));
+    hashParams.forEach((value, key) => params.set(key, value));
+  }
+  return params;
+}
+
+function parseEncodedAuthSession(value: string) {
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    try {
+      return JSON.parse(window.atob(value)) as unknown;
+    } catch {
+      return null;
+    }
+  }
+}
+
+function sessionFromParams(params: URLSearchParams) {
+  return {
+    session_id: params.get('session_id'),
+    access_token: params.get('access_token'),
+    refresh_token: params.get('refresh_token'),
+    expires_in: Number(params.get('expires_in') ?? '900'),
+    token_type: params.get('token_type') ?? undefined,
+  };
+}
+
+function isAuthSession(value: unknown): value is AuthSession {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const candidate = value as Partial<AuthSession>;
+  return Boolean(candidate.session_id && candidate.access_token && candidate.refresh_token && candidate.expires_in);
+}
+
+function removeAuthCallbackParams() {
+  const returnTo = window.localStorage.getItem(authReturnStorageKey);
+  window.localStorage.removeItem(authReturnStorageKey);
+  const cleanUrl = returnTo ?? window.location.origin + window.location.pathname + window.location.hash.split('?')[0];
+  window.history.replaceState(null, '', cleanUrl);
 }
 
 async function responseErrorMessage(response: Response) {
