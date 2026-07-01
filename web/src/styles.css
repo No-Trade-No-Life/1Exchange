@@ -257,6 +257,10 @@
     @apply flex items-center gap-2;
   }
 
+  .row-actions {
+    @apply flex items-center gap-2;
+  }
+
   .schema-row {
     @apply flex items-center justify-between gap-4 border-b px-5 py-3 last:border-b-0 max-md:flex-col max-md:items-stretch;
   }

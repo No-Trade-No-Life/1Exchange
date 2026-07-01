@@ -41,6 +41,7 @@ import {
   LineChart,
   Menu,
   PackageSearch,
+  Pencil,
   Plus,
   Printer,
   Trash2,
@@ -1445,10 +1446,10 @@ function AccountsPage(props: {
             title="Create virtual account"
             trigger="Create virtual account"
           >
-            <VirtualAccountCreatePanel accountIds={props.accountIds} credentials={props.credentials} />
+            <VirtualAccountUpsertPanel accountIds={props.accountIds} credentials={props.credentials} />
           </AccountSourceCreateDialog>
         </div>
-        <VirtualAccountInventory configs={props.virtualAccounts} />
+        <VirtualAccountInventory accountIds={props.accountIds} configs={props.virtualAccounts} credentials={props.credentials} />
       </div>
 
       <div className="account-source-section" id="account-source-custom">
@@ -1820,7 +1821,7 @@ function CredentialSchemaPanel(props: { exchanges: ExchangeInfo[] }) {
   );
 }
 
-function VirtualAccountInventory(props: { configs: VirtualAccountConfig[] }) {
+function VirtualAccountInventory(props: { accountIds: AccountIds; configs: VirtualAccountConfig[]; credentials: Credential[] }) {
   return (
     <section className="panel">
       <PanelTitle label="Virtual account configs" title="Local linear compositions" action={props.configs.length + ' configs'} />
@@ -1833,20 +1834,35 @@ function VirtualAccountInventory(props: { configs: VirtualAccountConfig[] }) {
           config.enabled ? 'Enabled' : 'Disabled',
           config.sources.filter((source) => source.enabled).length + '/' + config.sources.length,
           config.updated_at,
-          config.enabled ? <AccountIdLink accountId={config.account_id} key="action" /> : '-',
+          <div className="row-actions" key="action">
+            {config.enabled ? <AccountIdLink accountId={config.account_id} /> : null}
+            <Dialog>
+              <DialogTrigger render={<Button size="sm" variant="outline" type="button" />}>
+                <Pencil className="size-4" />
+                Edit
+              </DialogTrigger>
+              <DialogContent className="max-h-[min(720px,calc(100vh-2rem))] overflow-y-auto sm:max-w-2xl">
+                <DialogHeader>
+                  <DialogTitle>Edit virtual account</DialogTitle>
+                  <DialogDescription>Update the saved account composition and status.</DialogDescription>
+                </DialogHeader>
+                <VirtualAccountUpsertPanel accountIds={props.accountIds} config={config} credentials={props.credentials} />
+              </DialogContent>
+            </Dialog>
+          </div>,
         ])}
       />
     </section>
   );
 }
 
-function VirtualAccountCreatePanel(props: { accountIds: AccountIds; credentials: Credential[] }) {
+function VirtualAccountUpsertPanel(props: { accountIds: AccountIds; config?: VirtualAccountConfig; credentials: Credential[] }) {
   const queryClient = useQueryClient();
-  const [accountId, setAccountId] = useState('VIRTUAL/local');
-  const [name, setName] = useState('Local virtual account');
-  const [sources, setSources] = useState<VirtualAccountSource[]>([
-    { credential_id: props.credentials[0]?.id ?? '', coefficient: 1, enabled: true, force_zero: false },
-  ]);
+  const editing = Boolean(props.config);
+  const [accountId, setAccountId] = useState(props.config?.account_id ?? 'VIRTUAL/local');
+  const [name, setName] = useState(props.config?.name ?? 'Local virtual account');
+  const [enabled, setEnabled] = useState(props.config?.enabled ?? true);
+  const [sources, setSources] = useState<VirtualAccountSource[]>(() => initialVirtualAccountSources(props.config, props.credentials));
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -1865,13 +1881,14 @@ function VirtualAccountCreatePanel(props: { accountIds: AccountIds; credentials:
       const response = await apiFetch('/api/virtual-accounts', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ account_id: accountId, name, enabled: true, sources }),
+        body: JSON.stringify({ account_id: accountId, name, enabled, sources }),
       });
       if (!response.ok) {
         const body = await response.json().catch(() => null) as { message?: string } | null;
         throw new Error(body?.message ?? `${response.status} ${response.statusText}`);
       }
       await queryClient.invalidateQueries({ queryKey: ['json', '/api/virtual-accounts'] });
+      await queryClient.invalidateQueries({ queryKey: ['json', '/api/accounts'] });
     } catch (caught) {
       setError((caught as Error).message);
     } finally {
@@ -1883,22 +1900,31 @@ function VirtualAccountCreatePanel(props: { accountIds: AccountIds; credentials:
       <form className="credential-form dialog-form" onSubmit={handleSubmit}>
         <label>
           Virtual account ID
-          <Input required value={accountId} onChange={(event) => setAccountId(event.target.value)} />
+          <Input disabled={editing} required value={accountId} onChange={(event) => setAccountId(event.target.value)} />
         </label>
         <label>
           Name
           <Input required value={name} onChange={(event) => setName(event.target.value)} />
+        </label>
+        <label className="inline-check">
+          <Checkbox checked={enabled} onCheckedChange={(checked) => setEnabled(checked === true)} />
+          Enabled
         </label>
         <p className="form-note">Coefficient expresses add/subtract/multiply/divide: 1 adds, -1 subtracts, 2 multiplies, 0.5 divides by 2. The account is composed only when queried.</p>
         <div className="schema-grid">
           {sources.map((source, index) => (
             <div className="schema-row" key={index}>
               <select value={source.credential_id} onChange={(event) => setSourceAt(sources, setSources, index, { ...source, credential_id: event.target.value })}>
+                {missingCredentialOption(source, props.credentials)}
                 {props.credentials.map((credential) => (
                   <option key={credential.id} value={credential.id}>{accountLabel(credential, props.accountIds)}</option>
                 ))}
               </select>
               <Input inputMode="decimal" value={source.coefficient} onChange={(event) => setSourceAt(sources, setSources, index, { ...source, coefficient: Number(event.target.value) })} />
+              <label className="inline-check">
+                <Checkbox checked={source.enabled} onCheckedChange={(checked) => setSourceAt(sources, setSources, index, { ...source, enabled: checked === true })} />
+                Active
+              </label>
               <label className="inline-check">
                 <Checkbox checked={source.force_zero} onCheckedChange={(checked) => setSourceAt(sources, setSources, index, { ...source, force_zero: checked === true })} />
                 Force zero
@@ -1910,10 +1936,24 @@ function VirtualAccountCreatePanel(props: { accountIds: AccountIds; credentials:
         <Button variant="outline" type="button" onClick={() => setSources([...sources, { credential_id: props.credentials[0]?.id ?? '', coefficient: 1, enabled: true, force_zero: false }])}>Add source</Button>
         <InlineError message={error} />
         <Button disabled={saving || !props.credentials.length || !sources.length} type="submit">
-          {saving ? 'Saving...' : 'Save virtual account'}
+          {saving ? 'Saving...' : editing ? 'Save changes' : 'Save virtual account'}
         </Button>
       </form>
   );
+}
+
+function initialVirtualAccountSources(config: VirtualAccountConfig | undefined, credentials: Credential[]) {
+  return config?.sources ?? [
+    { credential_id: credentials[0]?.id ?? '', coefficient: 1, enabled: true, force_zero: false },
+  ];
+}
+
+function missingCredentialOption(source: VirtualAccountSource, credentials: Credential[]) {
+  if (!source.credential_id || credentials.some((credential) => credential.id === source.credential_id)) {
+    return null;
+  }
+
+  return <option value={source.credential_id}>Missing credential · {source.credential_id}</option>;
 }
 
 function FundListPage(props: {
