@@ -179,7 +179,7 @@ fn map_spot_position(row: Value) -> Option<Position> {
     if currency.is_empty() || volume <= 0.0 {
         return None;
     }
-    let closable_price = if currency == "USDT" { 1.0 } else { 0.0 };
+    let closable_price = common::stablecoin_unit_price(&currency);
 
     Some(Position {
         position_id: format!("SPOT/{currency}"),
@@ -209,7 +209,7 @@ fn map_unified_position(row: Value) -> Option<Position> {
     if currency.is_empty() || volume == 0.0 {
         return None;
     }
-    let closable_price = if currency == "USDT" { 1.0 } else { 0.0 };
+    let closable_price = common::stablecoin_unit_price(&currency);
 
     Some(Position {
         position_id: format!("UNIFIED/{currency}"),
@@ -236,7 +236,7 @@ fn map_earn_position(row: Value) -> Option<Position> {
         return None;
     }
     let frozen = common::f64_value(&row, "frozen_amount");
-    let closable_price = if currency == "USDT" { 1.0 } else { 0.0 };
+    let closable_price = common::stablecoin_unit_price(&currency);
 
     Some(Position {
         position_id: format!("EARNING/{currency}"),
@@ -272,6 +272,7 @@ fn map_future_position(row: Value) -> Option<Position> {
     }
     let closable_price = common::f64_value(&row, "mark_price");
     let notional_value = common::f64_value(&row, "value").abs();
+    let floating_profit = common::f64_value(&row, "unrealised_pnl");
     let (base_currency, quote_currency) = gate_contract_currencies(&contract);
 
     Some(Position {
@@ -294,7 +295,9 @@ fn map_future_position(row: Value) -> Option<Position> {
             common::notional_value(size, closable_price)
         },
         notional_currency: Some("USDT".to_string()),
-        floating_profit: common::f64_value(&row, "unrealised_pnl"),
+        settlement_currency: Some("USDT".to_string()),
+        valuation: floating_profit,
+        floating_profit,
         comment: None,
         ..Position::default()
     })
@@ -394,5 +397,48 @@ fn map_spot_product(row: Value) -> Product {
         market_id: Some(format!("{ID}/USDT-SPOT")),
         no_interest_rate: Some(false),
         spread: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn maps_usdc_spot_as_stablecoin_value() {
+        let position = map_spot_position(json!({
+            "currency": "USDC",
+            "available": "98864.51",
+            "locked": "0"
+        }))
+        .expect("spot position")
+        .normalized("GATE/16645484");
+
+        assert_eq!(position.product_id, "GATE/SPOT/USDC_USDT");
+        assert_eq!(position.closable_price, 1.0);
+        assert_eq!(position.notional_currency.as_deref(), Some("USDT"));
+        assert_eq!(position.valuation, 98864.51);
+    }
+
+    #[test]
+    fn maps_future_valuation_as_unrealized_pnl_not_exposure() {
+        let position = map_future_position(json!({
+            "contract": "USDC_USDT",
+            "size": "29380",
+            "entry_price": "0.999310690947",
+            "mark_price": "0.9999",
+            "value": "29377.062",
+            "unrealised_pnl": "11.43789997714"
+        }))
+        .expect("future position")
+        .normalized("GATE/16645484");
+
+        assert_eq!(position.product_id, "GATE/FUTURE/USDC_USDT");
+        assert_eq!(position.notional_value, 29377.062);
+        assert_eq!(position.settlement_currency.as_deref(), Some("USDT"));
+        assert_eq!(position.valuation, 11.43789997714);
+        assert_eq!(position.floating_profit, 11.43789997714);
     }
 }
