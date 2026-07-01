@@ -136,6 +136,12 @@ async fn main() -> anyhow::Result<()> {
         .route("/funds", get(funds::list_funds).post(funds::create_fund))
         .route("/funds/sample", post(funds::sample_fund_now))
         .route("/fund-nav", get(funds::list_fund_nav))
+        .route(
+            "/fund-statement-events",
+            get(funds::list_fund_statement_events)
+                .put(funds::update_fund_statement_event)
+                .delete(funds::delete_fund_statement_event),
+        )
         .route("/fund-statements", get(funds::get_fund_statement_summary))
         .route(
             "/fund-settlement-preview",

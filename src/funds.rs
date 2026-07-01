@@ -66,6 +66,21 @@ pub struct FundStatementQuery {
 }
 
 #[derive(Deserialize)]
+pub struct FundStatementEventQuery {
+    fund_id: String,
+    event_index: Option<i64>,
+}
+
+#[derive(Deserialize)]
+pub struct UpdateFundStatementEventRequest {
+    fund_id: String,
+    event_index: i64,
+    event_type: String,
+    updated_at: String,
+    payload: serde_json::Value,
+}
+
+#[derive(Deserialize)]
 pub struct FundSettlementQuery {
     fund_id: String,
 }
@@ -106,6 +121,14 @@ pub struct FundStatementSummary {
     reconciliation: Option<FundEquityReconciliation>,
     tax_modes: Vec<FundStatementTaxMode>,
     tax_threshold_adjustments: Vec<FundTaxThresholdAdjustment>,
+}
+
+#[derive(Debug, Serialize, FromRow)]
+pub struct FundStatementEvent {
+    event_index: i64,
+    event_type: String,
+    updated_at: String,
+    payload: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -394,6 +417,14 @@ struct FundStatementEventPayloadRow {
     payload: String,
 }
 
+#[derive(Debug, FromRow)]
+struct FundStatementEventProjectionRow {
+    event_index: i64,
+    event_type: String,
+    updated_at: String,
+    payload: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct FundStatementEventPayload {
     #[serde(rename = "type")]
@@ -422,6 +453,16 @@ struct FundStatementInvestorPayload {
     add_tax_threshold: Option<f64>,
     referrer: Option<String>,
     referrer_rebate_rate: Option<f64>,
+}
+
+#[derive(Default)]
+struct FundStatementInvestorProjection {
+    referrer: Option<String>,
+    tax_rate: Option<f64>,
+    referrer_rebate_rate: Option<f64>,
+    tax_threshold: Option<f64>,
+    updated_at: String,
+    source_event_index: i64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -570,6 +611,98 @@ pub async fn list_fund_nav(
     };
 
     Ok(Json(rows))
+}
+
+pub async fn list_fund_statement_events(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<FundStatementEventQuery>,
+) -> Result<Json<Vec<FundStatementEvent>>, AppError> {
+    let user = auth::require_initialized_user(&state, &headers).await?;
+    get_fund_config(&state.db, &user.user_id, &query.fund_id).await?;
+
+    Ok(Json(
+        sqlx::query_as::<_, FundStatementEvent>(
+            r#"
+            SELECT event_index, event_type, updated_at, payload
+            FROM fund_statement_events
+            WHERE fund_id = ?1
+            ORDER BY event_index DESC
+            "#,
+        )
+        .bind(&query.fund_id)
+        .fetch_all(&state.db)
+        .await?,
+    ))
+}
+
+pub async fn update_fund_statement_event(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<UpdateFundStatementEventRequest>,
+) -> Result<Json<FundStatementEvent>, AppError> {
+    let user = auth::require_initialized_user(&state, &headers).await?;
+    get_fund_config(&state.db, &user.user_id, &request.fund_id).await?;
+    validate_fund_statement_event_request(&request)?;
+
+    let payload = serde_json::to_string(&request.payload)?;
+    let mut tx = state.db.begin().await?;
+    let result = sqlx::query(
+        r#"
+        UPDATE fund_statement_events
+        SET event_type = ?1, updated_at = ?2, payload = ?3
+        WHERE fund_id = ?4 AND event_index = ?5
+        "#,
+    )
+    .bind(request.event_type.trim())
+    .bind(request.updated_at.trim())
+    .bind(&payload)
+    .bind(&request.fund_id)
+    .bind(request.event_index)
+    .execute(&mut *tx)
+    .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(AppError::bad_request("fund statement event not found"));
+    }
+
+    rebuild_fund_statement_derived_tables(&mut tx, &request.fund_id).await?;
+    tx.commit().await?;
+    Ok(Json(
+        get_fund_statement_event(&state.db, &request.fund_id, request.event_index).await?,
+    ))
+}
+
+pub async fn delete_fund_statement_event(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<FundStatementEventQuery>,
+) -> Result<StatusCode, AppError> {
+    let user = auth::require_initialized_user(&state, &headers).await?;
+    let event_index = query
+        .event_index
+        .ok_or_else(|| AppError::bad_request("event_index is required"))?;
+    get_fund_config(&state.db, &user.user_id, &query.fund_id).await?;
+
+    let mut tx = state.db.begin().await?;
+    let result = sqlx::query(
+        r#"
+        DELETE FROM fund_statement_events
+        WHERE fund_id = ?1 AND event_index = ?2
+        "#,
+    )
+    .bind(&query.fund_id)
+    .bind(event_index)
+    .execute(&mut *tx)
+    .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(AppError::bad_request("fund statement event not found"));
+    }
+
+    rebuild_fund_statement_derived_tables(&mut tx, &query.fund_id).await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn get_fund_statement_summary(
@@ -1859,6 +1992,172 @@ async fn load_tax_threshold_adjustments(
         .filter_map(tax_threshold_adjustment_from_row)
         .collect::<Result<Vec<_>, _>>()
         .map_err(AppError::from)
+}
+
+async fn get_fund_statement_event(
+    db: &SqlitePool,
+    fund_id: &str,
+    event_index: i64,
+) -> Result<FundStatementEvent, AppError> {
+    Ok(sqlx::query_as::<_, FundStatementEvent>(
+        r#"
+        SELECT event_index, event_type, updated_at, payload
+        FROM fund_statement_events
+        WHERE fund_id = ?1 AND event_index = ?2
+        "#,
+    )
+    .bind(fund_id)
+    .bind(event_index)
+    .fetch_one(db)
+    .await?)
+}
+
+fn validate_fund_statement_event_request(
+    request: &UpdateFundStatementEventRequest,
+) -> Result<(), AppError> {
+    if request.event_type.trim().is_empty() {
+        return Err(AppError::bad_request("event_type is required"));
+    }
+    if request.updated_at.trim().is_empty() {
+        return Err(AppError::bad_request("updated_at is required"));
+    }
+    serde_json::from_value::<FundStatementEventPayload>(request.payload.clone())?;
+    Ok(())
+}
+
+async fn rebuild_fund_statement_derived_tables(
+    tx: &mut Transaction<'_, Sqlite>,
+    fund_id: &str,
+) -> Result<(), AppError> {
+    for table in [
+        "fund_statement_orders",
+        "fund_statement_equity",
+        "fund_statement_investors",
+        "fund_statement_tax_modes",
+    ] {
+        let sql = format!("DELETE FROM {table} WHERE fund_id = ?1");
+        sqlx::query(&sql).bind(fund_id).execute(&mut **tx).await?;
+    }
+
+    let rows = sqlx::query_as::<_, FundStatementEventProjectionRow>(
+        r#"
+        SELECT event_index, event_type, updated_at, payload
+        FROM fund_statement_events
+        WHERE fund_id = ?1
+        ORDER BY event_index ASC
+        "#,
+    )
+    .bind(fund_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    let mut investors = HashMap::<String, FundStatementInvestorProjection>::new();
+
+    for row in rows {
+        project_fund_statement_event(tx, fund_id, row, &mut investors).await?;
+    }
+
+    for (name, investor) in investors {
+        sqlx::query(
+            r#"
+            INSERT INTO fund_statement_investors (
+                fund_id, name, referrer, tax_rate, referrer_rebate_rate,
+                tax_threshold, updated_at, source_event_index
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(fund_id)
+        .bind(name)
+        .bind(investor.referrer)
+        .bind(investor.tax_rate)
+        .bind(investor.referrer_rebate_rate)
+        .bind(investor.tax_threshold)
+        .bind(investor.updated_at)
+        .bind(investor.source_event_index)
+        .execute(&mut **tx)
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn project_fund_statement_event(
+    tx: &mut Transaction<'_, Sqlite>,
+    fund_id: &str,
+    row: FundStatementEventProjectionRow,
+    investors: &mut HashMap<String, FundStatementInvestorProjection>,
+) -> Result<(), AppError> {
+    let payload = serde_json::from_str::<FundStatementEventPayload>(&row.payload)?;
+
+    if let Some(fund_equity) = payload.fund_equity {
+        sqlx::query(
+            r#"
+            INSERT INTO fund_statement_equity (fund_id, event_index, equity, updated_at)
+            VALUES (?1, ?2, ?3, ?4)
+            "#,
+        )
+        .bind(fund_id)
+        .bind(row.event_index)
+        .bind(fund_equity.equity)
+        .bind(&row.updated_at)
+        .execute(&mut **tx)
+        .await?;
+    }
+
+    if let Some(order) = payload.order {
+        sqlx::query(
+            r#"
+            INSERT INTO fund_statement_orders (fund_id, event_index, investor_name, deposit, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            "#,
+        )
+        .bind(fund_id)
+        .bind(row.event_index)
+        .bind(order.name)
+        .bind(order.deposit)
+        .bind(&row.updated_at)
+        .execute(&mut **tx)
+        .await?;
+    }
+
+    if let Some(investor_update) = payload.investor {
+        let investor = investors.entry(investor_update.name).or_default();
+        investor.referrer = investor_update
+            .referrer
+            .or_else(|| investor.referrer.take());
+        investor.tax_rate = investor_update.tax_rate.or(investor.tax_rate);
+        investor.referrer_rebate_rate = investor_update
+            .referrer_rebate_rate
+            .or(investor.referrer_rebate_rate);
+        investor.tax_threshold = investor_update.add_tax_threshold.or(investor.tax_threshold);
+        investor.updated_at = row.updated_at.clone();
+        investor.source_event_index = row.event_index;
+    }
+
+    if statement_event_is_tax_mode(&row.event_type, payload.event_type.as_deref()) {
+        sqlx::query(
+            r#"
+            INSERT INTO fund_statement_tax_modes (fund_id, event_index, mode, comment, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            "#,
+        )
+        .bind(fund_id)
+        .bind(row.event_index)
+        .bind(payload.event_type.as_deref().unwrap_or(&row.event_type))
+        .bind(payload.comment)
+        .bind(&row.updated_at)
+        .execute(&mut **tx)
+        .await?;
+    }
+
+    Ok(())
+}
+
+fn statement_event_is_tax_mode(column_type: &str, payload_type: Option<&str>) -> bool {
+    matches!(
+        payload_type.or(Some(column_type)),
+        Some("taxation") | Some("taxation/v2")
+    )
 }
 
 fn tax_threshold_adjustment_from_row(
@@ -3372,6 +3671,93 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rebuilds_statement_derived_rows_after_event_delete() {
+        let db = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        create_statement_write_test_tables(&db).await;
+        for (event_index, event_type, payload) in [
+            (0, "equity", r#"{"fund_equity":{"equity":150}}"#),
+            (1, "order", r#"{"order":{"name":"Alice","deposit":100}}"#),
+            (
+                2,
+                "investor",
+                r#"{"investor":{"name":"Alice","tax_rate":0.2,"referrer":"Bob"}}"#,
+            ),
+            (
+                3,
+                "taxation/v2",
+                r#"{"type":"taxation/v2","comment":"tax checkpoint"}"#,
+            ),
+        ] {
+            sqlx::query(
+                r#"
+                INSERT INTO fund_statement_events (fund_id, event_index, event_type, updated_at, payload)
+                VALUES ('fund', ?1, ?2, '2025-01-01T00:00:00+00:00', ?3)
+                "#,
+            )
+            .bind(event_index)
+            .bind(event_type)
+            .bind(payload)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+
+        let mut tx = db.begin().await.unwrap();
+        rebuild_fund_statement_derived_tables(&mut tx, "fund")
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let (orders_before,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM fund_statement_orders WHERE fund_id = 'fund'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        let (investor_name, tax_mode): (String, String) = sqlx::query_as(
+            r#"
+            SELECT investor.name, mode.mode
+            FROM fund_statement_investors investor
+            CROSS JOIN fund_statement_tax_modes mode
+            WHERE investor.fund_id = 'fund' AND mode.fund_id = 'fund'
+            "#,
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(orders_before, 1);
+        assert_eq!(investor_name, "Alice");
+        assert_eq!(tax_mode, "taxation/v2");
+
+        let mut tx = db.begin().await.unwrap();
+        sqlx::query("DELETE FROM fund_statement_events WHERE fund_id = 'fund' AND event_index = 1")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        rebuild_fund_statement_derived_tables(&mut tx, "fund")
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let (orders_after,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM fund_statement_orders WHERE fund_id = 'fund'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        let (equity_after,): (f64,) =
+            sqlx::query_as("SELECT equity FROM fund_statement_equity WHERE fund_id = 'fund'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+
+        assert_eq!(orders_after, 0);
+        assert_close(equity_after, 150.0);
+    }
+
+    #[tokio::test]
     async fn rejects_duplicate_statement_settlement_basis() {
         let db = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
@@ -3431,6 +3817,39 @@ mod tests {
                 equity REAL NOT NULL,
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (fund_id, event_index)
+            )
+            "#,
+        )
+        .execute(db)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"
+            CREATE TABLE fund_statement_orders (
+                fund_id TEXT NOT NULL,
+                event_index INTEGER NOT NULL,
+                investor_name TEXT NOT NULL,
+                deposit REAL NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (fund_id, event_index)
+            )
+            "#,
+        )
+        .execute(db)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"
+            CREATE TABLE fund_statement_investors (
+                fund_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                referrer TEXT,
+                tax_rate REAL,
+                referrer_rebate_rate REAL,
+                tax_threshold REAL,
+                updated_at TEXT NOT NULL,
+                source_event_index INTEGER NOT NULL,
+                PRIMARY KEY (fund_id, name)
             )
             "#,
         )

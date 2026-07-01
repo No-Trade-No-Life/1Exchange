@@ -252,6 +252,13 @@ type FundStatementSummary = {
   tax_threshold_adjustments: FundTaxThresholdAdjustment[];
 };
 
+type FundStatementEvent = {
+  event_index: number;
+  event_type: string;
+  updated_at: string;
+  payload: string;
+};
+
 type FundStatementTotals = {
   events: number;
   orders: number;
@@ -1266,15 +1273,18 @@ function FundDetailRoute() {
   const fundId = params.get('fund_id') ?? '';
   const funds = useJson<FundConfig[]>('/api/funds');
   const nav = useJson<FundNavSnapshot[]>(fundId ? `/api/fund-nav?fund_id=${encodeURIComponent(fundId)}&limit=100` : null);
+  const events = useJson<FundStatementEvent[]>(fundId ? `/api/fund-statement-events?fund_id=${encodeURIComponent(fundId)}` : null);
   const statements = useJson<FundStatementSummary>(fundId ? `/api/fund-statements?fund_id=${encodeURIComponent(fundId)}` : null);
   const settlement = useJson<FundSettlementPreview>(fundId ? `/api/fund-settlement-preview?fund_id=${encodeURIComponent(fundId)}` : null);
 
   return (
-    <RefreshScope resources={[funds, nav, statements, settlement]}>
+    <RefreshScope resources={[funds, nav, events, statements, settlement]}>
       <FundDetailPage
         configs={funds.data ?? emptyFundConfigs}
+        events={events.data ?? []}
+        eventsError={events.error}
         fundId={fundId}
-        loading={funds.loading || nav.loading || statements.loading || settlement.loading}
+        loading={funds.loading || nav.loading || events.loading || statements.loading || settlement.loading}
         navError={nav.error}
         settlementError={settlement.error}
         settlementPreview={settlement.data ?? null}
@@ -2002,6 +2012,8 @@ function FundListPage(props: {
 
 function FundDetailPage(props: {
   configs: FundConfig[];
+  events: FundStatementEvent[];
+  eventsError: string | null;
   fundId: string;
   loading: boolean;
   navError: string | null;
@@ -2014,6 +2026,9 @@ function FundDetailPage(props: {
   const queryClient = useQueryClient();
   const [settlementConfirmError, setSettlementConfirmError] = useState<string | null>(null);
   const [settlementConfirming, setSettlementConfirming] = useState(false);
+  const [editingEvent, setEditingEvent] = useState<FundStatementEvent | null>(null);
+  const [eventActionError, setEventActionError] = useState<string | null>(null);
+  const [eventActioning, setEventActioning] = useState<number | null>(null);
   const fund = props.configs.find((item) => item.id === props.fundId);
   const latestSnapshot = props.snapshots[0];
   const statement = props.statementSummary;
@@ -2049,6 +2064,28 @@ function FundDetailPage(props: {
       setSettlementConfirmError(error instanceof Error ? error.message : String(error));
     } finally {
       setSettlementConfirming(false);
+    }
+  }
+
+  async function deleteStatementEvent(eventIndex: number) {
+    if (!window.confirm('Delete statement event #' + eventIndex + '?')) {
+      return;
+    }
+    setEventActionError(null);
+    setEventActioning(eventIndex);
+    try {
+      const response = await apiFetch(
+        `/api/fund-statement-events?fund_id=${encodeURIComponent(props.fundId)}&event_index=${eventIndex}`,
+        { method: 'DELETE' },
+      );
+      if (!response.ok) {
+        throw new Error(await responseErrorMessage(response));
+      }
+      await queryClient.invalidateQueries({ queryKey: ['json'] });
+    } catch (error) {
+      setEventActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setEventActioning(null);
     }
   }
 
@@ -2223,6 +2260,35 @@ function FundDetailPage(props: {
       <section className="panel">
         <PanelTitle
           label="Statement history"
+          title="Raw events"
+          action={props.events.length + ' events'}
+        />
+        <InlineError message={eventActionError ?? props.eventsError} />
+        <DataTable
+          empty="No raw statement events are available for this fund."
+          headers={['Event', 'Time', 'Type', 'Payload', 'Action']}
+          rows={props.events.map((item) => [
+            '#' + item.event_index,
+            formatDate(item.updated_at),
+            item.event_type,
+            <code className="event-payload-preview" key="payload">{eventPayloadPreview(item.payload)}</code>,
+            <div className="flex items-center gap-2" key="action">
+              <Button size="sm" variant="outline" type="button" onClick={() => setEditingEvent(item)}>
+                <Pencil data-icon="inline-start" />
+                Edit
+              </Button>
+              <Button size="sm" variant="outline" type="button" disabled={eventActioning === item.event_index} onClick={() => void deleteStatementEvent(item.event_index)}>
+                <Trash2 data-icon="inline-start" />
+                Delete
+              </Button>
+            </div>,
+          ])}
+        />
+      </section>
+
+      <section className="panel">
+        <PanelTitle
+          label="Statement history"
           title="Event-state investors"
           action={statement ? statement.event_state.investors.length + ' investors' : undefined}
         />
@@ -2369,7 +2435,104 @@ function FundDetailPage(props: {
           ])}
         />
       </section>
+      <FundStatementEventDialog
+        event={editingEvent}
+        fundId={props.fundId}
+        onOpenChange={(open) => {
+          if (!open) {
+            setEditingEvent(null);
+          }
+        }}
+      />
     </div>
+  );
+}
+
+function FundStatementEventDialog(props: {
+  event: FundStatementEvent | null;
+  fundId: string;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [eventType, setEventType] = useState('');
+  const [updatedAt, setUpdatedAt] = useState('');
+  const [payloadText, setPayloadText] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setEventType(props.event?.event_type ?? '');
+    setUpdatedAt(props.event?.updated_at ?? '');
+    setPayloadText(props.event ? prettyJsonText(props.event.payload) : '');
+    setError(null);
+  }, [props.event]);
+
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!props.event) {
+      return;
+    }
+
+    setError(null);
+    setSaving(true);
+    try {
+      const payload = JSON.parse(payloadText) as unknown;
+      const response = await apiFetch('/api/fund-statement-events', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          fund_id: props.fundId,
+          event_index: props.event.event_index,
+          event_type: eventType,
+          updated_at: updatedAt,
+          payload,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await responseErrorMessage(response));
+      }
+      await queryClient.invalidateQueries({ queryKey: ['json'] });
+      props.onOpenChange(false);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Dialog open={props.event !== null} onOpenChange={props.onOpenChange}>
+      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-3xl">
+        <DialogHeader>
+          <DialogTitle>Edit statement event</DialogTitle>
+          <DialogDescription>{props.event ? '#' + props.event.event_index : 'No event selected'}</DialogDescription>
+        </DialogHeader>
+        <form className="credential-form dialog-form" onSubmit={handleSubmit}>
+          <label>
+            Event type
+            <Input required value={eventType} onChange={(event) => setEventType(event.target.value)} />
+          </label>
+          <label>
+            Updated at
+            <Input required value={updatedAt} onChange={(event) => setUpdatedAt(event.target.value)} />
+          </label>
+          <label>
+            Payload JSON
+            <textarea
+              className="event-payload-editor"
+              required
+              spellCheck={false}
+              value={payloadText}
+              onChange={(event) => setPayloadText(event.target.value)}
+            />
+          </label>
+          <InlineError message={error} />
+          <Button disabled={saving || props.event === null} type="submit">
+            {saving ? 'Saving...' : 'Save event'}
+          </Button>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -3199,6 +3362,19 @@ function settlementReportPath(runId: string) {
 
 function settlementRunExportPath(runId: string) {
   return `/api/fund-settlement-runs/export?run_id=${encodeURIComponent(runId)}`;
+}
+
+function eventPayloadPreview(payload: string) {
+  const value = prettyJsonText(payload).replace(/\s+/g, ' ');
+  return value.length > 140 ? value.slice(0, 137) + '...' : value;
+}
+
+function prettyJsonText(payload: string) {
+  try {
+    return JSON.stringify(JSON.parse(payload), null, 2);
+  } catch {
+    return payload;
+  }
 }
 
 function fallbackAccountId(credential: Credential) {
