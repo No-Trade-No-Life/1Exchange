@@ -20,7 +20,7 @@ use axum::{
     extract::{OriginalUri, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Redirect, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use models::{AccountInfo, Position, Product, TradeFill};
 use serde::{Serialize, ser::SerializeStruct};
@@ -117,6 +117,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/credentials",
             get(credentials::list_credentials).post(credentials::create_credential),
+        )
+        .route(
+            "/credentials/:credential_id",
+            delete(credentials::delete_credential),
         )
         .route(
             "/custom-account-sources",

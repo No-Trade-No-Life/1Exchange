@@ -1,6 +1,6 @@
 use axum::{
     Json,
-    extract::State,
+    extract::{Path, State},
     http::{HeaderMap, StatusCode},
 };
 use serde::{Deserialize, Serialize};
@@ -97,6 +97,26 @@ pub async fn create_credential(
 
     let credential = get_credential_meta(&state.db, &user.user_id, &id).await?;
     Ok((StatusCode::CREATED, Json(credential)))
+}
+
+pub async fn delete_credential(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<StatusCode, AppError> {
+    let user = auth::require_initialized_user(&state, &headers).await?;
+    sqlx::query(
+        r#"
+        DELETE FROM credentials
+        WHERE id = ?1 AND owner_id = ?2
+        "#,
+    )
+    .bind(id)
+    .bind(&user.user_id)
+    .execute(&state.db)
+    .await?;
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn get_stored_credential(

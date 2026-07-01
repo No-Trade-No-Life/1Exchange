@@ -42,6 +42,7 @@ import {
   Menu,
   PackageSearch,
   Printer,
+  Trash2,
   WalletCards,
   type LucideIcon,
 } from 'lucide-react';
@@ -2799,6 +2800,30 @@ function CredentialSecurityPanel() {
 }
 
 function CredentialInventory(props: { accountIds: AccountIds; credentials: Credential[] }) {
+  const queryClient = useQueryClient();
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function deleteCredential(credential: Credential) {
+    if (!window.confirm(`Delete credential "${credential.name}"? Virtual accounts that use it may stop loading.`)) {
+      return;
+    }
+
+    setDeletingId(credential.id);
+    setError(null);
+    try {
+      const response = await apiFetch(`/api/credentials/${encodeURIComponent(credential.id)}`, { method: 'DELETE' });
+      if (!response.ok) {
+        throw new Error(await responseErrorMessage(response));
+      }
+      await queryClient.invalidateQueries({ queryKey: ['json'] });
+    } catch (caught) {
+      setError((caught as Error).message);
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
   return (
     <section className="panel">
       <div className="panel-heading">
@@ -2808,9 +2833,10 @@ function CredentialInventory(props: { accountIds: AccountIds; credentials: Crede
         </div>
         <span className="count-chip">{props.credentials.length} saved</span>
       </div>
+      <InlineError message={error} />
       <DataTable
         empty="No credentials yet. Add a read-only credential from the form above."
-        headers={['AccountID', 'Name', 'Exchange', 'Payload', 'Created', 'Credential ID']}
+        headers={['AccountID', 'Name', 'Exchange', 'Payload', 'Created', 'Credential ID', 'Action']}
         rows={props.credentials.map((item) => [
           <AccountIdLink accountId={accountIdForCredential(item, props.accountIds)} key="account" />,
           item.name,
@@ -2818,6 +2844,17 @@ function CredentialInventory(props: { accountIds: AccountIds; credentials: Crede
           item.has_payload ? 'Stored' : 'Missing',
           formatDate(item.created_at),
           <code key="id">{item.id}</code>,
+          <Button
+            disabled={deletingId === item.id}
+            key="delete"
+            size="sm"
+            type="button"
+            variant="destructive"
+            onClick={() => void deleteCredential(item)}
+          >
+            <Trash2 data-icon="inline-start" />
+            {deletingId === item.id ? 'Deleting...' : 'Delete'}
+          </Button>,
         ])}
       />
     </section>
