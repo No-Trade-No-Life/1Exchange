@@ -200,33 +200,8 @@
     @apply flex flex-col gap-4 p-5;
   }
 
-  .fund-candle-chart svg {
-    @apply h-auto w-full overflow-visible rounded-lg border bg-background;
-  }
-
-  .fund-candle-grid {
-    @apply stroke-border;
-    stroke-width: 1;
-  }
-
-  .fund-candle-axis,
-  .fund-candle-date {
-    @apply fill-muted-foreground text-[11px];
-  }
-
-  .fund-candle line,
-  .fund-candle rect {
-    stroke-width: 1.5;
-  }
-
-  .fund-candle-up line,
-  .fund-candle-up rect {
-    @apply fill-foreground stroke-foreground;
-  }
-
-  .fund-candle-down line,
-  .fund-candle-down rect {
-    @apply fill-muted-foreground stroke-muted-foreground;
+  .fund-candle-canvas {
+    @apply h-80 w-full overflow-hidden rounded-lg border bg-background;
   }
 
   .fund-candle-summary {

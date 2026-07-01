@@ -81,7 +81,6 @@ pub struct FundStatementEventQuery {
 #[derive(Deserialize)]
 pub struct FundUnitPriceCandleQuery {
     fund_id: String,
-    limit: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -156,7 +155,7 @@ pub struct FundStatementEventPage {
     offset: i64,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct FundUnitPriceCandle {
     day: String,
     open: f64,
@@ -165,6 +164,11 @@ pub struct FundUnitPriceCandle {
     close: f64,
     events: i64,
     last_event_index: i64,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+struct FundReducerSnapshotState {
+    unit_price_candles: Option<Vec<FundUnitPriceCandle>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -960,9 +964,8 @@ pub async fn get_fund_unit_price_candles(
 ) -> Result<Json<Vec<FundUnitPriceCandle>>, AppError> {
     let user = auth::require_initialized_user(&state, &headers).await?;
     get_fund_config(&state.db, &user.user_id, &query.fund_id).await?;
-    let limit = query.limit.unwrap_or(180).clamp(1, 2000);
     Ok(Json(
-        load_fund_unit_price_candles(&state.db, &query.fund_id, limit).await?,
+        load_fund_unit_price_candles(&state.db, &query.fund_id).await?,
     ))
 }
 
@@ -1866,8 +1869,12 @@ async fn load_statement_event_state(
 async fn load_fund_unit_price_candles(
     db: &SqlitePool,
     fund_id: &str,
-    limit: usize,
 ) -> Result<Vec<FundUnitPriceCandle>, AppError> {
+    let last_event_index = latest_fund_event_index(db, fund_id).await?;
+    if let Some(candles) = load_cached_unit_price_candles(db, fund_id, last_event_index).await? {
+        return Ok(candles);
+    }
+
     let rows = sqlx::query_as::<_, FundStatementEventPayloadRow>(
         r#"
         SELECT event_index, event_type, occurred_at, investor_id, comment, payload
@@ -1880,11 +1887,76 @@ async fn load_fund_unit_price_candles(
     .fetch_all(db)
     .await?;
 
-    let mut candles = fund_unit_price_candles_from_rows(rows)?;
-    if candles.len() > limit {
-        candles = candles.split_off(candles.len() - limit);
-    }
+    let candles = fund_unit_price_candles_from_rows(rows)?;
+    save_unit_price_candle_snapshot(db, fund_id, last_event_index, &candles).await?;
     Ok(candles)
+}
+
+async fn latest_fund_event_index(db: &SqlitePool, fund_id: &str) -> Result<i64, AppError> {
+    let (last_event_index,): (i64,) = sqlx::query_as(
+        r#"
+        SELECT COALESCE(MAX(event_index), -1)
+        FROM fund_events
+        WHERE fund_id = ?1
+        "#,
+    )
+    .bind(fund_id)
+    .fetch_one(db)
+    .await?;
+    Ok(last_event_index)
+}
+
+async fn load_cached_unit_price_candles(
+    db: &SqlitePool,
+    fund_id: &str,
+    last_event_index: i64,
+) -> Result<Option<Vec<FundUnitPriceCandle>>, AppError> {
+    let snapshot = sqlx::query_as::<_, (String,)>(
+        r#"
+        SELECT state_json
+        FROM fund_reducer_snapshots
+        WHERE fund_id = ?1 AND last_event_index = ?2
+        "#,
+    )
+    .bind(fund_id)
+    .bind(last_event_index)
+    .fetch_optional(db)
+    .await?;
+    snapshot
+        .map(|(state_json,)| {
+            let state = serde_json::from_str::<FundReducerSnapshotState>(&state_json)?;
+            Ok(state.unit_price_candles)
+        })
+        .transpose()
+        .map(Option::flatten)
+}
+
+async fn save_unit_price_candle_snapshot(
+    db: &SqlitePool,
+    fund_id: &str,
+    last_event_index: i64,
+    candles: &[FundUnitPriceCandle],
+) -> Result<(), AppError> {
+    let state_json = serde_json::to_string(&FundReducerSnapshotState {
+        unit_price_candles: Some(candles.to_vec()),
+    })?;
+    sqlx::query(
+        r#"
+        INSERT INTO fund_reducer_snapshots (fund_id, last_event_index, state_json)
+        VALUES (?1, ?2, ?3)
+        ON CONFLICT(fund_id) DO UPDATE SET
+            last_event_index = excluded.last_event_index,
+            state_json = excluded.state_json,
+            updated_at = CURRENT_TIMESTAMP
+        "#,
+    )
+    .bind(fund_id)
+    .bind(last_event_index)
+    .bind(state_json)
+    .execute(db)
+    .await?;
+
+    Ok(())
 }
 
 fn fund_unit_price_candles_from_rows(
@@ -2395,6 +2467,90 @@ mod tests {
         assert_close(candles[1].high, 3.0);
         assert_close(candles[1].low, 3.0);
         assert_close(candles[1].close, 3.0);
+    }
+
+    #[tokio::test]
+    async fn loads_daily_unit_price_candles_from_reducer_snapshot() {
+        let db = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"
+            CREATE TABLE fund_events (
+                fund_id TEXT NOT NULL,
+                event_index INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                occurred_at TEXT NOT NULL,
+                investor_id TEXT,
+                comment TEXT,
+                payload TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (fund_id, event_index)
+            )
+            "#,
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"
+            CREATE TABLE fund_reducer_snapshots (
+                fund_id TEXT PRIMARY KEY NOT NULL,
+                last_event_index INTEGER NOT NULL,
+                state_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            "#,
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"
+            INSERT INTO fund_events (fund_id, event_index, event_type, occurred_at, investor_id, payload)
+            VALUES ('fund', 0, 'fund_equity_set', '2026-01-01T00:00:00+00:00', NULL, '{"equity":100}')
+            "#,
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"
+            INSERT INTO fund_reducer_snapshots (fund_id, last_event_index, state_json)
+            VALUES ('fund', 0, ?1)
+            "#,
+        )
+        .bind(
+            serde_json::json!({
+                "unit_price_candles": [{
+                    "day": "2026-01-09",
+                    "open": 9.0,
+                    "high": 10.0,
+                    "low": 8.0,
+                    "close": 9.5,
+                    "events": 7,
+                    "last_event_index": 0
+                }]
+            })
+            .to_string(),
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let candles = load_fund_unit_price_candles(&db, "fund").await.unwrap();
+
+        assert_eq!(candles.len(), 1);
+        assert_eq!(candles[0].day, "2026-01-09");
+        assert_close(candles[0].open, 9.0);
+        assert_close(candles[0].high, 10.0);
+        assert_close(candles[0].low, 8.0);
+        assert_close(candles[0].close, 9.5);
+        assert_eq!(candles[0].events, 7);
     }
 
     #[test]

@@ -1,8 +1,9 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createRoot } from 'react-dom/client';
 import { ErrorBoundary } from 'react-error-boundary';
 import { HashRouter, Link, Navigate, NavLink, Route, Routes, useLocation, useSearchParams } from 'react-router-dom';
+import { CandlestickSeries, createChart, type CandlestickData } from 'lightweight-charts';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge as UiBadge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -1294,7 +1295,7 @@ function FundDetailRoute() {
   const eventLimit = 100;
   const funds = useJson<FundConfig[]>('/api/funds');
   const nav = useJson<FundNavSnapshot[]>(fundId ? `/api/fund-nav?fund_id=${encodeURIComponent(fundId)}&limit=100` : null);
-  const unitPriceCandles = useJson<FundUnitPriceCandle[]>(fundId ? `/api/fund-unit-price-candles?fund_id=${encodeURIComponent(fundId)}&limit=180` : null);
+  const unitPriceCandles = useJson<FundUnitPriceCandle[]>(fundId ? `/api/fund-unit-price-candles?fund_id=${encodeURIComponent(fundId)}` : null);
   const events = useJson<FundStatementEventPage>(fundId ? `/api/fund-statement-events?fund_id=${encodeURIComponent(fundId)}&limit=${eventLimit}&offset=${eventOffset}` : null);
   const statements = useJson<FundStatementSummary>(fundId ? `/api/fund-statements?fund_id=${encodeURIComponent(fundId)}` : null);
   const settlement = useJson<FundSettlementPreview>(fundId ? `/api/fund-settlement-preview?fund_id=${encodeURIComponent(fundId)}` : null);
@@ -2518,59 +2519,85 @@ function FundDetailPage(props: {
 
 function FundUnitPriceCandlestickChart(props: { candles: FundUnitPriceCandle[] }) {
   const candles = props.candles;
+  const chartRef = useRef<HTMLDivElement | null>(null);
+  const data = useMemo<CandlestickData[]>(
+    () => candles.map((item) => ({
+      time: item.day,
+      open: item.open,
+      high: item.high,
+      low: item.low,
+      close: item.close,
+    })),
+    [candles],
+  );
+
+  useEffect(() => {
+    const container = chartRef.current;
+    if (!container || data.length === 0) {
+      return;
+    }
+
+    const styles = getComputedStyle(container);
+    const foreground = styles.getPropertyValue('--foreground').trim();
+    const muted = styles.getPropertyValue('--muted-foreground').trim();
+    const border = styles.getPropertyValue('--border').trim();
+    const background = styles.getPropertyValue('--background').trim();
+    const chart = createChart(container, {
+      autoSize: true,
+      height: 320,
+      layout: {
+        background: { color: background },
+        textColor: muted,
+      },
+      grid: {
+        vertLines: { color: border },
+        horzLines: { color: border },
+      },
+      rightPriceScale: {
+        borderColor: border,
+        scaleMargins: { top: 0.12, bottom: 0.12 },
+      },
+      timeScale: {
+        borderColor: border,
+        timeVisible: false,
+        secondsVisible: false,
+      },
+      crosshair: {
+        vertLine: { color: muted },
+        horzLine: { color: muted },
+      },
+    });
+    const series = chart.addSeries(CandlestickSeries, {
+      upColor: foreground,
+      downColor: muted,
+      borderUpColor: foreground,
+      borderDownColor: muted,
+      wickUpColor: foreground,
+      wickDownColor: muted,
+      priceFormat: {
+        type: 'price',
+        precision: 6,
+        minMove: 0.000001,
+      },
+    });
+    series.setData(data);
+    chart.timeScale().fitContent();
+
+    return () => chart.remove();
+  }, [data]);
+
   if (candles.length === 0) {
     return <div className="fund-candle-empty">No unit price candles are available for this fund.</div>;
   }
 
-  const width = 960;
-  const height = 260;
-  const padding = { top: 18, right: 74, bottom: 34, left: 20 };
-  const plotWidth = width - padding.left - padding.right;
-  const plotHeight = height - padding.top - padding.bottom;
   const low = Math.min(...candles.map((item) => item.low));
   const high = Math.max(...candles.map((item) => item.high));
-  const range = high - low || Math.max(Math.abs(high), 1) * 0.02;
-  const minPrice = low - range * 0.08;
-  const maxPrice = high + range * 0.08;
-  const priceRange = maxPrice - minPrice;
-  const step = candles.length > 1 ? plotWidth / (candles.length - 1) : 0;
-  const candleWidth = Math.max(3, Math.min(14, plotWidth / candles.length * 0.55));
-  const y = (price: number) => padding.top + (maxPrice - price) / priceRange * plotHeight;
-  const x = (index: number) => padding.left + (candles.length === 1 ? plotWidth / 2 : index * step);
-  const grid = Array.from({ length: 5 }, (_, index) => minPrice + priceRange * index / 4).reverse();
   const first = candles[0];
   const last = candles[candles.length - 1];
 
   return (
     <div className="fund-candle-chart">
-      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Daily unit price candlestick chart">
-        {grid.map((price) => (
-          <g key={price}>
-            <line className="fund-candle-grid" x1={padding.left} x2={width - padding.right} y1={y(price)} y2={y(price)} />
-            <text className="fund-candle-axis" x={width - padding.right + 12} y={y(price) + 4}>
-              {formatNumber(price)}
-            </text>
-          </g>
-        ))}
-        {candles.map((item, index) => {
-          const center = x(index);
-          const openY = y(item.open);
-          const closeY = y(item.close);
-          const bodyY = Math.min(openY, closeY);
-          const bodyHeight = Math.max(1, Math.abs(closeY - openY));
-          const tone = item.close >= item.open ? 'up' : 'down';
-
-          return (
-            <g className={`fund-candle fund-candle-${tone}`} key={item.day}>
-              <title>{`${item.day} O ${formatNumber(item.open)} H ${formatNumber(item.high)} L ${formatNumber(item.low)} C ${formatNumber(item.close)}`}</title>
-              <line x1={center} x2={center} y1={y(item.high)} y2={y(item.low)} />
-              <rect x={center - candleWidth / 2} y={bodyY} width={candleWidth} height={bodyHeight} rx="1" />
-            </g>
-          );
-        })}
-        <text className="fund-candle-date" x={padding.left} y={height - 10}>{first.day}</text>
-        <text className="fund-candle-date" x={width - padding.right} y={height - 10} textAnchor="end">{last.day}</text>
-      </svg>
+      <div className="fund-candle-canvas" ref={chartRef} />
       <div className="fund-candle-summary">
         <DetailItem label="Open" value={formatNumber(first.open)} />
         <DetailItem label="High" value={formatNumber(high)} />
