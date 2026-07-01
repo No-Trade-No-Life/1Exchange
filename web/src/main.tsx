@@ -537,8 +537,9 @@ function apiFetch(input: string | URL, init: RequestInit = {}) {
 }
 
 function useJson<T>(path: string | null) {
+  const auth = React.useContext(AuthContext);
   const query = useQuery({
-    enabled: path !== null,
+    enabled: path !== null && (isPublicApiPath(path) || auth.user !== null),
     queryKey: ['json', path],
     queryFn: async ({ queryKey }) => {
       const requestPath = queryKey[1] as string;
@@ -564,6 +565,13 @@ function useJson<T>(path: string | null) {
     refresh,
     refreshing: query.isFetching && !query.isLoading,
   };
+}
+
+function isPublicApiPath(path: string) {
+  return path === '/api/health' ||
+    path === '/api/exchanges' ||
+    path.startsWith('/api/products') ||
+    path.startsWith('/api/rates');
 }
 
 function useTradeHistory(credentials: Credential[], refreshToken: number) {
@@ -643,6 +651,7 @@ function AuthGate(props: { children: React.ReactNode }) {
         if (alive) {
           setUser(me);
           setSetup(nextSetup);
+          await queryClient.invalidateQueries({ queryKey: ['json'] });
         }
       } catch {
         clearAuthSession(nextAuthConfig.auth_mini_base_url);
