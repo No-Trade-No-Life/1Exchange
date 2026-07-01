@@ -12,10 +12,13 @@ concurrency:
 
 permissions:
   contents: read
+  id-token: write
 
 env:
   ARCHIVE_NAME: one-exchange-linux-x86_64.tar.gz
+  AWS_REGION: ap-southeast-1
   DEPLOY_DIR: /opt/one-exchange
+  EC2_SECURITY_GROUP_ID: sg-09f054eb18d2e0569
   SERVICE_NAME: one-exchange
 
 jobs:
@@ -55,6 +58,24 @@ jobs:
           cp target/release/one-exchange release/one-exchange-linux-x86_64/
           cp -R web/dist release/one-exchange-linux-x86_64/web/dist
           tar -C release -czf "$ARCHIVE_NAME" one-exchange-linux-x86_64
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Detect runner IP
+        id: runner-ip
+        run: echo "cidr=$(curl -fsSL https://checkip.amazonaws.com)/32" >> "$GITHUB_OUTPUT"
+
+      - name: Allow runner SSH
+        run: |
+          runner_cidr="${{ steps.runner-ip.outputs.cidr }}"
+          description="github-actions-${{ github.run_id }}"
+          aws ec2 authorize-security-group-ingress \
+            --group-id "$EC2_SECURITY_GROUP_ID" \
+            --ip-permissions "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=$runner_cidr,Description=$description}]"
 
       - name: Configure SSH
         run: |
@@ -116,3 +137,11 @@ jobs:
 
           rm -f "/tmp/$ARCHIVE_NAME"
           REMOTE
+
+      - name: Revoke runner SSH
+        if: always()
+        run: |
+          runner_cidr="${{ steps.runner-ip.outputs.cidr }}"
+          aws ec2 revoke-security-group-ingress \
+            --group-id "$EC2_SECURITY_GROUP_ID" \
+            --ip-permissions "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=$runner_cidr}]" || true

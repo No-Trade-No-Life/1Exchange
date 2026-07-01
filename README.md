@@ -239,5 +239,6 @@ npm --prefix web run dev
 - `EC2_USER`：SSH 用户，例如 `ubuntu`。
 - `EC2_SSH_KEY`：可登录该实例的私钥。
 - `EC2_SSH_HOST_KEY`：实例的 SSH host key known_hosts 行。
+- `AWS_ROLE_ARN`：允许 GitHub OIDC 临时管理 `1ex-prod-sg` SSH 入站规则的 IAM Role ARN。
 
-`EC2_USER` 需要能免交互执行 `sudo mkdir`、`sudo tar`、`sudo mv`、`sudo systemctl` 和 `sudo rm`。首次部署会创建 `/opt/one-exchange/current`，写入 `/etc/systemd/system/one-exchange.service`，之后每次部署会切换到新的 release 并重启服务。
+`EC2_USER` 需要能免交互执行 `sudo mkdir`、`sudo tar`、`sudo mv`、`sudo systemctl` 和 `sudo rm`。部署流程会在开始时只为当前 GitHub runner 的公网 IP 临时放行 SSH，结束时撤销该规则。首次部署会创建 `/opt/one-exchange/current`，写入 `/etc/systemd/system/one-exchange.service`，之后每次部署会切换到新的 release 并重启服务。
