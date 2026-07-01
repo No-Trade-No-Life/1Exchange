@@ -144,6 +144,10 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/fund-statements", get(funds::get_fund_statement_summary))
         .route(
+            "/fund-unit-price-candles",
+            get(funds::get_fund_unit_price_candles),
+        )
+        .route(
             "/fund-settlement-preview",
             get(funds::get_fund_settlement_preview),
         )

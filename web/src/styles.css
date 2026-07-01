@@ -196,6 +196,47 @@
     @apply flex flex-wrap items-center justify-between gap-3 border-b px-5 py-3 text-sm text-muted-foreground;
   }
 
+  .fund-candle-chart {
+    @apply flex flex-col gap-4 p-5;
+  }
+
+  .fund-candle-chart svg {
+    @apply h-auto w-full overflow-visible rounded-lg border bg-background;
+  }
+
+  .fund-candle-grid {
+    @apply stroke-border;
+    stroke-width: 1;
+  }
+
+  .fund-candle-axis,
+  .fund-candle-date {
+    @apply fill-muted-foreground text-[11px];
+  }
+
+  .fund-candle line,
+  .fund-candle rect {
+    stroke-width: 1.5;
+  }
+
+  .fund-candle-up line,
+  .fund-candle-up rect {
+    @apply fill-foreground stroke-foreground;
+  }
+
+  .fund-candle-down line,
+  .fund-candle-down rect {
+    @apply fill-muted-foreground stroke-muted-foreground;
+  }
+
+  .fund-candle-summary {
+    @apply grid grid-cols-[repeat(auto-fit,minmax(140px,1fr))] gap-3;
+  }
+
+  .fund-candle-empty {
+    @apply px-5 py-8 text-sm text-muted-foreground;
+  }
+
   .credential-field-grid,
   .account-detail-grid,
   .schema-grid,

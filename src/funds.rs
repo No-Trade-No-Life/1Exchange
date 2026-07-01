@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use axum::{
     Json,
@@ -6,7 +6,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::Response,
 };
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Sqlite, SqlitePool, Transaction};
 use tokio::time::{Duration, interval};
@@ -79,6 +79,12 @@ pub struct FundStatementEventQuery {
 }
 
 #[derive(Deserialize)]
+pub struct FundUnitPriceCandleQuery {
+    fund_id: String,
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
 pub struct UpdateFundStatementEventRequest {
     fund_id: String,
     event_index: i64,
@@ -148,6 +154,17 @@ pub struct FundStatementEventPage {
     total: i64,
     limit: i64,
     offset: i64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct FundUnitPriceCandle {
+    day: String,
+    open: f64,
+    high: f64,
+    low: f64,
+    close: f64,
+    events: i64,
+    last_event_index: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -429,7 +446,7 @@ impl From<FundSettlementInvestorRow> for FundInvestorSettlement {
     }
 }
 
-#[derive(Debug, FromRow)]
+#[derive(Clone, Debug, FromRow)]
 struct FundStatementEventPayloadRow {
     event_index: i64,
     occurred_at: String,
@@ -934,6 +951,19 @@ pub async fn get_fund_statement_summary(
         tax_modes,
         tax_threshold_adjustments,
     }))
+}
+
+pub async fn get_fund_unit_price_candles(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<FundUnitPriceCandleQuery>,
+) -> Result<Json<Vec<FundUnitPriceCandle>>, AppError> {
+    let user = auth::require_initialized_user(&state, &headers).await?;
+    get_fund_config(&state.db, &user.user_id, &query.fund_id).await?;
+    let limit = query.limit.unwrap_or(180).clamp(1, 2000);
+    Ok(Json(
+        load_fund_unit_price_candles(&state.db, &query.fund_id, limit).await?,
+    ))
 }
 
 pub async fn get_fund_settlement_preview(
@@ -1833,6 +1863,71 @@ async fn load_statement_event_state(
     Ok(yuan_event_state_summary(state))
 }
 
+async fn load_fund_unit_price_candles(
+    db: &SqlitePool,
+    fund_id: &str,
+    limit: usize,
+) -> Result<Vec<FundUnitPriceCandle>, AppError> {
+    let rows = sqlx::query_as::<_, FundStatementEventPayloadRow>(
+        r#"
+        SELECT event_index, event_type, occurred_at, investor_id, comment, payload
+        FROM fund_events
+        WHERE fund_id = ?1
+        ORDER BY event_index ASC
+        "#,
+    )
+    .bind(fund_id)
+    .fetch_all(db)
+    .await?;
+
+    let mut candles = fund_unit_price_candles_from_rows(rows)?;
+    if candles.len() > limit {
+        candles = candles.split_off(candles.len() - limit);
+    }
+    Ok(candles)
+}
+
+fn fund_unit_price_candles_from_rows(
+    rows: Vec<FundStatementEventPayloadRow>,
+) -> Result<Vec<FundUnitPriceCandle>, AppError> {
+    let mut state = YuanFundState::default();
+    let mut candles = BTreeMap::<String, FundUnitPriceCandle>::new();
+    recompute_yuan_derived(&mut state);
+
+    for row in rows {
+        let day = fund_event_day(&row.occurred_at)?;
+        try_apply_yuan_fund_event(&mut state, row.clone())?;
+        recompute_yuan_derived(&mut state);
+        let unit_price = yuan_unit_price(&state);
+        candles
+            .entry(day.clone())
+            .and_modify(|candle| {
+                candle.high = candle.high.max(unit_price);
+                candle.low = candle.low.min(unit_price);
+                candle.close = unit_price;
+                candle.events += 1;
+                candle.last_event_index = row.event_index;
+            })
+            .or_insert_with(|| FundUnitPriceCandle {
+                day,
+                open: unit_price,
+                high: unit_price,
+                low: unit_price,
+                close: unit_price,
+                events: 1,
+                last_event_index: row.event_index,
+            });
+    }
+
+    Ok(candles.into_values().collect())
+}
+
+fn fund_event_day(occurred_at: &str) -> Result<String, AppError> {
+    let parsed = DateTime::parse_from_rfc3339(occurred_at)
+        .map_err(|_| AppError::bad_request("fund event occurred_at must be RFC3339"))?;
+    Ok(parsed.with_timezone(&Utc).date_naive().to_string())
+}
+
 fn apply_yuan_fund_event(
     event_state: &mut YuanFundState,
     event: impl Into<FundStatementEventPayloadRow>,
@@ -2209,6 +2304,23 @@ mod tests {
 
     use super::*;
 
+    fn event_row(
+        event_index: i64,
+        event_type: &str,
+        occurred_at: &str,
+        investor_id: Option<&str>,
+        payload: serde_json::Value,
+    ) -> FundStatementEventPayloadRow {
+        FundStatementEventPayloadRow {
+            event_index,
+            occurred_at: occurred_at.to_string(),
+            investor_id: investor_id.map(str::to_string),
+            comment: None,
+            event_type: event_type.to_string(),
+            payload: payload.to_string(),
+        }
+    }
+
     #[test]
     fn values_account_in_target_currency() {
         let account = AccountInfo {
@@ -2234,6 +2346,55 @@ mod tests {
         assert_eq!(valuation.equity, 75.0);
         assert_eq!(valuation.positions_count, 2);
         assert_eq!(valuation.unpriced_positions, 0);
+    }
+
+    #[test]
+    fn aggregates_daily_unit_price_candles_from_yuan_events() {
+        let candles = fund_unit_price_candles_from_rows(vec![
+            event_row(
+                0,
+                FUND_EVENT_CASH_FLOW_RECORDED,
+                "2026-01-01T01:00:00+00:00",
+                Some("Alice"),
+                serde_json::json!({ "amount": 100.0 }),
+            ),
+            event_row(
+                1,
+                FUND_EVENT_EQUITY_SET,
+                "2026-01-01T02:00:00+00:00",
+                None,
+                serde_json::json!({ "equity": 150.0 }),
+            ),
+            event_row(
+                2,
+                FUND_EVENT_CASH_FLOW_RECORDED,
+                "2026-01-01T03:00:00+00:00",
+                Some("Bob"),
+                serde_json::json!({ "amount": 150.0 }),
+            ),
+            event_row(
+                3,
+                FUND_EVENT_EQUITY_SET,
+                "2026-01-02T01:00:00+00:00",
+                None,
+                serde_json::json!({ "equity": 600.0 }),
+            ),
+        ])
+        .unwrap();
+
+        assert_eq!(candles.len(), 2);
+        assert_eq!(candles[0].day, "2026-01-01");
+        assert_close(candles[0].open, 1.0);
+        assert_close(candles[0].high, 1.5);
+        assert_close(candles[0].low, 1.0);
+        assert_close(candles[0].close, 1.5);
+        assert_eq!(candles[0].events, 3);
+        assert_eq!(candles[0].last_event_index, 2);
+        assert_eq!(candles[1].day, "2026-01-02");
+        assert_close(candles[1].open, 3.0);
+        assert_close(candles[1].high, 3.0);
+        assert_close(candles[1].low, 3.0);
+        assert_close(candles[1].close, 3.0);
     }
 
     #[test]
