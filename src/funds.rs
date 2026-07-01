@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use axum::{
     Json,
     extract::State,
-    http::{HeaderMap, StatusCode, header},
-    response::{IntoResponse, Response},
+    http::{HeaderMap, StatusCode},
+    response::Response,
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -16,7 +16,12 @@ use crate::{AppError, AppState, auth, models::AccountInfo, rates, virtual_accoun
 
 const DEFAULT_POLL_INTERVAL_SECONDS: i64 = 600;
 const FUND_SCAN_INTERVAL_SECONDS: u64 = 60;
-const FUND_SETTLEMENT_MODEL_EVENT_STATE: &str = "event_state_v1";
+const FUND_EVENT_EQUITY_SET: &str = "fund_equity_set";
+const FUND_EVENT_CASH_FLOW_RECORDED: &str = "cash_flow_recorded";
+const FUND_EVENT_INVESTOR_PROFILE_UPDATED: &str = "investor_profile_updated";
+const FUND_EVENT_TAX_THRESHOLD_ADJUSTED: &str = "tax_threshold_adjusted";
+const FUND_EVENT_TAXATION_V1_APPLIED: &str = "taxation_v1_applied";
+const FUND_EVENT_TAXATION_V2_APPLIED: &str = "taxation_v2_applied";
 
 #[derive(Debug, Deserialize)]
 pub struct CreateFundRequest {
@@ -78,7 +83,9 @@ pub struct UpdateFundStatementEventRequest {
     fund_id: String,
     event_index: i64,
     event_type: String,
-    updated_at: String,
+    occurred_at: String,
+    investor_id: Option<String>,
+    comment: Option<String>,
     payload: serde_json::Value,
 }
 
@@ -129,7 +136,9 @@ pub struct FundStatementSummary {
 pub struct FundStatementEvent {
     event_index: i64,
     event_type: String,
-    updated_at: String,
+    occurred_at: String,
+    investor_id: Option<String>,
+    comment: Option<String>,
     payload: String,
 }
 
@@ -423,26 +432,11 @@ impl From<FundSettlementInvestorRow> for FundInvestorSettlement {
 #[derive(Debug, FromRow)]
 struct FundStatementEventPayloadRow {
     event_index: i64,
-    updated_at: String,
-    payload: String,
-}
-
-#[derive(Debug, FromRow)]
-struct FundStatementEventProjectionRow {
-    event_index: i64,
-    event_type: String,
-    updated_at: String,
-    payload: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct FundStatementEventPayload {
-    #[serde(rename = "type")]
-    event_type: Option<String>,
+    occurred_at: String,
+    investor_id: Option<String>,
     comment: Option<String>,
-    fund_equity: Option<FundStatementEquityPayload>,
-    order: Option<FundStatementOrderPayload>,
-    investor: Option<FundStatementInvestorPayload>,
+    event_type: String,
+    payload: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -451,12 +445,38 @@ struct FundStatementEquityPayload {
 }
 
 #[derive(Debug, Deserialize)]
+struct FundCashFlowPayload {
+    amount: f64,
+}
+
+#[derive(Debug, Deserialize)]
+struct FundInvestorProfilePayload {
+    tax_rate: Option<f64>,
+    referrer_id: Option<String>,
+    referrer_rebate_rate: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FundTaxThresholdAdjustmentPayload {
+    amount: f64,
+}
+
+#[cfg(test)]
+struct FundStatementEventPayload {
+    event_type: Option<String>,
+    comment: Option<String>,
+    fund_equity: Option<FundStatementEquityPayload>,
+    order: Option<FundStatementOrderPayload>,
+    investor: Option<FundStatementInvestorPayload>,
+}
+
+#[cfg(test)]
 struct FundStatementOrderPayload {
     name: String,
     deposit: f64,
 }
 
-#[derive(Debug, Deserialize)]
+#[cfg(test)]
 struct FundStatementInvestorPayload {
     name: String,
     tax_rate: Option<f64>,
@@ -465,12 +485,76 @@ struct FundStatementInvestorPayload {
     referrer_rebate_rate: Option<f64>,
 }
 
+#[cfg(test)]
+impl From<FundStatementEventPayload> for FundStatementEventPayloadRow {
+    fn from(payload: FundStatementEventPayload) -> Self {
+        if let Some(fund_equity) = payload.fund_equity {
+            return Self {
+                event_index: 0,
+                occurred_at: String::new(),
+                investor_id: None,
+                comment: payload.comment,
+                event_type: FUND_EVENT_EQUITY_SET.to_string(),
+                payload: serde_json::json!({ "equity": fund_equity.equity }).to_string(),
+            };
+        }
+        if let Some(order) = payload.order {
+            return Self {
+                event_index: 0,
+                occurred_at: String::new(),
+                investor_id: Some(order.name),
+                comment: payload.comment,
+                event_type: FUND_EVENT_CASH_FLOW_RECORDED.to_string(),
+                payload: serde_json::json!({ "amount": order.deposit }).to_string(),
+            };
+        }
+        if let Some(investor) = payload.investor {
+            if let Some(amount) = investor.add_tax_threshold {
+                return Self {
+                    event_index: 0,
+                    occurred_at: String::new(),
+                    investor_id: Some(investor.name),
+                    comment: payload.comment,
+                    event_type: FUND_EVENT_TAX_THRESHOLD_ADJUSTED.to_string(),
+                    payload: serde_json::json!({ "amount": amount }).to_string(),
+                };
+            }
+            return Self {
+                event_index: 0,
+                occurred_at: String::new(),
+                investor_id: Some(investor.name),
+                comment: payload.comment,
+                event_type: FUND_EVENT_INVESTOR_PROFILE_UPDATED.to_string(),
+                payload: serde_json::json!({
+                    "tax_rate": investor.tax_rate,
+                    "referrer_id": investor.referrer,
+                    "referrer_rebate_rate": investor.referrer_rebate_rate,
+                })
+                .to_string(),
+            };
+        }
+
+        Self {
+            event_index: 0,
+            occurred_at: String::new(),
+            investor_id: None,
+            comment: payload.comment,
+            event_type: match payload.event_type.as_deref() {
+                Some("taxation") => FUND_EVENT_TAXATION_V1_APPLIED,
+                Some("taxation/v2") => FUND_EVENT_TAXATION_V2_APPLIED,
+                _ => FUND_EVENT_TAXATION_V1_APPLIED,
+            }
+            .to_string(),
+            payload: "{}".to_string(),
+        }
+    }
+}
+
 #[derive(Default)]
 struct FundStatementInvestorProjection {
     referrer: Option<String>,
     tax_rate: Option<f64>,
     referrer_rebate_rate: Option<f64>,
-    tax_threshold: Option<f64>,
     updated_at: String,
     source_event_index: i64,
 }
@@ -591,11 +675,18 @@ pub async fn list_fund_nav(
         get_fund_config(&state.db, &user.user_id, &fund_id).await?;
         sqlx::query_as::<_, FundNavSnapshot>(
             r#"
-            SELECT id, fund_id, account_id, equity, target_currency, positions_count,
-                   unpriced_positions, created_at
-            FROM fund_nav_snapshots
-            WHERE fund_id = ?1
-            ORDER BY created_at DESC
+            SELECT CAST(e.event_index AS TEXT) AS id,
+                   e.fund_id,
+                   f.account_id,
+                   json_extract(e.payload, '$.equity') AS equity,
+                   f.target_currency,
+                   0 AS positions_count,
+                   0 AS unpriced_positions,
+                   e.occurred_at AS created_at
+            FROM fund_events e
+            JOIN funds f ON f.id = e.fund_id
+            WHERE e.fund_id = ?1 AND e.event_type = 'fund_equity_set'
+            ORDER BY e.event_index DESC
             LIMIT ?2
             "#,
         )
@@ -606,11 +697,18 @@ pub async fn list_fund_nav(
     } else {
         sqlx::query_as::<_, FundNavSnapshot>(
             r#"
-            SELECT id, fund_id, account_id, equity, target_currency, positions_count,
-                   unpriced_positions, created_at
-            FROM fund_nav_snapshots
-            WHERE fund_id IN (SELECT id FROM funds WHERE owner_id = ?1)
-            ORDER BY created_at DESC
+            SELECT CAST(e.event_index AS TEXT) AS id,
+                   e.fund_id,
+                   f.account_id,
+                   json_extract(e.payload, '$.equity') AS equity,
+                   f.target_currency,
+                   0 AS positions_count,
+                   0 AS unpriced_positions,
+                   e.occurred_at AS created_at
+            FROM fund_events e
+            JOIN funds f ON f.id = e.fund_id
+            WHERE f.owner_id = ?1 AND e.event_type = 'fund_equity_set'
+            ORDER BY e.event_index DESC
             LIMIT ?2
             "#,
         )
@@ -633,15 +731,14 @@ pub async fn list_fund_statement_events(
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
     let offset = query.offset.unwrap_or(0).max(0);
 
-    let (total,): (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM fund_statement_events WHERE fund_id = ?1")
-            .bind(&query.fund_id)
-            .fetch_one(&state.db)
-            .await?;
+    let (total,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM fund_events WHERE fund_id = ?1")
+        .bind(&query.fund_id)
+        .fetch_one(&state.db)
+        .await?;
     let events = sqlx::query_as::<_, FundStatementEvent>(
         r#"
-            SELECT event_index, event_type, updated_at, payload
-            FROM fund_statement_events
+            SELECT event_index, event_type, occurred_at, investor_id, comment, payload
+            FROM fund_events
             WHERE fund_id = ?1
             ORDER BY event_index DESC
             LIMIT ?2 OFFSET ?3
@@ -674,13 +771,16 @@ pub async fn update_fund_statement_event(
     let mut tx = state.db.begin().await?;
     let result = sqlx::query(
         r#"
-        UPDATE fund_statement_events
-        SET event_type = ?1, updated_at = ?2, payload = ?3
-        WHERE fund_id = ?4 AND event_index = ?5
+        UPDATE fund_events
+        SET event_type = ?1, occurred_at = ?2, investor_id = ?3, comment = ?4,
+            payload = ?5, updated_at = CURRENT_TIMESTAMP
+        WHERE fund_id = ?6 AND event_index = ?7
         "#,
     )
     .bind(request.event_type.trim())
-    .bind(request.updated_at.trim())
+    .bind(request.occurred_at.trim())
+    .bind(trimmed_optional_string(request.investor_id.as_deref()))
+    .bind(trimmed_optional_string(request.comment.as_deref()))
     .bind(&payload)
     .bind(&request.fund_id)
     .bind(request.event_index)
@@ -691,7 +791,7 @@ pub async fn update_fund_statement_event(
         return Err(AppError::bad_request("fund statement event not found"));
     }
 
-    rebuild_fund_statement_derived_tables(&mut tx, &request.fund_id).await?;
+    invalidate_fund_reducer_snapshot(&mut tx, &request.fund_id).await?;
     tx.commit().await?;
     Ok(Json(
         get_fund_statement_event(&state.db, &request.fund_id, request.event_index).await?,
@@ -712,7 +812,7 @@ pub async fn delete_fund_statement_event(
     let mut tx = state.db.begin().await?;
     let result = sqlx::query(
         r#"
-        DELETE FROM fund_statement_events
+        DELETE FROM fund_events
         WHERE fund_id = ?1 AND event_index = ?2
         "#,
     )
@@ -725,7 +825,7 @@ pub async fn delete_fund_statement_event(
         return Err(AppError::bad_request("fund statement event not found"));
     }
 
-    rebuild_fund_statement_derived_tables(&mut tx, &query.fund_id).await?;
+    invalidate_fund_reducer_snapshot(&mut tx, &query.fund_id).await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -738,99 +838,41 @@ pub async fn get_fund_statement_summary(
     let user = auth::require_initialized_user(&state, &headers).await?;
     get_fund_config(&state.db, &user.user_id, &query.fund_id).await?;
 
-    let (events,): (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM fund_statement_events WHERE fund_id = ?1")
-            .bind(&query.fund_id)
-            .fetch_one(&state.db)
-            .await?;
-    let (orders, order_deposit, inflow_count, inflow_amount, outflow_count, outflow_amount): (
-        i64,
-        Option<f64>,
-        i64,
-        Option<f64>,
-        i64,
-        Option<f64>,
-    ) = sqlx::query_as(
-        r#"
-        SELECT COUNT(*),
-               SUM(deposit),
-               SUM(CASE WHEN deposit > 0 THEN 1 ELSE 0 END),
-               SUM(CASE WHEN deposit > 0 THEN deposit ELSE 0 END),
-               SUM(CASE WHEN deposit < 0 THEN 1 ELSE 0 END),
-               SUM(CASE WHEN deposit < 0 THEN -deposit ELSE 0 END)
-        FROM fund_statement_orders
-        WHERE fund_id = ?1
-        "#,
-    )
-    .bind(&query.fund_id)
-    .fetch_one(&state.db)
-    .await?;
-    let (equity_points,): (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM fund_statement_equity WHERE fund_id = ?1")
-            .bind(&query.fund_id)
-            .fetch_one(&state.db)
-            .await?;
-    let (investor_count,): (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM fund_statement_investors WHERE fund_id = ?1")
-            .bind(&query.fund_id)
-            .fetch_one(&state.db)
-            .await?;
-    let (tax_mode_count,): (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM fund_statement_tax_modes WHERE fund_id = ?1")
-            .bind(&query.fund_id)
-            .fetch_one(&state.db)
-            .await?;
-
-    let investors = sqlx::query_as::<_, FundStatementInvestor>(
-        r#"
-        SELECT name, referrer, tax_rate, referrer_rebate_rate, tax_threshold,
-               updated_at, source_event_index
-        FROM fund_statement_investors
-        WHERE fund_id = ?1
-        ORDER BY name ASC
-        "#,
-    )
-    .bind(&query.fund_id)
-    .fetch_all(&state.db)
-    .await?;
-
-    let statement_orders = sqlx::query_as::<_, SettlementOrder>(
-        r#"
-        SELECT event_index, investor_name, deposit, updated_at
-        FROM fund_statement_orders
-        WHERE fund_id = ?1
-        ORDER BY updated_at ASC, event_index ASC
-        "#,
-    )
-    .bind(&query.fund_id)
-    .fetch_all(&state.db)
-    .await?;
-
-    let latest_equity = sqlx::query_as::<_, FundStatementEquity>(
-        r#"
-        SELECT event_index, equity, updated_at
-        FROM fund_statement_equity
-        WHERE fund_id = ?1
-        ORDER BY updated_at DESC, event_index DESC
-        LIMIT 1
-        "#,
-    )
-    .bind(&query.fund_id)
-    .fetch_optional(&state.db)
-    .await?;
-    let statement_equity = sqlx::query_as::<_, FundStatementEquity>(
-        r#"
-        SELECT event_index, equity, updated_at
-        FROM fund_statement_equity
-        WHERE fund_id = ?1
-        ORDER BY updated_at ASC, event_index ASC
-        "#,
-    )
-    .bind(&query.fund_id)
-    .fetch_all(&state.db)
-    .await?;
+    let (events,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM fund_events WHERE fund_id = ?1")
+        .bind(&query.fund_id)
+        .fetch_one(&state.db)
+        .await?;
+    let statement_orders = load_cash_flow_events(&state.db, &query.fund_id).await?;
+    let statement_equity = load_equity_events(&state.db, &query.fund_id).await?;
+    let latest_equity = statement_equity.last().cloned();
     let ledger = build_cash_flow_ledger(&statement_orders, &statement_equity);
+    let investors = load_investor_profile_events(&state.db, &query.fund_id).await?;
     let investor_ledger = summarize_statement_investor_ledger(&ledger);
+    let orders = statement_orders.len() as i64;
+    let order_deposit = statement_orders
+        .iter()
+        .map(|item| item.deposit)
+        .sum::<f64>();
+    let inflow_count = statement_orders
+        .iter()
+        .filter(|item| item.deposit > 0.0)
+        .count() as i64;
+    let inflow_amount = statement_orders
+        .iter()
+        .filter(|item| item.deposit > 0.0)
+        .map(|item| item.deposit)
+        .sum::<f64>();
+    let outflow_count = statement_orders
+        .iter()
+        .filter(|item| item.deposit < 0.0)
+        .count() as i64;
+    let outflow_amount = statement_orders
+        .iter()
+        .filter(|item| item.deposit < 0.0)
+        .map(|item| -item.deposit)
+        .sum::<f64>();
+    let equity_points = statement_equity.len() as i64;
+    let investor_count = investors.len() as i64;
     let overdrawn_cash_flows = ledger
         .iter()
         .filter(|item| item.investor_units_after < -1e-9)
@@ -852,35 +894,9 @@ pub async fn get_fund_statement_summary(
     let mut recent_orders = ledger;
     recent_orders.reverse();
     recent_orders.truncate(50);
-    let latest_nav = sqlx::query_as::<_, FundNavSnapshot>(
-        r#"
-        SELECT id, fund_id, account_id, equity, target_currency, positions_count,
-               unpriced_positions, created_at
-        FROM fund_nav_snapshots
-        WHERE fund_id = ?1
-        ORDER BY created_at DESC
-        LIMIT 1
-        "#,
-    )
-    .bind(&query.fund_id)
-    .fetch_optional(&state.db)
-    .await?;
-    let reconciliation = latest_equity
-        .as_ref()
-        .zip(latest_nav.as_ref())
-        .map(|(legacy, nav)| reconcile_fund_equity(legacy, nav));
-
-    let tax_modes = sqlx::query_as::<_, FundStatementTaxMode>(
-        r#"
-        SELECT event_index, mode, comment, updated_at
-        FROM fund_statement_tax_modes
-        WHERE fund_id = ?1
-        ORDER BY updated_at ASC, event_index ASC
-        "#,
-    )
-    .bind(&query.fund_id)
-    .fetch_all(&state.db)
-    .await?;
+    let reconciliation = None;
+    let tax_modes = load_tax_events(&state.db, &query.fund_id).await?;
+    let tax_mode_count = tax_modes.len() as i64;
     let tax_threshold_adjustments =
         load_tax_threshold_adjustments(&state.db, &query.fund_id).await?;
     let tax_threshold_amount = tax_threshold_adjustments
@@ -893,11 +909,11 @@ pub async fn get_fund_statement_summary(
         totals: FundStatementTotals {
             events,
             orders,
-            order_deposit: order_deposit.unwrap_or(0.0),
+            order_deposit,
             inflow_count,
-            inflow_amount: inflow_amount.unwrap_or(0.0),
+            inflow_amount,
             outflow_count,
-            outflow_amount: outflow_amount.unwrap_or(0.0),
+            outflow_amount,
             equity_points,
             investors: investor_count,
             tax_modes: tax_mode_count,
@@ -939,25 +955,7 @@ pub async fn list_fund_settlement_runs(
 ) -> Result<Json<Vec<FundSettlementRun>>, AppError> {
     let user = auth::require_initialized_user(&state, &headers).await?;
     get_fund_config(&state.db, &user.user_id, &query.fund_id).await?;
-
-    Ok(Json(
-        sqlx::query_as::<_, FundSettlementRun>(
-            r#"
-            SELECT id, fund_id, settlement_model, equity_event_index, equity, equity_updated_at,
-                   basis_source, basis_id, basis_updated_at,
-                   total_deposit, total_units, total_tax, total_referrer_rebate,
-                   capped_cash_flows, capped_units, capped_cash_amount,
-                   investor_count, status, status_updated_at, created_at
-            FROM fund_settlement_runs
-            WHERE fund_id = ?1
-            ORDER BY created_at DESC
-            LIMIT 50
-            "#,
-        )
-        .bind(&query.fund_id)
-        .fetch_all(&state.db)
-        .await?,
-    ))
+    Ok(Json(Vec::new()))
 }
 
 pub async fn get_fund_settlement_run_detail(
@@ -965,10 +963,11 @@ pub async fn get_fund_settlement_run_detail(
     headers: HeaderMap,
     axum::extract::Query(query): axum::extract::Query<FundSettlementRunQuery>,
 ) -> Result<Json<FundSettlementRunDetail>, AppError> {
-    let user = auth::require_initialized_user(&state, &headers).await?;
-    get_fund_settlement_run_detail_by_id(&state.db, &user.user_id, &query.run_id)
-        .await
-        .map(Json)
+    let _user = auth::require_initialized_user(&state, &headers).await?;
+    let _run_id = query.run_id;
+    Err(AppError::bad_request(
+        "settlement run history is not supported",
+    ))
 }
 
 pub async fn export_fund_settlement_run_csv(
@@ -976,75 +975,11 @@ pub async fn export_fund_settlement_run_csv(
     headers: HeaderMap,
     axum::extract::Query(query): axum::extract::Query<FundSettlementRunQuery>,
 ) -> Result<Response, AppError> {
-    let user = auth::require_initialized_user(&state, &headers).await?;
-    let detail =
-        get_fund_settlement_run_detail_by_id(&state.db, &user.user_id, &query.run_id).await?;
-    let filename = format!("fund-settlement-{}.csv", detail.run.id);
-    let body = settlement_run_csv(&detail);
-
-    Ok((
-        [
-            (header::CONTENT_TYPE, "text/csv; charset=utf-8".to_string()),
-            (
-                header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{filename}\""),
-            ),
-        ],
-        body,
-    )
-        .into_response())
-}
-
-async fn get_fund_settlement_run_detail_by_id(
-    db: &SqlitePool,
-    owner_id: &str,
-    run_id: &str,
-) -> Result<FundSettlementRunDetail, AppError> {
-    let run = sqlx::query_as::<_, FundSettlementRun>(
-        r#"
-        SELECT id, fund_id, settlement_model, equity_event_index, equity, equity_updated_at,
-               basis_source, basis_id, basis_updated_at,
-               total_deposit, total_units, total_tax, total_referrer_rebate,
-               capped_cash_flows, capped_units, capped_cash_amount,
-               investor_count, status, status_updated_at, created_at
-        FROM fund_settlement_runs
-        WHERE id = ?1
-          AND fund_id IN (SELECT id FROM funds WHERE owner_id = ?2)
-        "#,
-    )
-    .bind(run_id)
-    .bind(owner_id)
-    .fetch_one(db)
-    .await?;
-    let investors = sqlx::query_as::<_, FundSettlementInvestorRow>(
-        r#"
-        SELECT investor_name AS name, referrer, deposit, units, ownership,
-               gross_equity, profit, tax_threshold, tax_rate, tax,
-               referrer_rebate_rate, referrer_rebate, referrer_rebate_received,
-               tax_account_credit, capped_cash_amount, net_equity
-        FROM fund_settlement_investor_rows
-        WHERE run_id = ?1
-        ORDER BY gross_equity DESC, investor_name ASC
-        "#,
-    )
-    .bind(run_id)
-    .fetch_all(db)
-    .await?
-    .into_iter()
-    .map(FundInvestorSettlement::from)
-    .collect::<Vec<_>>();
-    let totals = summarize_settlement_totals(&investors);
-    let totals = settlement_totals_with_capped_run(totals, &run);
-    let investor_taxes = summarize_investor_taxes(&investors);
-    let referrer_rebates = summarize_referrer_rebates(&investors);
-
-    Ok(FundSettlementRunDetail {
-        run,
-        investors,
-        totals,
-        investor_taxes,
-        referrer_rebates,
-    })
+    let _user = auth::require_initialized_user(&state, &headers).await?;
+    let _run_id = query.run_id;
+    Err(AppError::bad_request(
+        "settlement run history is not supported",
+    ))
 }
 
 pub async fn create_fund_settlement_run(
@@ -1054,122 +989,8 @@ pub async fn create_fund_settlement_run(
 ) -> Result<(StatusCode, Json<FundSettlementRunDetail>), AppError> {
     let user = auth::require_initialized_user(&state, &headers).await?;
     get_fund_config(&state.db, &user.user_id, &request.fund_id).await?;
-    let preview = load_fund_settlement_preview(&state.db, request.fund_id).await?;
-    let equity = preview
-        .latest_equity
-        .as_ref()
-        .ok_or_else(|| AppError::bad_request("fund settlement requires legacy equity history"))?;
-    let basis = preview
-        .basis
-        .as_ref()
-        .ok_or_else(|| AppError::bad_request("fund settlement requires an equity basis"))?;
-    reject_duplicate_active_settlement_run(&state.db, &preview.fund_id, basis).await?;
-    let run_id = Uuid::new_v4().to_string();
-    let created_at = Utc::now().to_rfc3339();
-    let mut tx = state.db.begin().await?;
-
-    sqlx::query(
-        r#"
-        INSERT INTO fund_settlement_runs (
-            id, fund_id, settlement_model, equity_event_index, equity, equity_updated_at,
-            basis_source, basis_id, basis_updated_at,
-            total_deposit, total_units, total_tax, total_referrer_rebate,
-            capped_cash_flows, capped_units, capped_cash_amount,
-            investor_count, status, status_updated_at, created_at
-        )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, 'draft', ?18, ?19)
-        "#,
-    )
-    .bind(&run_id)
-    .bind(&preview.fund_id)
-    .bind(FUND_SETTLEMENT_MODEL_EVENT_STATE)
-    .bind(equity.event_index)
-    .bind(basis.equity)
-    .bind(&basis.updated_at)
-    .bind(&basis.source)
-    .bind(&basis.id)
-    .bind(&basis.updated_at)
-    .bind(preview.total_deposit)
-    .bind(preview.total_units)
-    .bind(preview.total_tax)
-    .bind(preview.total_referrer_rebate)
-    .bind(preview.totals.capped_cash_flows)
-    .bind(preview.totals.capped_units)
-    .bind(preview.totals.capped_cash_amount)
-    .bind(preview.investors.len() as i64)
-    .bind(&created_at)
-    .bind(&created_at)
-    .execute(&mut *tx)
-    .await?;
-
-    for investor in &preview.investors {
-        sqlx::query(
-            r#"
-            INSERT INTO fund_settlement_investor_rows (
-                run_id, fund_id, investor_name, referrer, deposit, units, ownership,
-                gross_equity, profit, tax_threshold, tax_rate, tax,
-                referrer_rebate_rate, referrer_rebate, referrer_rebate_received,
-                tax_account_credit, capped_cash_amount, net_equity
-            )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
-            "#,
-        )
-        .bind(&run_id)
-        .bind(&preview.fund_id)
-        .bind(&investor.name)
-        .bind(&investor.referrer)
-        .bind(investor.deposit)
-        .bind(investor.units)
-        .bind(investor.ownership)
-        .bind(investor.gross_equity)
-        .bind(investor.profit)
-        .bind(investor.tax_threshold)
-        .bind(investor.tax_rate)
-        .bind(investor.tax)
-        .bind(investor.referrer_rebate_rate)
-        .bind(investor.referrer_rebate)
-        .bind(investor.referrer_rebate_received)
-        .bind(investor.tax_account_credit)
-        .bind(investor.capped_cash_amount)
-        .bind(investor.net_equity)
-        .execute(&mut *tx)
-        .await?;
-    }
-    tx.commit().await?;
-    let totals = preview.totals.clone();
-    let investor_taxes = summarize_investor_taxes(&preview.investors);
-    let referrer_rebates = summarize_referrer_rebates(&preview.investors);
-
-    Ok((
-        StatusCode::CREATED,
-        Json(FundSettlementRunDetail {
-            run: FundSettlementRun {
-                id: run_id,
-                fund_id: preview.fund_id,
-                settlement_model: FUND_SETTLEMENT_MODEL_EVENT_STATE.to_string(),
-                equity_event_index: equity.event_index,
-                equity: basis.equity,
-                equity_updated_at: basis.updated_at.clone(),
-                basis_source: basis.source.clone(),
-                basis_id: basis.id.clone(),
-                basis_updated_at: basis.updated_at.clone(),
-                total_deposit: preview.total_deposit,
-                total_units: preview.total_units,
-                total_tax: preview.total_tax,
-                total_referrer_rebate: preview.total_referrer_rebate,
-                capped_cash_flows: preview.totals.capped_cash_flows,
-                capped_units: preview.totals.capped_units,
-                capped_cash_amount: preview.totals.capped_cash_amount,
-                investor_count: preview.investors.len() as i64,
-                status: "draft".to_string(),
-                status_updated_at: Some(created_at.clone()),
-                created_at,
-            },
-            totals,
-            investor_taxes,
-            referrer_rebates,
-            investors: preview.investors,
-        }),
+    Err(AppError::bad_request(
+        "settlement drafts are not supported; use settlement preview or confirm settlement",
     ))
 }
 
@@ -1201,88 +1022,30 @@ pub async fn confirm_fund_settlement(
         settlement_basis_label(&basis.source),
         basis.id
     );
-    let mut tx = state.db.begin().await?;
-    reject_duplicate_statement_settlement(&mut tx, &preview.fund_id, basis).await?;
-    insert_settlement_statement_events(
-        &mut tx,
+    append_fund_event(
+        &state.db,
         &preview.fund_id,
-        basis.equity,
-        &basis.source,
-        &basis.id,
-        &comment,
-        None,
+        FUND_EVENT_EQUITY_SET,
         &updated_at,
+        None,
+        Some(&comment),
+        serde_json::json!({ "equity": basis.equity }),
     )
     .await?;
-    tx.commit().await?;
+    append_fund_event(
+        &state.db,
+        &preview.fund_id,
+        FUND_EVENT_TAXATION_V2_APPLIED,
+        &updated_at,
+        None,
+        Some(&comment),
+        serde_json::json!({}),
+    )
+    .await?;
 
     Ok(Json(
         load_fund_settlement_preview(&state.db, preview.fund_id).await?,
     ))
-}
-
-async fn reject_duplicate_active_settlement_run(
-    db: &SqlitePool,
-    fund_id: &str,
-    basis: &FundSettlementBasis,
-) -> Result<(), AppError> {
-    let (active_runs,): (i64,) = sqlx::query_as(
-        r#"
-        SELECT COUNT(*)
-        FROM fund_settlement_runs
-        WHERE fund_id = ?1
-          AND settlement_model = ?2
-          AND basis_source = ?3
-          AND basis_id = ?4
-          AND status IN ('draft', 'confirmed')
-        "#,
-    )
-    .bind(fund_id)
-    .bind(FUND_SETTLEMENT_MODEL_EVENT_STATE)
-    .bind(&basis.source)
-    .bind(&basis.id)
-    .fetch_one(db)
-    .await?;
-
-    if active_runs > 0 {
-        return Err(AppError::bad_request(
-            "an active settlement run already exists for this model and basis",
-        ));
-    }
-
-    Ok(())
-}
-
-async fn reject_duplicate_statement_settlement(
-    tx: &mut Transaction<'_, Sqlite>,
-    fund_id: &str,
-    basis: &FundSettlementBasis,
-) -> Result<(), AppError> {
-    let (count,): (i64,) = sqlx::query_as(
-        r#"
-        SELECT COUNT(*)
-        FROM fund_statement_events
-        WHERE fund_id = ?1
-          AND event_type = 'taxation/v2'
-          AND json_extract(payload, '$.settlement_model') = ?2
-          AND json_extract(payload, '$.basis_source') = ?3
-          AND json_extract(payload, '$.basis_id') = ?4
-        "#,
-    )
-    .bind(fund_id)
-    .bind(FUND_SETTLEMENT_MODEL_EVENT_STATE)
-    .bind(&basis.source)
-    .bind(&basis.id)
-    .fetch_one(&mut **tx)
-    .await?;
-
-    if count > 0 {
-        return Err(AppError::bad_request(
-            "settlement has already been confirmed for this basis",
-        ));
-    }
-
-    Ok(())
 }
 
 pub async fn confirm_fund_settlement_run(
@@ -1290,12 +1053,9 @@ pub async fn confirm_fund_settlement_run(
     headers: HeaderMap,
     Json(request): Json<UpdateFundSettlementRunRequest>,
 ) -> Result<Json<FundSettlementRunDetail>, AppError> {
-    let user = auth::require_initialized_user(&state, &headers).await?;
-    ensure_settlement_run_owner(&state.db, &user.user_id, &request.run_id).await?;
-    confirm_fund_settlement_run_status(&state.db, &request.run_id).await?;
-    get_fund_settlement_run_detail_by_id(&state.db, &user.user_id, &request.run_id)
-        .await
-        .map(Json)
+    let _user = auth::require_initialized_user(&state, &headers).await?;
+    let _run_id = request.run_id;
+    Err(AppError::bad_request("settlement drafts are not supported"))
 }
 
 pub async fn void_fund_settlement_run(
@@ -1303,280 +1063,22 @@ pub async fn void_fund_settlement_run(
     headers: HeaderMap,
     Json(request): Json<UpdateFundSettlementRunRequest>,
 ) -> Result<Json<FundSettlementRunDetail>, AppError> {
-    let user = auth::require_initialized_user(&state, &headers).await?;
-    ensure_settlement_run_owner(&state.db, &user.user_id, &request.run_id).await?;
-    update_fund_settlement_run_status(&state.db, &request.run_id, "voided").await?;
-    get_fund_settlement_run_detail_by_id(&state.db, &user.user_id, &request.run_id)
-        .await
-        .map(Json)
-}
-
-async fn update_fund_settlement_run_status(
-    db: &SqlitePool,
-    run_id: &str,
-    status: &str,
-) -> Result<(), AppError> {
-    let status_updated_at = Utc::now().to_rfc3339();
-    let result = sqlx::query(
-        r#"
-        UPDATE fund_settlement_runs
-        SET status = ?1, status_updated_at = ?2
-        WHERE id = ?3 AND status = 'draft'
-        "#,
-    )
-    .bind(status)
-    .bind(&status_updated_at)
-    .bind(run_id)
-    .execute(db)
-    .await?;
-
-    if result.rows_affected() == 0 {
-        return Err(AppError::bad_request(
-            "settlement run must exist and be in draft status",
-        ));
-    }
-
-    Ok(())
-}
-
-async fn ensure_settlement_run_owner(
-    db: &SqlitePool,
-    owner_id: &str,
-    run_id: &str,
-) -> Result<(), AppError> {
-    let (count,): (i64,) = sqlx::query_as(
-        r#"
-        SELECT COUNT(*)
-        FROM fund_settlement_runs run
-        JOIN funds fund ON fund.id = run.fund_id
-        WHERE run.id = ?1 AND fund.owner_id = ?2
-        "#,
-    )
-    .bind(run_id)
-    .bind(owner_id)
-    .fetch_one(db)
-    .await?;
-
-    if count == 0 {
-        return Err(AppError::bad_request("settlement run not found"));
-    }
-
-    Ok(())
-}
-
-async fn confirm_fund_settlement_run_status(db: &SqlitePool, run_id: &str) -> Result<(), AppError> {
-    let status_updated_at = Utc::now().to_rfc3339();
-    let mut tx = db.begin().await?;
-    let result = sqlx::query(
-        r#"
-        UPDATE fund_settlement_runs
-        SET status = 'confirmed', status_updated_at = ?1
-        WHERE id = ?2
-          AND status = 'draft'
-          AND settlement_model = ?3
-          AND NOT EXISTS (
-              SELECT 1
-              FROM fund_settlement_runs confirmed
-              WHERE confirmed.fund_id = fund_settlement_runs.fund_id
-                AND confirmed.settlement_model = fund_settlement_runs.settlement_model
-                AND confirmed.basis_source = fund_settlement_runs.basis_source
-                AND confirmed.basis_id = fund_settlement_runs.basis_id
-                AND confirmed.status = 'confirmed'
-          )
-          AND NOT EXISTS (
-              SELECT 1
-              FROM fund_settlement_investor_rows investor
-              WHERE investor.run_id = fund_settlement_runs.id
-                AND investor.units < -1e-9
-          )
-        "#,
-    )
-    .bind(&status_updated_at)
-    .bind(run_id)
-    .bind(FUND_SETTLEMENT_MODEL_EVENT_STATE)
-    .execute(&mut *tx)
-    .await?;
-
-    if result.rows_affected() == 0 {
-        return Err(AppError::bad_request(
-            "settlement run must use the current model, be draft, non-duplicate, and have no negative investor units",
-        ));
-    }
-
-    let run = select_fund_settlement_run_by_id(&mut tx, run_id).await?;
-    insert_confirmed_settlement_event(&mut tx, &run, &status_updated_at).await?;
-    tx.commit().await?;
-
-    Ok(())
-}
-
-async fn select_fund_settlement_run_by_id(
-    tx: &mut Transaction<'_, Sqlite>,
-    run_id: &str,
-) -> Result<FundSettlementRun, AppError> {
-    Ok(sqlx::query_as::<_, FundSettlementRun>(
-        r#"
-        SELECT id, fund_id, settlement_model, equity_event_index, equity, equity_updated_at,
-               basis_source, basis_id, basis_updated_at,
-               total_deposit, total_units, total_tax, total_referrer_rebate,
-               capped_cash_flows, capped_units, capped_cash_amount,
-               investor_count, status, status_updated_at, created_at
-        FROM fund_settlement_runs
-        WHERE id = ?1
-        "#,
-    )
-    .bind(run_id)
-    .fetch_one(&mut **tx)
-    .await?)
-}
-
-async fn insert_confirmed_settlement_event(
-    tx: &mut Transaction<'_, Sqlite>,
-    run: &FundSettlementRun,
-    updated_at: &str,
-) -> Result<(), AppError> {
-    let comment = format!("Settlement run {}", run.id);
-    insert_settlement_statement_events(
-        tx,
-        &run.fund_id,
-        run.equity,
-        &run.basis_source,
-        &run.basis_id,
-        &comment,
-        Some(&run.id),
-        updated_at,
-    )
-    .await
-}
-
-async fn insert_settlement_statement_events(
-    tx: &mut Transaction<'_, Sqlite>,
-    fund_id: &str,
-    equity: f64,
-    basis_source: &str,
-    basis_id: &str,
-    comment: &str,
-    settlement_run_id: Option<&str>,
-    updated_at: &str,
-) -> Result<(), AppError> {
-    let (equity_event_index,): (i64,) = sqlx::query_as(
-        r#"
-        SELECT COALESCE(MAX(event_index), -1) + 1
-        FROM fund_statement_events
-        WHERE fund_id = ?1
-        "#,
-    )
-    .bind(fund_id)
-    .fetch_one(&mut **tx)
-    .await?;
-    let taxation_event_index = equity_event_index + 1;
-    let equity_payload = serde_json::json!({
-        "comment": comment,
-        "fund_equity": { "equity": equity },
-        "settlement_run_id": settlement_run_id,
-        "settlement_model": FUND_SETTLEMENT_MODEL_EVENT_STATE,
-        "basis_source": basis_source,
-        "basis_id": basis_id,
-    });
-    let taxation_payload = serde_json::json!({
-        "type": "taxation/v2",
-        "comment": comment,
-        "settlement_run_id": settlement_run_id,
-        "settlement_model": FUND_SETTLEMENT_MODEL_EVENT_STATE,
-        "basis_source": basis_source,
-        "basis_id": basis_id,
-    });
-
-    sqlx::query(
-        r#"
-        INSERT INTO fund_statement_events (fund_id, event_index, event_type, updated_at, payload)
-        VALUES (?1, ?2, 'settlement_equity', ?3, ?4)
-        "#,
-    )
-    .bind(fund_id)
-    .bind(equity_event_index)
-    .bind(updated_at)
-    .bind(equity_payload.to_string())
-    .execute(&mut **tx)
-    .await?;
-
-    sqlx::query(
-        r#"
-        INSERT INTO fund_statement_equity (fund_id, event_index, equity, updated_at)
-        VALUES (?1, ?2, ?3, ?4)
-        "#,
-    )
-    .bind(fund_id)
-    .bind(equity_event_index)
-    .bind(equity)
-    .bind(updated_at)
-    .execute(&mut **tx)
-    .await?;
-
-    sqlx::query(
-        r#"
-        INSERT INTO fund_statement_events (fund_id, event_index, event_type, updated_at, payload)
-        VALUES (?1, ?2, 'taxation/v2', ?3, ?4)
-        "#,
-    )
-    .bind(fund_id)
-    .bind(taxation_event_index)
-    .bind(updated_at)
-    .bind(taxation_payload.to_string())
-    .execute(&mut **tx)
-    .await?;
-
-    sqlx::query(
-        r#"
-        INSERT INTO fund_statement_tax_modes (fund_id, event_index, mode, comment, updated_at)
-        VALUES (?1, ?2, 'taxation/v2', ?3, ?4)
-        "#,
-    )
-    .bind(fund_id)
-    .bind(taxation_event_index)
-    .bind(comment)
-    .bind(updated_at)
-    .execute(&mut **tx)
-    .await?;
-
-    Ok(())
+    let _user = auth::require_initialized_user(&state, &headers).await?;
+    let _run_id = request.run_id;
+    Err(AppError::bad_request("settlement drafts are not supported"))
 }
 
 async fn load_fund_settlement_preview(
     db: &SqlitePool,
     fund_id: String,
 ) -> Result<FundSettlementPreview, AppError> {
-    let equity_points = sqlx::query_as::<_, FundStatementEquity>(
-        r#"
-        SELECT event_index, equity, updated_at
-        FROM fund_statement_equity
-        WHERE fund_id = ?1
-        ORDER BY updated_at ASC, event_index ASC
-        "#,
-    )
-    .bind(&fund_id)
-    .fetch_all(db)
-    .await?;
-
-    let latest_nav = sqlx::query_as::<_, FundNavSnapshot>(
-        r#"
-        SELECT id, fund_id, account_id, equity, target_currency, positions_count,
-               unpriced_positions, created_at
-        FROM fund_nav_snapshots
-        WHERE fund_id = ?1
-        ORDER BY created_at DESC
-        LIMIT 1
-        "#,
-    )
-    .bind(&fund_id)
-    .fetch_optional(db)
-    .await?;
+    let equity_points = load_equity_events(db, &fund_id).await?;
     let event_state = load_statement_event_state(db, &fund_id).await?;
 
     Ok(build_settlement_preview(
         fund_id,
         equity_points,
-        latest_nav,
+        None,
         event_state,
     ))
 }
@@ -1609,9 +1111,9 @@ pub async fn list_fund_configs(
     Ok(sqlx::query_as::<_, FundConfig>(
         r#"
         SELECT f.id, f.owner_id, f.name, f.account_id, f.enabled, f.target_currency, f.poll_interval_seconds,
-               f.created_at, f.updated_at, MAX(s.created_at) AS last_sampled_at
+               f.created_at, f.updated_at, MAX(s.occurred_at) AS last_sampled_at
         FROM funds f
-        LEFT JOIN fund_nav_snapshots s ON s.fund_id = f.id
+        LEFT JOIN fund_events s ON s.fund_id = f.id AND s.event_type = 'fund_equity_set'
         WHERE f.owner_id = ?1
         GROUP BY f.id
         ORDER BY f.created_at DESC
@@ -1642,9 +1144,9 @@ async fn due_fund_configs(db: &SqlitePool) -> Result<Vec<FundConfig>, AppError> 
     Ok(sqlx::query_as::<_, FundConfig>(
         r#"
         SELECT f.id, f.owner_id, f.name, f.account_id, f.enabled, f.target_currency, f.poll_interval_seconds,
-               f.created_at, f.updated_at, MAX(s.created_at) AS last_sampled_at
+               f.created_at, f.updated_at, MAX(s.occurred_at) AS last_sampled_at
         FROM funds f
-        LEFT JOIN fund_nav_snapshots s ON s.fund_id = f.id
+        LEFT JOIN fund_events s ON s.fund_id = f.id AND s.event_type = 'fund_equity_set'
         WHERE f.enabled = 1
         GROUP BY f.id
         HAVING last_sampled_at IS NULL
@@ -1664,9 +1166,9 @@ async fn get_fund_config(
     sqlx::query_as::<_, FundConfig>(
         r#"
         SELECT f.id, f.owner_id, f.name, f.account_id, f.enabled, f.target_currency, f.poll_interval_seconds,
-               f.created_at, f.updated_at, MAX(s.created_at) AS last_sampled_at
+               f.created_at, f.updated_at, MAX(s.occurred_at) AS last_sampled_at
         FROM funds f
-        LEFT JOIN fund_nav_snapshots s ON s.fund_id = f.id
+        LEFT JOIN fund_events s ON s.fund_id = f.id AND s.event_type = 'fund_equity_set'
         WHERE f.id = ?1 AND f.owner_id = ?2
         GROUP BY f.id
         "#,
@@ -1675,7 +1177,53 @@ async fn get_fund_config(
     .bind(owner_id)
     .fetch_one(db)
     .await
-    .map_err(AppError::from)
+        .map_err(AppError::from)
+}
+
+async fn append_fund_event(
+    db: &SqlitePool,
+    fund_id: &str,
+    event_type: &str,
+    occurred_at: &str,
+    investor_id: Option<&str>,
+    comment: Option<&str>,
+    payload: serde_json::Value,
+) -> Result<i64, AppError> {
+    validate_fund_event_payload(event_type, investor_id, &payload)?;
+    let payload = serde_json::to_string(&payload)?;
+    let mut tx = db.begin().await?;
+    let (event_index,): (i64,) = sqlx::query_as(
+        r#"
+        SELECT COALESCE(MAX(event_index), -1) + 1
+        FROM fund_events
+        WHERE fund_id = ?1
+        "#,
+    )
+    .bind(fund_id)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO fund_events (
+            fund_id, event_index, event_type, occurred_at, investor_id, comment, payload
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+    )
+    .bind(fund_id)
+    .bind(event_index)
+    .bind(event_type)
+    .bind(occurred_at)
+    .bind(trimmed_optional_string(investor_id))
+    .bind(trimmed_optional_string(comment))
+    .bind(payload)
+    .execute(&mut *tx)
+    .await?;
+    invalidate_fund_reducer_snapshot(&mut tx, fund_id).await?;
+    tx.commit().await?;
+
+    Ok(event_index)
 }
 
 async fn sample_fund(db: &SqlitePool, config: &FundConfig) -> Result<FundNavSnapshot, AppError> {
@@ -1686,31 +1234,20 @@ async fn sample_fund(db: &SqlitePool, config: &FundConfig) -> Result<FundNavSnap
                 AppError::bad_request("fund account must be an enabled virtual account")
             })?;
     let valuation = value_account(&account, &config.target_currency);
-    let id = Uuid::new_v4().to_string();
     let created_at = Utc::now().to_rfc3339();
-
-    sqlx::query(
-        r#"
-        INSERT INTO fund_nav_snapshots (
-            id, fund_id, account_id, equity, target_currency, positions_count,
-            unpriced_positions, created_at
-        )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-        "#,
+    let event_index = append_fund_event(
+        db,
+        &config.id,
+        FUND_EVENT_EQUITY_SET,
+        &created_at,
+        None,
+        Some("Automatic NAV sample"),
+        serde_json::json!({ "equity": valuation.equity }),
     )
-    .bind(&id)
-    .bind(&config.id)
-    .bind(&config.account_id)
-    .bind(valuation.equity)
-    .bind(&config.target_currency)
-    .bind(valuation.positions_count)
-    .bind(valuation.unpriced_positions)
-    .bind(&created_at)
-    .execute(db)
     .await?;
 
     Ok(FundNavSnapshot {
-        id,
+        id: event_index.to_string(),
         fund_id: config.id.clone(),
         account_id: config.account_id.clone(),
         equity: valuation.equity,
@@ -1997,16 +1534,139 @@ fn cash_flow_direction(deposit: f64) -> &'static str {
     if deposit < 0.0 { "outflow" } else { "inflow" }
 }
 
+async fn load_cash_flow_events(
+    db: &SqlitePool,
+    fund_id: &str,
+) -> Result<Vec<SettlementOrder>, AppError> {
+    let rows = sqlx::query_as::<_, FundStatementEventPayloadRow>(
+        r#"
+        SELECT event_index, event_type, occurred_at, investor_id, comment, payload
+        FROM fund_events
+        WHERE fund_id = ?1 AND event_type = 'cash_flow_recorded'
+        ORDER BY occurred_at ASC, event_index ASC
+        "#,
+    )
+    .bind(fund_id)
+    .fetch_all(db)
+    .await?;
+    rows.into_iter()
+        .map(|row| {
+            let payload = serde_json::from_str::<FundCashFlowPayload>(&row.payload)?;
+            Ok(SettlementOrder {
+                event_index: row.event_index,
+                investor_name: row.investor_id.unwrap_or_default(),
+                deposit: payload.amount,
+                updated_at: row.occurred_at,
+            })
+        })
+        .collect()
+}
+
+async fn load_equity_events(
+    db: &SqlitePool,
+    fund_id: &str,
+) -> Result<Vec<FundStatementEquity>, AppError> {
+    let rows = sqlx::query_as::<_, FundStatementEventPayloadRow>(
+        r#"
+        SELECT event_index, event_type, occurred_at, investor_id, comment, payload
+        FROM fund_events
+        WHERE fund_id = ?1 AND event_type = 'fund_equity_set'
+        ORDER BY occurred_at ASC, event_index ASC
+        "#,
+    )
+    .bind(fund_id)
+    .fetch_all(db)
+    .await?;
+    rows.into_iter()
+        .map(|row| {
+            let payload = serde_json::from_str::<FundStatementEquityPayload>(&row.payload)?;
+            Ok(FundStatementEquity {
+                event_index: row.event_index,
+                equity: payload.equity,
+                updated_at: row.occurred_at,
+            })
+        })
+        .collect()
+}
+
+async fn load_tax_events(
+    db: &SqlitePool,
+    fund_id: &str,
+) -> Result<Vec<FundStatementTaxMode>, AppError> {
+    Ok(sqlx::query_as::<_, FundStatementTaxMode>(
+        r#"
+        SELECT event_index,
+               CASE
+                   WHEN event_type = 'taxation_v1_applied' THEN 'taxation'
+                   ELSE 'taxation/v2'
+               END AS mode,
+               comment,
+               occurred_at AS updated_at
+        FROM fund_events
+        WHERE fund_id = ?1
+          AND event_type IN ('taxation_v1_applied', 'taxation_v2_applied')
+        ORDER BY occurred_at ASC, event_index ASC
+        "#,
+    )
+    .bind(fund_id)
+    .fetch_all(db)
+    .await?)
+}
+
+async fn load_investor_profile_events(
+    db: &SqlitePool,
+    fund_id: &str,
+) -> Result<Vec<FundStatementInvestor>, AppError> {
+    let rows = sqlx::query_as::<_, FundStatementEventPayloadRow>(
+        r#"
+        SELECT event_index, event_type, occurred_at, investor_id, comment, payload
+        FROM fund_events
+        WHERE fund_id = ?1 AND event_type = 'investor_profile_updated'
+        ORDER BY event_index ASC
+        "#,
+    )
+    .bind(fund_id)
+    .fetch_all(db)
+    .await?;
+    let mut investors = HashMap::<String, FundStatementInvestorProjection>::new();
+    for row in rows {
+        let payload = serde_json::from_str::<FundInvestorProfilePayload>(&row.payload)?;
+        let investor_id = row.investor_id.unwrap_or_default();
+        let investor = investors.entry(investor_id).or_default();
+        investor.referrer = payload.referrer_id.or_else(|| investor.referrer.take());
+        investor.tax_rate = payload.tax_rate.or(investor.tax_rate);
+        investor.referrer_rebate_rate = payload
+            .referrer_rebate_rate
+            .or(investor.referrer_rebate_rate);
+        investor.updated_at = row.occurred_at;
+        investor.source_event_index = row.event_index;
+    }
+    let mut rows = investors
+        .into_iter()
+        .map(|(name, investor)| FundStatementInvestor {
+            name,
+            referrer: investor.referrer,
+            tax_rate: investor.tax_rate,
+            referrer_rebate_rate: investor.referrer_rebate_rate,
+            tax_threshold: None,
+            updated_at: investor.updated_at,
+            source_event_index: investor.source_event_index,
+        })
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(rows)
+}
+
 async fn load_tax_threshold_adjustments(
     db: &SqlitePool,
     fund_id: &str,
 ) -> Result<Vec<FundTaxThresholdAdjustment>, AppError> {
     let rows = sqlx::query_as::<_, FundStatementEventPayloadRow>(
         r#"
-        SELECT event_index, updated_at, payload
-        FROM fund_statement_events
-        WHERE fund_id = ?1 AND event_type = 'investor'
-        ORDER BY updated_at ASC, event_index ASC
+        SELECT event_index, event_type, occurred_at, investor_id, comment, payload
+        FROM fund_events
+        WHERE fund_id = ?1 AND event_type = 'tax_threshold_adjusted'
+        ORDER BY occurred_at ASC, event_index ASC
         "#,
     )
     .bind(fund_id)
@@ -2026,8 +1686,8 @@ async fn get_fund_statement_event(
 ) -> Result<FundStatementEvent, AppError> {
     Ok(sqlx::query_as::<_, FundStatementEvent>(
         r#"
-        SELECT event_index, event_type, updated_at, payload
-        FROM fund_statement_events
+        SELECT event_index, event_type, occurred_at, investor_id, comment, payload
+        FROM fund_events
         WHERE fund_id = ?1 AND event_index = ?2
         "#,
     )
@@ -2043,167 +1703,108 @@ fn validate_fund_statement_event_request(
     if request.event_type.trim().is_empty() {
         return Err(AppError::bad_request("event_type is required"));
     }
-    if request.updated_at.trim().is_empty() {
-        return Err(AppError::bad_request("updated_at is required"));
+    if request.occurred_at.trim().is_empty() {
+        return Err(AppError::bad_request("occurred_at is required"));
     }
-    serde_json::from_value::<FundStatementEventPayload>(request.payload.clone())?;
+    validate_fund_event_payload(
+        request.event_type.trim(),
+        request.investor_id.as_deref(),
+        &request.payload,
+    )?;
     Ok(())
 }
 
-async fn rebuild_fund_statement_derived_tables(
+fn validate_fund_event_payload(
+    event_type: &str,
+    investor_id: Option<&str>,
+    payload: &serde_json::Value,
+) -> Result<(), AppError> {
+    match event_type {
+        FUND_EVENT_EQUITY_SET => {
+            require_no_investor(event_type, investor_id)?;
+            serde_json::from_value::<FundStatementEquityPayload>(payload.clone())?;
+        }
+        FUND_EVENT_CASH_FLOW_RECORDED => {
+            require_investor(event_type, investor_id)?;
+            serde_json::from_value::<FundCashFlowPayload>(payload.clone())?;
+        }
+        FUND_EVENT_INVESTOR_PROFILE_UPDATED => {
+            require_investor(event_type, investor_id)?;
+            serde_json::from_value::<FundInvestorProfilePayload>(payload.clone())?;
+        }
+        FUND_EVENT_TAX_THRESHOLD_ADJUSTED => {
+            require_investor(event_type, investor_id)?;
+            serde_json::from_value::<FundTaxThresholdAdjustmentPayload>(payload.clone())?;
+        }
+        FUND_EVENT_TAXATION_V1_APPLIED | FUND_EVENT_TAXATION_V2_APPLIED => {
+            require_no_investor(event_type, investor_id)?;
+            if !payload.as_object().is_some_and(|object| object.is_empty()) {
+                return Err(AppError::bad_request(format!(
+                    "{event_type} payload must be an empty object"
+                )));
+            }
+        }
+        _ => {
+            return Err(AppError::bad_request(format!(
+                "unsupported fund event: {event_type}"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn require_investor(event_type: &str, investor_id: Option<&str>) -> Result<(), AppError> {
+    if trimmed_optional_string(investor_id).is_none() {
+        return Err(AppError::bad_request(format!(
+            "{event_type} requires investor_id"
+        )));
+    }
+    Ok(())
+}
+
+fn require_no_investor(event_type: &str, investor_id: Option<&str>) -> Result<(), AppError> {
+    if trimmed_optional_string(investor_id).is_some() {
+        return Err(AppError::bad_request(format!(
+            "{event_type} must not include investor_id"
+        )));
+    }
+    Ok(())
+}
+
+fn trimmed_optional_string(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+async fn invalidate_fund_reducer_snapshot(
     tx: &mut Transaction<'_, Sqlite>,
     fund_id: &str,
 ) -> Result<(), AppError> {
-    for table in [
-        "fund_statement_orders",
-        "fund_statement_equity",
-        "fund_statement_investors",
-        "fund_statement_tax_modes",
-    ] {
-        let sql = format!("DELETE FROM {table} WHERE fund_id = ?1");
-        sqlx::query(&sql).bind(fund_id).execute(&mut **tx).await?;
-    }
-
-    let rows = sqlx::query_as::<_, FundStatementEventProjectionRow>(
-        r#"
-        SELECT event_index, event_type, updated_at, payload
-        FROM fund_statement_events
-        WHERE fund_id = ?1
-        ORDER BY event_index ASC
-        "#,
-    )
-    .bind(fund_id)
-    .fetch_all(&mut **tx)
-    .await?;
-    let mut investors = HashMap::<String, FundStatementInvestorProjection>::new();
-
-    for row in rows {
-        project_fund_statement_event(tx, fund_id, row, &mut investors).await?;
-    }
-
-    for (name, investor) in investors {
-        sqlx::query(
-            r#"
-            INSERT INTO fund_statement_investors (
-                fund_id, name, referrer, tax_rate, referrer_rebate_rate,
-                tax_threshold, updated_at, source_event_index
-            )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-            "#,
-        )
+    sqlx::query("DELETE FROM fund_reducer_snapshots WHERE fund_id = ?1")
         .bind(fund_id)
-        .bind(name)
-        .bind(investor.referrer)
-        .bind(investor.tax_rate)
-        .bind(investor.referrer_rebate_rate)
-        .bind(investor.tax_threshold)
-        .bind(investor.updated_at)
-        .bind(investor.source_event_index)
         .execute(&mut **tx)
         .await?;
-    }
 
     Ok(())
-}
-
-async fn project_fund_statement_event(
-    tx: &mut Transaction<'_, Sqlite>,
-    fund_id: &str,
-    row: FundStatementEventProjectionRow,
-    investors: &mut HashMap<String, FundStatementInvestorProjection>,
-) -> Result<(), AppError> {
-    let payload = serde_json::from_str::<FundStatementEventPayload>(&row.payload)?;
-
-    if let Some(fund_equity) = payload.fund_equity {
-        sqlx::query(
-            r#"
-            INSERT INTO fund_statement_equity (fund_id, event_index, equity, updated_at)
-            VALUES (?1, ?2, ?3, ?4)
-            "#,
-        )
-        .bind(fund_id)
-        .bind(row.event_index)
-        .bind(fund_equity.equity)
-        .bind(&row.updated_at)
-        .execute(&mut **tx)
-        .await?;
-    }
-
-    if let Some(order) = payload.order {
-        sqlx::query(
-            r#"
-            INSERT INTO fund_statement_orders (fund_id, event_index, investor_name, deposit, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5)
-            "#,
-        )
-        .bind(fund_id)
-        .bind(row.event_index)
-        .bind(order.name)
-        .bind(order.deposit)
-        .bind(&row.updated_at)
-        .execute(&mut **tx)
-        .await?;
-    }
-
-    if let Some(investor_update) = payload.investor {
-        let investor = investors.entry(investor_update.name).or_default();
-        investor.referrer = investor_update
-            .referrer
-            .or_else(|| investor.referrer.take());
-        investor.tax_rate = investor_update.tax_rate.or(investor.tax_rate);
-        investor.referrer_rebate_rate = investor_update
-            .referrer_rebate_rate
-            .or(investor.referrer_rebate_rate);
-        investor.tax_threshold = investor_update.add_tax_threshold.or(investor.tax_threshold);
-        investor.updated_at = row.updated_at.clone();
-        investor.source_event_index = row.event_index;
-    }
-
-    if statement_event_is_tax_mode(&row.event_type, payload.event_type.as_deref()) {
-        sqlx::query(
-            r#"
-            INSERT INTO fund_statement_tax_modes (fund_id, event_index, mode, comment, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5)
-            "#,
-        )
-        .bind(fund_id)
-        .bind(row.event_index)
-        .bind(payload.event_type.as_deref().unwrap_or(&row.event_type))
-        .bind(payload.comment)
-        .bind(&row.updated_at)
-        .execute(&mut **tx)
-        .await?;
-    }
-
-    Ok(())
-}
-
-fn statement_event_is_tax_mode(column_type: &str, payload_type: Option<&str>) -> bool {
-    matches!(
-        payload_type.or(Some(column_type)),
-        Some("taxation") | Some("taxation/v2")
-    )
 }
 
 fn tax_threshold_adjustment_from_row(
     row: FundStatementEventPayloadRow,
 ) -> Option<Result<FundTaxThresholdAdjustment, serde_json::Error>> {
-    let payload = match serde_json::from_str::<FundStatementEventPayload>(&row.payload) {
+    let payload = match serde_json::from_str::<FundTaxThresholdAdjustmentPayload>(&row.payload) {
         Ok(payload) => payload,
         Err(error) => return Some(Err(error)),
     };
-    payload.investor.and_then(|investor| {
-        investor
-            .add_tax_threshold
-            .map(|amount| FundTaxThresholdAdjustment {
-                event_index: row.event_index,
-                investor_name: investor.name,
-                amount,
-                comment: payload.comment,
-                updated_at: row.updated_at,
-            })
-            .map(Ok)
-    })
+    Some(Ok(FundTaxThresholdAdjustment {
+        event_index: row.event_index,
+        investor_name: row.investor_id.unwrap_or_default(),
+        amount: payload.amount,
+        comment: row.comment,
+        updated_at: row.occurred_at,
+    }))
 }
 
 async fn load_statement_event_state(
@@ -2212,8 +1813,8 @@ async fn load_statement_event_state(
 ) -> Result<FundStatementEventState, AppError> {
     let rows = sqlx::query_as::<_, FundStatementEventPayloadRow>(
         r#"
-        SELECT event_index, updated_at, payload
-        FROM fund_statement_events
+        SELECT event_index, event_type, occurred_at, investor_id, comment, payload
+        FROM fund_events
         WHERE fund_id = ?1
         ORDER BY event_index ASC
         "#,
@@ -2225,42 +1826,59 @@ async fn load_statement_event_state(
     let mut state = YuanFundState::default();
     recompute_yuan_derived(&mut state);
     for row in rows {
-        let event = serde_json::from_str::<FundStatementEventPayload>(&row.payload)?;
-        apply_yuan_fund_event(&mut state, event);
+        try_apply_yuan_fund_event(&mut state, row)?;
         recompute_yuan_derived(&mut state);
     }
 
     Ok(yuan_event_state_summary(state))
 }
 
-fn apply_yuan_fund_event(state: &mut YuanFundState, event: FundStatementEventPayload) {
-    if let Some(fund_equity) = event.fund_equity {
+fn apply_yuan_fund_event(
+    event_state: &mut YuanFundState,
+    event: impl Into<FundStatementEventPayloadRow>,
+) {
+    try_apply_yuan_fund_event(event_state, event).expect("fund event should reduce");
+}
+
+fn try_apply_yuan_fund_event(
+    state: &mut YuanFundState,
+    event: impl Into<FundStatementEventPayloadRow>,
+) -> Result<(), AppError> {
+    let event = event.into();
+    if event.event_type == FUND_EVENT_EQUITY_SET {
+        let fund_equity = serde_json::from_str::<FundStatementEquityPayload>(&event.payload)?;
         state.total_assets = fund_equity.equity;
     }
 
-    if let Some(order) = event.order {
+    if event.event_type == FUND_EVENT_CASH_FLOW_RECORDED {
+        let order = serde_json::from_str::<FundCashFlowPayload>(&event.payload)?;
+        let investor_id = event
+            .investor_id
+            .as_deref()
+            .ok_or_else(|| AppError::bad_request("cash_flow_recorded requires investor_id"))?;
         let unit_price = yuan_unit_price(state);
-        let share = order.deposit / unit_price;
-        let investor = ensure_yuan_investor(state, &order.name);
+        let share = order.amount / unit_price;
+        let investor = ensure_yuan_investor(state, investor_id);
         if share > 0.0 {
-            investor.avg_cost_price = (investor.avg_cost_price * investor.share + order.deposit)
+            investor.avg_cost_price = (investor.avg_cost_price * investor.share + order.amount)
                 / (investor.share + share);
         }
-        investor.deposit += order.deposit;
-        investor.tax_threshold += order.deposit;
+        investor.deposit += order.amount;
+        investor.tax_threshold += order.amount;
         investor.share += share;
-        state.total_assets += order.deposit;
+        state.total_assets += order.amount;
     }
 
-    if let Some(investor_update) = event.investor {
-        let investor = ensure_yuan_investor(state, &investor_update.name);
+    if event.event_type == FUND_EVENT_INVESTOR_PROFILE_UPDATED {
+        let investor_update = serde_json::from_str::<FundInvestorProfilePayload>(&event.payload)?;
+        let investor_id = event.investor_id.as_deref().ok_or_else(|| {
+            AppError::bad_request("investor_profile_updated requires investor_id")
+        })?;
+        let investor = ensure_yuan_investor(state, investor_id);
         if let Some(tax_rate) = investor_update.tax_rate {
             investor.tax_rate = tax_rate;
         }
-        if let Some(add_tax_threshold) = investor_update.add_tax_threshold {
-            investor.tax_threshold += add_tax_threshold;
-        }
-        if let Some(referrer) = investor_update.referrer {
+        if let Some(referrer) = investor_update.referrer_id {
             investor.referrer = Some(referrer);
         }
         if let Some(referrer_rebate_rate) = investor_update.referrer_rebate_rate {
@@ -2268,13 +1886,25 @@ fn apply_yuan_fund_event(state: &mut YuanFundState, event: FundStatementEventPay
         }
     }
 
-    if event.event_type.as_deref() == Some("taxation") {
+    if event.event_type == FUND_EVENT_TAX_THRESHOLD_ADJUSTED {
+        let adjustment = serde_json::from_str::<FundTaxThresholdAdjustmentPayload>(&event.payload)?;
+        let investor_id = event
+            .investor_id
+            .as_deref()
+            .ok_or_else(|| AppError::bad_request("tax_threshold_adjusted requires investor_id"))?;
+        let investor = ensure_yuan_investor(state, investor_id);
+        investor.tax_threshold += adjustment.amount;
+    }
+
+    if event.event_type == FUND_EVENT_TAXATION_V1_APPLIED {
         apply_yuan_taxation(state);
     }
 
-    if event.event_type.as_deref() == Some("taxation/v2") {
+    if event.event_type == FUND_EVENT_TAXATION_V2_APPLIED {
         apply_yuan_taxation_v2(state);
     }
+
+    Ok(())
 }
 
 fn apply_yuan_taxation(state: &mut YuanFundState) {
@@ -2468,142 +2098,6 @@ fn settlement_basis_label(source: &str) -> &str {
     source
 }
 
-fn settlement_run_csv(detail: &FundSettlementRunDetail) -> String {
-    let mut rows = vec![
-        vec![
-            "run_id".to_string(),
-            detail.run.id.clone(),
-            "fund_id".to_string(),
-            detail.run.fund_id.clone(),
-            "settlement_model".to_string(),
-            detail.run.settlement_model.clone(),
-            "status".to_string(),
-            detail.run.status.clone(),
-            "status_updated_at".to_string(),
-            detail.run.status_updated_at.clone().unwrap_or_default(),
-            "basis_source".to_string(),
-            detail.run.basis_source.clone(),
-            "basis_id".to_string(),
-            detail.run.basis_id.clone(),
-            "basis_updated_at".to_string(),
-            detail.run.basis_updated_at.clone(),
-        ],
-        vec![
-            "equity".to_string(),
-            detail.run.equity.to_string(),
-            "equity_updated_at".to_string(),
-            detail.run.equity_updated_at.clone(),
-            "created_at".to_string(),
-            detail.run.created_at.clone(),
-            "total_deposit".to_string(),
-            detail.run.total_deposit.to_string(),
-        ],
-        vec![
-            "total_units".to_string(),
-            detail.run.total_units.to_string(),
-            "total_tax".to_string(),
-            detail.run.total_tax.to_string(),
-            "total_referrer_rebate".to_string(),
-            detail.run.total_referrer_rebate.to_string(),
-        ],
-        vec![
-            "gross_equity".to_string(),
-            detail.totals.gross_equity.to_string(),
-            "net_equity".to_string(),
-            detail.totals.net_equity.to_string(),
-            "retained_tax".to_string(),
-            detail.totals.retained_tax.to_string(),
-        ],
-        Vec::new(),
-        vec!["settlement_report".to_string(), "amount".to_string()],
-        vec![
-            "post_settlement_equity".to_string(),
-            detail.totals.net_equity.to_string(),
-        ],
-        vec![
-            "investor_tax_payable".to_string(),
-            detail.totals.tax.to_string(),
-        ],
-        vec![
-            "referrer_rebates_payable".to_string(),
-            detail.totals.referrer_rebate.to_string(),
-        ],
-        vec![
-            "retained_tax".to_string(),
-            detail.totals.retained_tax.to_string(),
-        ],
-        vec![
-            "gross_equity_control".to_string(),
-            detail.totals.gross_equity.to_string(),
-        ],
-        Vec::new(),
-        vec![
-            "investor".to_string(),
-            "referrer".to_string(),
-            "deposit".to_string(),
-            "units".to_string(),
-            "ownership".to_string(),
-            "gross_equity".to_string(),
-            "profit".to_string(),
-            "tax_threshold".to_string(),
-            "tax_rate".to_string(),
-            "tax".to_string(),
-            "referrer_rebate_rate".to_string(),
-            "referrer_rebate".to_string(),
-            "referrer_rebate_received".to_string(),
-            "tax_account_credit".to_string(),
-            "net_equity".to_string(),
-        ],
-    ];
-
-    rows.extend(detail.investors.iter().map(|investor| {
-        vec![
-            investor.name.clone(),
-            investor.referrer.clone().unwrap_or_default(),
-            investor.deposit.to_string(),
-            investor.units.to_string(),
-            investor.ownership.to_string(),
-            investor.gross_equity.to_string(),
-            investor.profit.to_string(),
-            investor.tax_threshold.to_string(),
-            investor.tax_rate.to_string(),
-            investor.tax.to_string(),
-            investor.referrer_rebate_rate.to_string(),
-            investor.referrer_rebate.to_string(),
-            investor.referrer_rebate_received.to_string(),
-            investor.tax_account_credit.to_string(),
-            investor.net_equity.to_string(),
-        ]
-    }));
-    rows.push(Vec::new());
-    rows.push(vec!["tax_investor".to_string(), "tax".to_string()]);
-    rows.extend(
-        detail
-            .investor_taxes
-            .iter()
-            .map(|tax| vec![tax.investor.clone(), tax.tax.to_string()]),
-    );
-    rows.push(Vec::new());
-    rows.push(vec!["referrer".to_string(), "rebate".to_string()]);
-    rows.extend(
-        detail
-            .referrer_rebates
-            .iter()
-            .map(|rebate| vec![rebate.referrer.clone(), rebate.rebate.to_string()]),
-    );
-
-    rows.into_iter()
-        .map(|row| {
-            row.into_iter()
-                .map(|cell| csv_cell(&cell))
-                .collect::<Vec<_>>()
-                .join(",")
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-        + "\n"
-}
-
 fn summarize_settlement_totals(investors: &[FundInvestorSettlement]) -> FundSettlementTotals {
     let gross_equity = investors.iter().map(|item| item.gross_equity).sum();
     let net_equity = investors.iter().map(|item| item.net_equity).sum();
@@ -2622,18 +2116,6 @@ fn summarize_settlement_totals(investors: &[FundInvestorSettlement]) -> FundSett
         capped_units: 0.0,
         capped_cash_amount: 0.0,
     }
-}
-
-fn settlement_totals_with_capped_run(
-    totals: FundSettlementTotals,
-    run: &FundSettlementRun,
-) -> FundSettlementTotals {
-    settlement_totals_with_capped_values(
-        totals,
-        run.capped_cash_flows,
-        run.capped_units,
-        run.capped_cash_amount,
-    )
 }
 
 fn settlement_totals_with_capped_values(
@@ -3285,8 +2767,11 @@ mod tests {
     fn extracts_tax_threshold_adjustment_from_statement_event() {
         let adjustment = tax_threshold_adjustment_from_row(FundStatementEventPayloadRow {
             event_index: 1514,
-            updated_at: "2025-09-30T15:59:59.999000+00:00".to_string(),
-            payload: r#"{"comment":"快捷申报免税 张秦 108.06756441281664","investor":{"name":"张秦","add_tax_threshold":108.06756441281664}}"#.to_string(),
+            occurred_at: "2025-09-30T15:59:59.999000+00:00".to_string(),
+            investor_id: Some("张秦".to_string()),
+            comment: Some("快捷申报免税 张秦 108.06756441281664".to_string()),
+            event_type: FUND_EVENT_TAX_THRESHOLD_ADJUSTED.to_string(),
+            payload: r#"{"amount":108.06756441281664}"#.to_string(),
         })
         .unwrap()
         .unwrap();
@@ -3376,267 +2861,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn writes_confirmed_settlement_events_and_derived_rows() {
-        let db = sqlx::sqlite::SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect("sqlite::memory:")
-            .await
-            .unwrap();
-        sqlx::query(
-            r#"
-            CREATE TABLE fund_statement_events (
-                fund_id TEXT NOT NULL,
-                event_index INTEGER NOT NULL,
-                event_type TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                payload TEXT NOT NULL,
-                PRIMARY KEY (fund_id, event_index)
-            )
-            "#,
-        )
-        .execute(&db)
-        .await
-        .unwrap();
-        sqlx::query(
-            r#"
-            CREATE TABLE fund_statement_equity (
-                fund_id TEXT NOT NULL,
-                event_index INTEGER NOT NULL,
-                equity REAL NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (fund_id, event_index)
-            )
-            "#,
-        )
-        .execute(&db)
-        .await
-        .unwrap();
-        sqlx::query(
-            r#"
-            CREATE TABLE fund_statement_tax_modes (
-                fund_id TEXT NOT NULL,
-                event_index INTEGER NOT NULL,
-                mode TEXT NOT NULL,
-                comment TEXT,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (fund_id, event_index)
-            )
-            "#,
-        )
-        .execute(&db)
-        .await
-        .unwrap();
-        sqlx::query(
-            r#"
-            INSERT INTO fund_statement_events (fund_id, event_index, event_type, updated_at, payload)
-            VALUES ('fund', 0, 'root', '2025-01-01T00:00:00+00:00', '{}')
-            "#,
-        )
-        .execute(&db)
-        .await
-        .unwrap();
-
-        let run = FundSettlementRun {
-            id: "run-1".to_string(),
-            fund_id: "fund".to_string(),
-            settlement_model: FUND_SETTLEMENT_MODEL_EVENT_STATE.to_string(),
-            equity_event_index: 7,
-            equity: 150.0,
-            equity_updated_at: "2025-01-02T00:00:00+00:00".to_string(),
-            basis_source: "live_nav".to_string(),
-            basis_id: "nav-1".to_string(),
-            basis_updated_at: "2025-01-02T00:00:00+00:00".to_string(),
-            total_deposit: 100.0,
-            total_units: 100.0,
-            total_tax: 10.0,
-            total_referrer_rebate: 0.0,
-            capped_cash_flows: 0,
-            capped_units: 0.0,
-            capped_cash_amount: 0.0,
-            investor_count: 1,
-            status: "confirmed".to_string(),
-            status_updated_at: Some("2025-01-03T00:00:00+00:00".to_string()),
-            created_at: "2025-01-02T00:00:00+00:00".to_string(),
-        };
-        let mut tx = db.begin().await.unwrap();
-        insert_confirmed_settlement_event(&mut tx, &run, "2025-01-03T00:00:00+00:00")
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-
-        let events = sqlx::query_as::<_, (i64, String, String)>(
-            r#"
-            SELECT event_index, event_type, payload
-            FROM fund_statement_events
-            WHERE fund_id = 'fund'
-            ORDER BY event_index
-            "#,
-        )
-        .fetch_all(&db)
-        .await
-        .unwrap();
-        assert_eq!(events.len(), 3);
-        assert_eq!(events[1].0, 1);
-        assert_eq!(events[1].1, "settlement_equity");
-        assert_eq!(events[2].0, 2);
-        assert_eq!(events[2].1, "taxation/v2");
-
-        let equity_payload: serde_json::Value = serde_json::from_str(&events[1].2).unwrap();
-        assert_eq!(equity_payload["settlement_run_id"], "run-1");
-        assert_eq!(equity_payload["basis_source"], "live_nav");
-        assert_close(
-            equity_payload["fund_equity"]["equity"].as_f64().unwrap(),
-            150.0,
-        );
-
-        let (equity_event_index, equity): (i64, f64) = sqlx::query_as(
-            r#"
-            SELECT event_index, equity
-            FROM fund_statement_equity
-            WHERE fund_id = 'fund'
-            "#,
-        )
-        .fetch_one(&db)
-        .await
-        .unwrap();
-        assert_eq!(equity_event_index, 1);
-        assert_close(equity, 150.0);
-
-        let (tax_event_index, mode, comment): (i64, String, String) = sqlx::query_as(
-            r#"
-            SELECT event_index, mode, comment
-            FROM fund_statement_tax_modes
-            WHERE fund_id = 'fund'
-            "#,
-        )
-        .fetch_one(&db)
-        .await
-        .unwrap();
-        assert_eq!(tax_event_index, 2);
-        assert_eq!(mode, "taxation/v2");
-        assert_eq!(comment, "Settlement run run-1");
-    }
-
-    #[tokio::test]
-    async fn confirms_draft_settlement_run_and_writes_statement_events() {
-        let db = sqlx::sqlite::SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect("sqlite::memory:")
-            .await
-            .unwrap();
-        create_statement_write_test_tables(&db).await;
-        sqlx::query(
-            r#"
-            CREATE TABLE fund_settlement_runs (
-                id TEXT PRIMARY KEY NOT NULL,
-                fund_id TEXT NOT NULL,
-                settlement_model TEXT NOT NULL,
-                equity_event_index INTEGER NOT NULL,
-                equity REAL NOT NULL,
-                equity_updated_at TEXT NOT NULL,
-                basis_source TEXT NOT NULL,
-                basis_id TEXT NOT NULL,
-                basis_updated_at TEXT NOT NULL,
-                total_deposit REAL NOT NULL,
-                total_units REAL NOT NULL,
-                total_tax REAL NOT NULL,
-                total_referrer_rebate REAL NOT NULL,
-                capped_cash_flows INTEGER NOT NULL,
-                capped_units REAL NOT NULL,
-                capped_cash_amount REAL NOT NULL,
-                investor_count INTEGER NOT NULL,
-                status TEXT NOT NULL,
-                status_updated_at TEXT,
-                created_at TEXT NOT NULL
-            )
-            "#,
-        )
-        .execute(&db)
-        .await
-        .unwrap();
-        sqlx::query(
-            r#"
-            CREATE TABLE fund_settlement_investor_rows (
-                run_id TEXT NOT NULL,
-                units REAL NOT NULL
-            )
-            "#,
-        )
-        .execute(&db)
-        .await
-        .unwrap();
-        sqlx::query(
-            r#"
-            INSERT INTO fund_statement_events (fund_id, event_index, event_type, updated_at, payload)
-            VALUES ('fund', 0, 'root', '2025-01-01T00:00:00+00:00', '{}')
-            "#,
-        )
-        .execute(&db)
-        .await
-        .unwrap();
-        sqlx::query(
-            r#"
-            INSERT INTO fund_settlement_runs (
-                id, fund_id, settlement_model, equity_event_index, equity, equity_updated_at,
-                basis_source, basis_id, basis_updated_at, total_deposit, total_units,
-                total_tax, total_referrer_rebate, capped_cash_flows, capped_units,
-                capped_cash_amount, investor_count, status, status_updated_at, created_at
-            )
-            VALUES (
-                'run-1', 'fund', 'event_state_v1', 0, 150.0, '2025-01-02T00:00:00+00:00',
-                'live_nav', 'nav-1', '2025-01-02T00:00:00+00:00', 100.0, 100.0,
-                10.0, 0.0, 0, 0.0, 0.0, 1, 'draft', NULL, '2025-01-02T00:00:00+00:00'
-            )
-            "#,
-        )
-        .execute(&db)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO fund_settlement_investor_rows (run_id, units) VALUES ('run-1', 100.0)",
-        )
-        .execute(&db)
-        .await
-        .unwrap();
-
-        confirm_fund_settlement_run_status(&db, "run-1")
-            .await
-            .unwrap();
-
-        let (status,): (String,) =
-            sqlx::query_as("SELECT status FROM fund_settlement_runs WHERE id = 'run-1'")
-                .fetch_one(&db)
-                .await
-                .unwrap();
-        let events = sqlx::query_as::<_, (i64, String)>(
-            r#"
-            SELECT event_index, event_type
-            FROM fund_statement_events
-            WHERE fund_id = 'fund'
-            ORDER BY event_index
-            "#,
-        )
-        .fetch_all(&db)
-        .await
-        .unwrap();
-
-        assert_eq!(status, "confirmed");
-        assert_eq!(
-            events,
-            vec![
-                (0, "root".to_string()),
-                (1, "settlement_equity".to_string()),
-                (2, "taxation/v2".to_string()),
-            ]
-        );
-        assert!(
-            confirm_fund_settlement_run_status(&db, "run-1")
-                .await
-                .is_err()
-        );
-    }
-
-    #[tokio::test]
     async fn folds_statement_events_by_event_index_not_timestamp() {
         let db = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
@@ -3645,12 +2869,16 @@ mod tests {
             .unwrap();
         sqlx::query(
             r#"
-            CREATE TABLE fund_statement_events (
+            CREATE TABLE fund_events (
                 fund_id TEXT NOT NULL,
                 event_index INTEGER NOT NULL,
                 event_type TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
+                occurred_at TEXT NOT NULL,
+                investor_id TEXT,
+                comment TEXT,
                 payload TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (fund_id, event_index)
             )
             "#,
@@ -3658,26 +2886,32 @@ mod tests {
         .execute(&db)
         .await
         .unwrap();
-        for (event_index, updated_at, payload) in [
+        for (event_index, event_type, investor_id, occurred_at, payload) in [
             (
                 0,
+                FUND_EVENT_CASH_FLOW_RECORDED,
+                Some("Alice"),
                 "2025-01-02T00:00:00+00:00",
-                r#"{"type":"order","order":{"name":"Alice","deposit":100}}"#,
+                r#"{"amount":100}"#,
             ),
             (
                 1,
+                FUND_EVENT_EQUITY_SET,
+                None,
                 "2025-01-01T00:00:00+00:00",
-                r#"{"type":"equity","fund_equity":{"equity":150}}"#,
+                r#"{"equity":150}"#,
             ),
         ] {
             sqlx::query(
                 r#"
-                INSERT INTO fund_statement_events (fund_id, event_index, event_type, updated_at, payload)
-                VALUES ('fund', ?1, 'test', ?2, ?3)
+                INSERT INTO fund_events (fund_id, event_index, event_type, occurred_at, investor_id, payload)
+                VALUES ('fund', ?1, ?2, ?3, ?4, ?5)
                 "#,
             )
             .bind(event_index)
-            .bind(updated_at)
+            .bind(event_type)
+            .bind(occurred_at)
+            .bind(investor_id)
             .bind(payload)
             .execute(&db)
             .await
@@ -3693,209 +2927,6 @@ mod tests {
 
         assert_close(summary.total_assets, 150.0);
         assert_close(alice.share, 100.0);
-    }
-
-    #[tokio::test]
-    async fn rebuilds_statement_derived_rows_after_event_delete() {
-        let db = sqlx::sqlite::SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect("sqlite::memory:")
-            .await
-            .unwrap();
-        create_statement_write_test_tables(&db).await;
-        for (event_index, event_type, payload) in [
-            (0, "equity", r#"{"fund_equity":{"equity":150}}"#),
-            (1, "order", r#"{"order":{"name":"Alice","deposit":100}}"#),
-            (
-                2,
-                "investor",
-                r#"{"investor":{"name":"Alice","tax_rate":0.2,"referrer":"Bob"}}"#,
-            ),
-            (
-                3,
-                "taxation/v2",
-                r#"{"type":"taxation/v2","comment":"tax checkpoint"}"#,
-            ),
-        ] {
-            sqlx::query(
-                r#"
-                INSERT INTO fund_statement_events (fund_id, event_index, event_type, updated_at, payload)
-                VALUES ('fund', ?1, ?2, '2025-01-01T00:00:00+00:00', ?3)
-                "#,
-            )
-            .bind(event_index)
-            .bind(event_type)
-            .bind(payload)
-            .execute(&db)
-            .await
-            .unwrap();
-        }
-
-        let mut tx = db.begin().await.unwrap();
-        rebuild_fund_statement_derived_tables(&mut tx, "fund")
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-
-        let (orders_before,): (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM fund_statement_orders WHERE fund_id = 'fund'")
-                .fetch_one(&db)
-                .await
-                .unwrap();
-        let (investor_name, tax_mode): (String, String) = sqlx::query_as(
-            r#"
-            SELECT investor.name, mode.mode
-            FROM fund_statement_investors investor
-            CROSS JOIN fund_statement_tax_modes mode
-            WHERE investor.fund_id = 'fund' AND mode.fund_id = 'fund'
-            "#,
-        )
-        .fetch_one(&db)
-        .await
-        .unwrap();
-        assert_eq!(orders_before, 1);
-        assert_eq!(investor_name, "Alice");
-        assert_eq!(tax_mode, "taxation/v2");
-
-        let mut tx = db.begin().await.unwrap();
-        sqlx::query("DELETE FROM fund_statement_events WHERE fund_id = 'fund' AND event_index = 1")
-            .execute(&mut *tx)
-            .await
-            .unwrap();
-        rebuild_fund_statement_derived_tables(&mut tx, "fund")
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-
-        let (orders_after,): (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM fund_statement_orders WHERE fund_id = 'fund'")
-                .fetch_one(&db)
-                .await
-                .unwrap();
-        let (equity_after,): (f64,) =
-            sqlx::query_as("SELECT equity FROM fund_statement_equity WHERE fund_id = 'fund'")
-                .fetch_one(&db)
-                .await
-                .unwrap();
-
-        assert_eq!(orders_after, 0);
-        assert_close(equity_after, 150.0);
-    }
-
-    #[tokio::test]
-    async fn rejects_duplicate_statement_settlement_basis() {
-        let db = sqlx::sqlite::SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect("sqlite::memory:")
-            .await
-            .unwrap();
-        create_statement_write_test_tables(&db).await;
-        sqlx::query(
-            r#"
-            INSERT INTO fund_statement_events (fund_id, event_index, event_type, updated_at, payload)
-            VALUES (
-                'fund', 0, 'taxation/v2', '2025-01-01T00:00:00+00:00',
-                '{"type":"taxation/v2","settlement_model":"event_state_v1","basis_source":"live_nav","basis_id":"nav-1"}'
-            )
-            "#,
-        )
-        .execute(&db)
-        .await
-        .unwrap();
-
-        let basis = FundSettlementBasis {
-            source: "live_nav".to_string(),
-            id: "nav-1".to_string(),
-            equity: 150.0,
-            updated_at: "2025-01-01T00:00:00+00:00".to_string(),
-        };
-        let mut tx = db.begin().await.unwrap();
-
-        assert!(
-            reject_duplicate_statement_settlement(&mut tx, "fund", &basis)
-                .await
-                .is_err()
-        );
-    }
-
-    async fn create_statement_write_test_tables(db: &SqlitePool) {
-        sqlx::query(
-            r#"
-            CREATE TABLE fund_statement_events (
-                fund_id TEXT NOT NULL,
-                event_index INTEGER NOT NULL,
-                event_type TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                payload TEXT NOT NULL,
-                PRIMARY KEY (fund_id, event_index)
-            )
-            "#,
-        )
-        .execute(db)
-        .await
-        .unwrap();
-        sqlx::query(
-            r#"
-            CREATE TABLE fund_statement_equity (
-                fund_id TEXT NOT NULL,
-                event_index INTEGER NOT NULL,
-                equity REAL NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (fund_id, event_index)
-            )
-            "#,
-        )
-        .execute(db)
-        .await
-        .unwrap();
-        sqlx::query(
-            r#"
-            CREATE TABLE fund_statement_orders (
-                fund_id TEXT NOT NULL,
-                event_index INTEGER NOT NULL,
-                investor_name TEXT NOT NULL,
-                deposit REAL NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (fund_id, event_index)
-            )
-            "#,
-        )
-        .execute(db)
-        .await
-        .unwrap();
-        sqlx::query(
-            r#"
-            CREATE TABLE fund_statement_investors (
-                fund_id TEXT NOT NULL,
-                name TEXT NOT NULL,
-                referrer TEXT,
-                tax_rate REAL,
-                referrer_rebate_rate REAL,
-                tax_threshold REAL,
-                updated_at TEXT NOT NULL,
-                source_event_index INTEGER NOT NULL,
-                PRIMARY KEY (fund_id, name)
-            )
-            "#,
-        )
-        .execute(db)
-        .await
-        .unwrap();
-        sqlx::query(
-            r#"
-            CREATE TABLE fund_statement_tax_modes (
-                fund_id TEXT NOT NULL,
-                event_index INTEGER NOT NULL,
-                mode TEXT NOT NULL,
-                comment TEXT,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (fund_id, event_index)
-            )
-            "#,
-        )
-        .execute(db)
-        .await
-        .unwrap();
     }
 
     fn investor_rebate(

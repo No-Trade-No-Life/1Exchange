@@ -520,6 +520,59 @@ async fn migrate(db: &SqlitePool) -> anyhow::Result<()> {
 
     sqlx::query(
         r#"
+        CREATE TABLE IF NOT EXISTS fund_events (
+            fund_id TEXT NOT NULL,
+            event_index INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            occurred_at TEXT NOT NULL,
+            investor_id TEXT,
+            comment TEXT,
+            payload TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (fund_id, event_index)
+        )
+        "#,
+    )
+    .execute(db)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_fund_events_fund_type_index
+        ON fund_events (fund_id, event_type, event_index)
+        "#,
+    )
+    .execute(db)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_fund_events_fund_investor_index
+        ON fund_events (fund_id, investor_id, event_index)
+        "#,
+    )
+    .execute(db)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS fund_reducer_snapshots (
+            fund_id TEXT PRIMARY KEY NOT NULL,
+            last_event_index INTEGER NOT NULL,
+            state_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        "#,
+    )
+    .execute(db)
+    .await?;
+
+    migrate_fund_events(db).await?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS fund_statement_orders (
             fund_id TEXT NOT NULL,
             event_index INTEGER NOT NULL,
@@ -814,6 +867,8 @@ async fn migrate(db: &SqlitePool) -> anyhow::Result<()> {
     )
     .await?;
 
+    drop_legacy_fund_tables(db).await?;
+
     Ok(())
 }
 
@@ -833,6 +888,114 @@ async fn ensure_column(
 
     if !exists {
         sqlx::query(alter_statement).execute(db).await?;
+    }
+
+    Ok(())
+}
+
+async fn migrate_fund_events(db: &SqlitePool) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+        INSERT OR IGNORE INTO fund_events (
+            fund_id, event_index, event_type, occurred_at, investor_id, comment, payload,
+            created_at, updated_at
+        )
+        SELECT fund_id,
+               event_index,
+               CASE
+                   WHEN json_extract(payload, '$.fund_equity.equity') IS NOT NULL THEN 'fund_equity_set'
+                   WHEN json_extract(payload, '$.order.name') IS NOT NULL THEN 'cash_flow_recorded'
+                   WHEN json_extract(payload, '$.investor.add_tax_threshold') IS NOT NULL THEN 'tax_threshold_adjusted'
+                   WHEN json_extract(payload, '$.investor.name') IS NOT NULL THEN 'investor_profile_updated'
+                   WHEN json_extract(payload, '$.type') = 'taxation/v2' OR event_type = 'taxation/v2' THEN 'taxation_v2_applied'
+                   WHEN json_extract(payload, '$.type') = 'taxation' OR event_type = 'taxation' THEN 'taxation_v1_applied'
+               END AS migrated_event_type,
+               updated_at,
+               COALESCE(json_extract(payload, '$.order.name'), json_extract(payload, '$.investor.name')),
+               json_extract(payload, '$.comment'),
+               CASE
+                   WHEN json_extract(payload, '$.fund_equity.equity') IS NOT NULL
+                       THEN json_object('equity', json_extract(payload, '$.fund_equity.equity'))
+                   WHEN json_extract(payload, '$.order.name') IS NOT NULL
+                       THEN json_object('amount', json_extract(payload, '$.order.deposit'))
+                   WHEN json_extract(payload, '$.investor.add_tax_threshold') IS NOT NULL
+                       THEN json_object('amount', json_extract(payload, '$.investor.add_tax_threshold'))
+                   WHEN json_extract(payload, '$.investor.name') IS NOT NULL
+                       THEN json_object(
+                           'referrer_id', json_extract(payload, '$.investor.referrer'),
+                           'tax_rate', json_extract(payload, '$.investor.tax_rate'),
+                           'referrer_rebate_rate', json_extract(payload, '$.investor.referrer_rebate_rate')
+                       )
+                   ELSE '{}'
+               END,
+               CURRENT_TIMESTAMP,
+               CURRENT_TIMESTAMP
+        FROM fund_statement_events
+        WHERE migrated_event_type IS NOT NULL
+        "#,
+    )
+    .execute(db)
+    .await?;
+
+    sqlx::query(
+        r#"
+        WITH max_events AS (
+            SELECT fund_id, COALESCE(MAX(event_index), -1) AS max_event_index
+            FROM fund_events
+            GROUP BY fund_id
+        ),
+        nav_events AS (
+            SELECT n.fund_id,
+                   COALESCE(m.max_event_index, -1)
+                       + ROW_NUMBER() OVER (PARTITION BY n.fund_id ORDER BY n.created_at, n.id) AS event_index,
+                   n.created_at,
+                   n.equity
+            FROM fund_nav_snapshots n
+            LEFT JOIN max_events m ON m.fund_id = n.fund_id
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM fund_events e
+                WHERE e.fund_id = n.fund_id
+                  AND e.event_type = 'fund_equity_set'
+                  AND e.occurred_at = n.created_at
+                  AND json_extract(e.payload, '$.equity') = n.equity
+            )
+        )
+        INSERT OR IGNORE INTO fund_events (
+            fund_id, event_index, event_type, occurred_at, investor_id, comment, payload,
+            created_at, updated_at
+        )
+        SELECT fund_id,
+               event_index,
+               'fund_equity_set',
+               created_at,
+               NULL,
+               'Migrated NAV sample',
+               json_object('equity', equity),
+               CURRENT_TIMESTAMP,
+               CURRENT_TIMESTAMP
+        FROM nav_events
+        "#,
+    )
+    .execute(db)
+    .await?;
+
+    Ok(())
+}
+
+async fn drop_legacy_fund_tables(db: &SqlitePool) -> anyhow::Result<()> {
+    for table in [
+        "fund_nav_snapshots",
+        "fund_statement_events",
+        "fund_statement_orders",
+        "fund_statement_equity",
+        "fund_statement_investors",
+        "fund_statement_tax_modes",
+        "fund_settlement_runs",
+        "fund_settlement_investor_rows",
+    ] {
+        let sql = format!("DROP TABLE IF EXISTS {table}");
+        sqlx::query(&sql).execute(db).await?;
     }
 
     Ok(())

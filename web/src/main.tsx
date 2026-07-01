@@ -255,7 +255,9 @@ type FundStatementSummary = {
 type FundStatementEvent = {
   event_index: number;
   event_type: string;
-  updated_at: string;
+  occurred_at: string;
+  investor_id: string | null;
+  comment: string | null;
   payload: string;
 };
 
@@ -2305,11 +2307,13 @@ function FundDetailPage(props: {
         <InlineError message={eventActionError ?? props.eventsError} />
         <DataTable
           empty="No raw statement events are available for this fund."
-          headers={['Event', 'Time', 'Type', 'Payload', 'Action']}
+          headers={['Event', 'Time', 'Type', 'Investor', 'Comment', 'Payload', 'Action']}
           rows={events.map((item) => [
             '#' + item.event_index,
-            formatDate(item.updated_at),
+            formatDate(item.occurred_at),
             item.event_type,
+            item.investor_id ?? '-',
+            item.comment ?? '-',
             <code className="event-payload-preview" key="payload">{eventPayloadPreview(item.payload)}</code>,
             <div className="flex items-center gap-2" key="action">
               <Button size="sm" variant="outline" type="button" onClick={() => setEditingEvent(item)}>
@@ -2494,14 +2498,18 @@ function FundStatementEventDialog(props: {
 }) {
   const queryClient = useQueryClient();
   const [eventType, setEventType] = useState('');
-  const [updatedAt, setUpdatedAt] = useState('');
+  const [occurredAt, setOccurredAt] = useState('');
+  const [investorId, setInvestorId] = useState('');
+  const [comment, setComment] = useState('');
   const [payloadText, setPayloadText] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     setEventType(props.event?.event_type ?? '');
-    setUpdatedAt(props.event?.updated_at ?? '');
+    setOccurredAt(props.event?.occurred_at ?? '');
+    setInvestorId(props.event?.investor_id ?? '');
+    setComment(props.event?.comment ?? '');
     setPayloadText(props.event ? prettyJsonText(props.event.payload) : '');
     setError(null);
   }, [props.event]);
@@ -2523,7 +2531,9 @@ function FundStatementEventDialog(props: {
           fund_id: props.fundId,
           event_index: props.event.event_index,
           event_type: eventType,
-          updated_at: updatedAt,
+          occurred_at: occurredAt,
+          investor_id: investorId || null,
+          comment: comment || null,
           payload,
         }),
       });
@@ -2552,8 +2562,16 @@ function FundStatementEventDialog(props: {
             <Input required value={eventType} onChange={(event) => setEventType(event.target.value)} />
           </label>
           <label>
-            Updated at
-            <Input required value={updatedAt} onChange={(event) => setUpdatedAt(event.target.value)} />
+            Occurred at
+            <Input required value={occurredAt} onChange={(event) => setOccurredAt(event.target.value)} />
+          </label>
+          <label>
+            Investor ID
+            <Input value={investorId} onChange={(event) => setInvestorId(event.target.value)} />
+          </label>
+          <label>
+            Comment
+            <Input value={comment} onChange={(event) => setComment(event.target.value)} />
           </label>
           <label>
             Payload JSON
