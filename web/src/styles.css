@@ -192,6 +192,10 @@
     @apply min-h-80 w-full resize-y rounded-lg border border-input bg-transparent px-3 py-2 font-mono text-xs text-foreground outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50;
   }
 
+  .event-pagination {
+    @apply flex flex-wrap items-center justify-between gap-3 border-b px-5 py-3 text-sm text-muted-foreground;
+  }
+
   .credential-field-grid,
   .account-detail-grid,
   .schema-grid,

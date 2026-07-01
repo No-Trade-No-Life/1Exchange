@@ -259,6 +259,13 @@ type FundStatementEvent = {
   payload: string;
 };
 
+type FundStatementEventPage = {
+  events: FundStatementEvent[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
 type FundStatementTotals = {
   events: number;
   orders: number;
@@ -1271,17 +1278,25 @@ function FundsRoute() {
 function FundDetailRoute() {
   const [params] = useSearchParams();
   const fundId = params.get('fund_id') ?? '';
+  const [eventOffset, setEventOffset] = useState(0);
+  const eventLimit = 100;
   const funds = useJson<FundConfig[]>('/api/funds');
   const nav = useJson<FundNavSnapshot[]>(fundId ? `/api/fund-nav?fund_id=${encodeURIComponent(fundId)}&limit=100` : null);
-  const events = useJson<FundStatementEvent[]>(fundId ? `/api/fund-statement-events?fund_id=${encodeURIComponent(fundId)}` : null);
+  const events = useJson<FundStatementEventPage>(fundId ? `/api/fund-statement-events?fund_id=${encodeURIComponent(fundId)}&limit=${eventLimit}&offset=${eventOffset}` : null);
   const statements = useJson<FundStatementSummary>(fundId ? `/api/fund-statements?fund_id=${encodeURIComponent(fundId)}` : null);
   const settlement = useJson<FundSettlementPreview>(fundId ? `/api/fund-settlement-preview?fund_id=${encodeURIComponent(fundId)}` : null);
+
+  useEffect(() => {
+    setEventOffset(0);
+  }, [fundId]);
 
   return (
     <RefreshScope resources={[funds, nav, events, statements, settlement]}>
       <FundDetailPage
         configs={funds.data ?? emptyFundConfigs}
-        events={events.data ?? []}
+        eventLimit={eventLimit}
+        eventOffset={eventOffset}
+        eventPage={events.data ?? null}
         eventsError={events.error}
         fundId={fundId}
         loading={funds.loading || nav.loading || events.loading || statements.loading || settlement.loading}
@@ -1291,6 +1306,7 @@ function FundDetailRoute() {
         statementError={statements.error}
         statementSummary={statements.data ?? null}
         snapshots={nav.data ?? []}
+        onEventOffsetChange={setEventOffset}
       />
     </RefreshScope>
   );
@@ -2012,7 +2028,9 @@ function FundListPage(props: {
 
 function FundDetailPage(props: {
   configs: FundConfig[];
-  events: FundStatementEvent[];
+  eventLimit: number;
+  eventOffset: number;
+  eventPage: FundStatementEventPage | null;
   eventsError: string | null;
   fundId: string;
   loading: boolean;
@@ -2022,6 +2040,7 @@ function FundDetailPage(props: {
   statementError: string | null;
   statementSummary: FundStatementSummary | null;
   snapshots: FundNavSnapshot[];
+  onEventOffsetChange: (offset: number) => void;
 }) {
   const queryClient = useQueryClient();
   const [settlementConfirmError, setSettlementConfirmError] = useState<string | null>(null);
@@ -2031,6 +2050,12 @@ function FundDetailPage(props: {
   const [eventActioning, setEventActioning] = useState<number | null>(null);
   const fund = props.configs.find((item) => item.id === props.fundId);
   const latestSnapshot = props.snapshots[0];
+  const events = props.eventPage?.events ?? [];
+  const eventTotal = props.eventPage?.total ?? 0;
+  const eventPageStart = eventTotal === 0 ? 0 : props.eventOffset + 1;
+  const eventPageEnd = Math.min(props.eventOffset + events.length, eventTotal);
+  const hasPreviousEvents = props.eventOffset > 0;
+  const hasNextEvents = props.eventOffset + props.eventLimit < eventTotal;
   const statement = props.statementSummary;
   const settlement = props.settlementPreview;
   const confirmSettlementDisabled = settlementConfirming || !settlement?.basis;
@@ -2080,6 +2105,9 @@ function FundDetailPage(props: {
       );
       if (!response.ok) {
         throw new Error(await responseErrorMessage(response));
+      }
+      if (events.length === 1 && props.eventOffset > 0) {
+        props.onEventOffsetChange(Math.max(0, props.eventOffset - props.eventLimit));
       }
       await queryClient.invalidateQueries({ queryKey: ['json'] });
     } catch (error) {
@@ -2261,13 +2289,24 @@ function FundDetailPage(props: {
         <PanelTitle
           label="Statement history"
           title="Raw events"
-          action={props.events.length + ' events'}
+          action={eventTotal + ' events'}
         />
+        <div className="event-pagination">
+          <span>{eventPageStart}-{eventPageEnd} / {eventTotal}</span>
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="outline" type="button" disabled={!hasPreviousEvents} onClick={() => props.onEventOffsetChange(Math.max(0, props.eventOffset - props.eventLimit))}>
+              Previous
+            </Button>
+            <Button size="sm" variant="outline" type="button" disabled={!hasNextEvents} onClick={() => props.onEventOffsetChange(props.eventOffset + props.eventLimit)}>
+              Next
+            </Button>
+          </div>
+        </div>
         <InlineError message={eventActionError ?? props.eventsError} />
         <DataTable
           empty="No raw statement events are available for this fund."
           headers={['Event', 'Time', 'Type', 'Payload', 'Action']}
-          rows={props.events.map((item) => [
+          rows={events.map((item) => [
             '#' + item.event_index,
             formatDate(item.updated_at),
             item.event_type,

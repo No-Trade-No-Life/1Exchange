@@ -69,6 +69,8 @@ pub struct FundStatementQuery {
 pub struct FundStatementEventQuery {
     fund_id: String,
     event_index: Option<i64>,
+    limit: Option<i64>,
+    offset: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -129,6 +131,14 @@ pub struct FundStatementEvent {
     event_type: String,
     updated_at: String,
     payload: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FundStatementEventPage {
+    events: Vec<FundStatementEvent>,
+    total: i64,
+    limit: i64,
+    offset: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -617,23 +627,38 @@ pub async fn list_fund_statement_events(
     State(state): State<AppState>,
     headers: HeaderMap,
     axum::extract::Query(query): axum::extract::Query<FundStatementEventQuery>,
-) -> Result<Json<Vec<FundStatementEvent>>, AppError> {
+) -> Result<Json<FundStatementEventPage>, AppError> {
     let user = auth::require_initialized_user(&state, &headers).await?;
     get_fund_config(&state.db, &user.user_id, &query.fund_id).await?;
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    let offset = query.offset.unwrap_or(0).max(0);
 
-    Ok(Json(
-        sqlx::query_as::<_, FundStatementEvent>(
-            r#"
+    let (total,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM fund_statement_events WHERE fund_id = ?1")
+            .bind(&query.fund_id)
+            .fetch_one(&state.db)
+            .await?;
+    let events = sqlx::query_as::<_, FundStatementEvent>(
+        r#"
             SELECT event_index, event_type, updated_at, payload
             FROM fund_statement_events
             WHERE fund_id = ?1
             ORDER BY event_index DESC
+            LIMIT ?2 OFFSET ?3
             "#,
-        )
-        .bind(&query.fund_id)
-        .fetch_all(&state.db)
-        .await?,
-    ))
+    )
+    .bind(&query.fund_id)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(&state.db)
+    .await?;
+
+    Ok(Json(FundStatementEventPage {
+        events,
+        total,
+        limit,
+        offset,
+    }))
 }
 
 pub async fn update_fund_statement_event(
