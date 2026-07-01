@@ -231,7 +231,7 @@ npm --prefix web run dev
 
 ## 持续部署
 
-推送到 `main` 后，`Deploy Production` GitHub Actions 会构建 Web UI 和 Rust Server，并通过 SSH 部署到 AWS EC2 `1ex-prod`。部署目录固定为 `/opt/one-exchange`，服务由 systemd 的 `one-exchange.service` 管理，监听 `127.0.0.1:8787`。
+推送到 `main` 后，`Deploy Production` GitHub Actions 会构建 Web UI 和 Rust Server，并通过 SSH 部署到 AWS EC2 `1ex-prod`。部署目录固定为 `/opt/one-exchange`，数据目录固定为 `/var/lib/1exchange`，服务由 systemd 的 `one-exchange.service` 管理，监听 `127.0.0.1:8787`。
 
 需要在 GitHub Environment `1ex-prod` 配置以下 secrets：
 

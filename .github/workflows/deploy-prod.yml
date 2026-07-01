@@ -17,6 +17,7 @@ permissions:
 env:
   ARCHIVE_NAME: one-exchange-linux-x86_64.tar.gz
   AWS_REGION: ap-southeast-1
+  DATA_DIR: /var/lib/1exchange
   DEPLOY_DIR: /opt/one-exchange
   EC2_SECURITY_GROUP_ID: sg-09f054eb18d2e0569
   SERVICE_NAME: one-exchange
@@ -93,11 +94,13 @@ jobs:
       - name: Activate release
         run: |
           ssh -i ~/.ssh/1ex-prod "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}" \
-            "GITHUB_SHA='$GITHUB_SHA' DEPLOY_DIR='$DEPLOY_DIR' SERVICE_NAME='$SERVICE_NAME' ARCHIVE_NAME='$ARCHIVE_NAME' DEPLOY_USER='${{ secrets.EC2_USER }}' bash -s" <<'REMOTE'
+            "GITHUB_SHA='$GITHUB_SHA' DATA_DIR='$DATA_DIR' DEPLOY_DIR='$DEPLOY_DIR' SERVICE_NAME='$SERVICE_NAME' ARCHIVE_NAME='$ARCHIVE_NAME' DEPLOY_USER='${{ secrets.EC2_USER }}' bash -s" <<'REMOTE'
           set -euo pipefail
 
           release_dir="$DEPLOY_DIR/releases/$GITHUB_SHA"
 
+          sudo mkdir -p "$DATA_DIR"
+          sudo chown "$DEPLOY_USER:$DEPLOY_USER" "$DATA_DIR"
           sudo mkdir -p "$release_dir"
           sudo tar -xzf "/tmp/$ARCHIVE_NAME" -C "$release_dir" --strip-components=1
           sudo ln -sfn "$release_dir" "$DEPLOY_DIR/current"
@@ -114,6 +117,7 @@ jobs:
           User=$DEPLOY_USER
           WorkingDirectory=$DEPLOY_DIR/current
           Environment=ONE_EXCHANGE_ADDR=127.0.0.1:8787
+          Environment=ONE_EXCHANGE_HOME=$DATA_DIR
           Environment=ONE_EXCHANGE_VITE=0
           ExecStart=$DEPLOY_DIR/current/one-exchange
           Restart=always
@@ -125,6 +129,7 @@ jobs:
 
           sudo mv /tmp/one-exchange.service "/etc/systemd/system/$SERVICE_NAME.service"
           sudo systemctl daemon-reload
+          sudo pkill -f /opt/1exchange/current/target/release/one-exchange || true
           sudo systemctl enable "$SERVICE_NAME"
           sudo systemctl restart "$SERVICE_NAME"
           sudo systemctl --no-pager --full status "$SERVICE_NAME"
