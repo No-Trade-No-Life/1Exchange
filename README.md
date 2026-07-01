@@ -228,3 +228,16 @@ npm --prefix web run dev
 ```
 
 生产期目标是一条命令启动 Rust Server，并由 Rust Server 托管 `web/dist` 静态资源。
+
+## 持续部署
+
+推送到 `main` 后，`Deploy Production` GitHub Actions 会构建 Web UI 和 Rust Server，并通过 SSH 部署到 AWS EC2 `1ex-prod`。部署目录固定为 `/opt/one-exchange`，服务由 systemd 的 `one-exchange.service` 管理，监听 `127.0.0.1:8787`。
+
+需要在 GitHub Environment `1ex-prod` 配置以下 secrets：
+
+- `EC2_HOST`：EC2 公网 IP 或 DNS。
+- `EC2_USER`：SSH 用户，例如 `ubuntu`。
+- `EC2_SSH_KEY`：可登录该实例的私钥。
+- `EC2_SSH_HOST_KEY`：实例的 SSH host key known_hosts 行。
+
+`EC2_USER` 需要能免交互执行 `sudo mkdir`、`sudo tar`、`sudo mv`、`sudo systemctl` 和 `sudo rm`。首次部署会创建 `/opt/one-exchange/current`，写入 `/etc/systemd/system/one-exchange.service`，之后每次部署会切换到新的 release 并重启服务。

@@ -1,0 +1,118 @@
+name: Deploy Production
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-1ex-prod
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  ARCHIVE_NAME: one-exchange-linux-x86_64.tar.gz
+  DEPLOY_DIR: /opt/one-exchange
+  SERVICE_NAME: one-exchange
+
+jobs:
+  deploy:
+    name: Deploy to 1ex-prod
+    runs-on: ubuntu-latest
+    environment: 1ex-prod
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Build Vite app
+        working-directory: web
+        run: npm run build
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Rust server
+        run: cargo build --release
+
+      - name: Package release artifact
+        run: |
+          mkdir -p release/one-exchange-linux-x86_64/web
+          cp target/release/one-exchange release/one-exchange-linux-x86_64/
+          cp -R web/dist release/one-exchange-linux-x86_64/web/dist
+          tar -C release -czf "$ARCHIVE_NAME" one-exchange-linux-x86_64
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/1ex-prod
+          printf '%s\n' "${{ secrets.EC2_SSH_HOST_KEY }}" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/1ex-prod
+
+      - name: Upload artifact
+        run: |
+          scp -i ~/.ssh/1ex-prod "$ARCHIVE_NAME" \
+            "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/tmp/$ARCHIVE_NAME"
+
+      - name: Activate release
+        run: |
+          ssh -i ~/.ssh/1ex-prod "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}" \
+            "GITHUB_SHA='$GITHUB_SHA' DEPLOY_DIR='$DEPLOY_DIR' SERVICE_NAME='$SERVICE_NAME' ARCHIVE_NAME='$ARCHIVE_NAME' DEPLOY_USER='${{ secrets.EC2_USER }}' bash -s" <<'REMOTE'
+          set -euo pipefail
+
+          release_dir="$DEPLOY_DIR/releases/$GITHUB_SHA"
+
+          sudo mkdir -p "$release_dir"
+          sudo tar -xzf "/tmp/$ARCHIVE_NAME" -C "$release_dir" --strip-components=1
+          sudo ln -sfn "$release_dir" "$DEPLOY_DIR/current"
+          sudo chown -R "$DEPLOY_USER:$DEPLOY_USER" "$release_dir"
+
+          cat > /tmp/one-exchange.service <<UNIT
+          [Unit]
+          Description=1Exchange
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          User=$DEPLOY_USER
+          WorkingDirectory=$DEPLOY_DIR/current
+          Environment=ONE_EXCHANGE_ADDR=127.0.0.1:8787
+          Environment=ONE_EXCHANGE_VITE=0
+          ExecStart=$DEPLOY_DIR/current/one-exchange
+          Restart=always
+          RestartSec=5
+
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+
+          sudo mv /tmp/one-exchange.service "/etc/systemd/system/$SERVICE_NAME.service"
+          sudo systemctl daemon-reload
+          sudo systemctl enable "$SERVICE_NAME"
+          sudo systemctl restart "$SERVICE_NAME"
+          sudo systemctl --no-pager --full status "$SERVICE_NAME"
+
+          find "$DEPLOY_DIR/releases" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' \
+            | sort -rn \
+            | tail -n +6 \
+            | cut -d' ' -f2- \
+            | xargs -r sudo rm -rf
+
+          rm -f "/tmp/$ARCHIVE_NAME"
+          REMOTE
