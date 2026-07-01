@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use hmac::{Hmac, Mac};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
@@ -14,6 +14,7 @@ pub const ID: &str = "BITGET";
 pub const REQUIRED_FIELDS: &[&str] = &["access_key", "secret_key", "passphrase"];
 const BASE_URL: &str = "https://api.bitget.com";
 const ACCOUNT_ASSETS_PATH: &str = "/api/v3/account/assets";
+const ACCOUNT_SETTINGS_PATH: &str = "/api/v3/account/settings";
 const INSTRUMENTS_URL: &str = "https://api.bitget.com/api/v3/market/instruments";
 const CURRENT_POSITION_PATH: &str = "/api/v3/position/current-position";
 const TRADE_FILLS_PATH: &str = "/api/v3/trade/fills";
@@ -62,18 +63,8 @@ impl ExchangeAdapter for Adapter {
     }
 
     async fn get_account_id(&self, credential: &Value) -> anyhow::Result<String> {
-        let response = bitget_get(credential, ACCOUNT_ASSETS_PATH, &[]).await?;
-        let user_id = response
-            .get("data")
-            .map(|data| common::text_value(data, "userId"))
-            .unwrap_or_default();
-        let uid = if user_id.is_empty() {
-            // COMPATIBILITY: Bitget UTA assets may omit userId for some keys.
-            // Use a stable non-secret local surrogate until the API exposes UID.
-            access_key_fingerprint(credential)
-        } else {
-            user_id
-        };
+        let response = bitget_get(credential, ACCOUNT_SETTINGS_PATH, &[]).await?;
+        let uid = bitget_account_uid(&response)?;
 
         Ok(common::account_id(ID, uid))
     }
@@ -147,9 +138,14 @@ impl ExchangeAdapter for Adapter {
     }
 }
 
-fn access_key_fingerprint(credential: &Value) -> String {
-    let digest = Sha256::digest(common::str_value(credential, "access_key").as_bytes());
-    format!("key:{}", &hex::encode(digest)[..12])
+fn bitget_account_uid(response: &Value) -> anyhow::Result<String> {
+    let uid = response
+        .get("data")
+        .map(|data| common::text_value(data, "uid"))
+        .unwrap_or_default();
+    anyhow::ensure!(!uid.is_empty(), "Bitget account uid is missing");
+
+    Ok(uid)
 }
 
 async fn bitget_get(
@@ -395,5 +391,32 @@ fn map_product(category: &str, row: &Value) -> Product {
         market_id: Some(format!("{ID}/{category}")),
         no_interest_rate: Some(category == "SPOT"),
         spread: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn bitget_account_uid_reads_settings_uid() {
+        let response = json!({
+            "data": {
+                "uid": 6893877321_u64
+            }
+        });
+
+        assert_eq!(bitget_account_uid(&response).unwrap(), "6893877321");
+    }
+
+    #[test]
+    fn bitget_account_uid_requires_uid() {
+        let response = json!({
+            "data": {}
+        });
+
+        assert!(bitget_account_uid(&response).is_err());
     }
 }
