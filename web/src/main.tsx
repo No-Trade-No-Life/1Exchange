@@ -510,6 +510,24 @@ const queryClient = new QueryClient({
   },
 });
 
+type AuthContextValue = {
+  authError: string | null;
+  authReady: boolean;
+  isAdmin: boolean;
+  login: () => void;
+  logout: () => void;
+  user: AuthUser | null;
+};
+
+const AuthContext = React.createContext<AuthContextValue>({
+  authError: null,
+  authReady: false,
+  isAdmin: false,
+  login: () => undefined,
+  logout: () => undefined,
+  user: null,
+});
+
 function apiFetch(input: string | URL, init: RequestInit = {}) {
   const headers = new Headers(init.headers);
   if (currentAccessToken) {
@@ -616,7 +634,6 @@ function AuthGate(props: { children: React.ReactNode }) {
       setAuthConfig(nextAuthConfig);
       if (!session) {
         currentAccessToken = null;
-        redirectToAuthMini(nextAuthConfig.auth_mini_base_url);
         return;
       }
       currentAccessToken = session.access_token;
@@ -633,7 +650,6 @@ function AuthGate(props: { children: React.ReactNode }) {
           setSession(null);
           setUser(null);
           setSetup(null);
-          redirectToAuthMini(nextAuthConfig.auth_mini_base_url);
         }
       }
     }
@@ -647,15 +663,18 @@ function AuthGate(props: { children: React.ReactNode }) {
     };
   }, [session]);
 
-  function signOut() {
+  function login() {
+    if (authConfig) {
+      redirectToAuthMini(authConfig.auth_mini_base_url);
+    }
+  }
+
+  function logout() {
     clearAuthSession(authConfig?.auth_mini_base_url ?? null);
     queryClient.clear();
     setSession(null);
     setUser(null);
     setSetup(null);
-    if (authConfig) {
-      redirectToAuthMini(authConfig.auth_mini_base_url);
-    }
   }
 
   async function initialize() {
@@ -677,16 +696,9 @@ function AuthGate(props: { children: React.ReactNode }) {
 
   if (user && setup?.initialized) {
     return (
-      <>
-        <div className="border-b bg-background px-7 py-2 text-sm text-muted-foreground max-md:px-4">
-          <div className="mx-auto flex w-full max-w-[1600px] items-center gap-3">
-            <span className="min-w-0 truncate">Signed in as {user.email}</span>
-            {setup.is_admin ? <UiBadge variant="secondary">Admin</UiBadge> : null}
-            <Button className="ml-auto" size="sm" type="button" variant="outline" onClick={signOut}>Sign out</Button>
-          </div>
-        </div>
+      <AuthContext.Provider value={{ authError: error, authReady: authConfig !== null, isAdmin: setup.is_admin, login, logout, user }}>
         {props.children}
-      </>
+      </AuthContext.Provider>
     );
   }
 
@@ -709,7 +721,7 @@ function AuthGate(props: { children: React.ReactNode }) {
               <Button disabled={busy || setup === null} type="button" onClick={() => void initialize()}>
                 {busy ? 'Initializing...' : 'Initialize'}
               </Button>
-              <Button variant="outline" type="button" onClick={signOut}>Sign out</Button>
+              <Button variant="outline" type="button" onClick={logout}>Sign out</Button>
             </div>
           </CardContent>
         </Card>
@@ -718,22 +730,9 @@ function AuthGate(props: { children: React.ReactNode }) {
   }
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-md flex-col justify-center px-4">
-      <Card>
-        <CardHeader>
-          <CardTitle>Opening Auth Mini</CardTitle>
-          <CardDescription>{authConfig?.auth_mini_base_url ?? 'Loading auth settings...'}</CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-3">
-          <InlineError message={error} />
-          {authConfig ? (
-            <Button type="button" onClick={() => redirectToAuthMini(authConfig.auth_mini_base_url)}>
-              Continue to Auth Mini
-            </Button>
-          ) : null}
-        </CardContent>
-      </Card>
-    </main>
+    <AuthContext.Provider value={{ authError: error, authReady: authConfig !== null, isAdmin: false, login, logout, user: null }}>
+      {props.children}
+    </AuthContext.Provider>
   );
 }
 
@@ -852,6 +851,9 @@ function currentAuthParams() {
   if (hashQuery >= 0) {
     const hashParams = new URLSearchParams(window.location.hash.slice(hashQuery + 1));
     hashParams.forEach((value, key) => params.set(key, value));
+  } else if (window.location.hash.includes('=')) {
+    const hashParams = new URLSearchParams(window.location.hash.slice(1));
+    hashParams.forEach((value, key) => params.set(key, value));
   }
   return params;
 }
@@ -943,6 +945,7 @@ function App() {
 
 function AppHeader(props: { healthStatus: string; page: PageConfig }) {
   const CurrentIcon = props.page.icon;
+  const auth = React.useContext(AuthContext);
 
   return (
     <header className="sticky top-0 z-40 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
@@ -963,6 +966,15 @@ function AppHeader(props: { healthStatus: string; page: PageConfig }) {
 
         <div className="ml-auto flex items-center gap-2">
           <UiBadge className="hidden sm:inline-flex" variant={props.healthStatus === 'ok' ? 'secondary' : 'outline'}>API {props.healthStatus}</UiBadge>
+          {auth.user ? (
+            <>
+              <UiBadge className="hidden max-w-64 truncate sm:inline-flex" variant="outline">{auth.user.email}</UiBadge>
+              {auth.isAdmin ? <UiBadge className="hidden sm:inline-flex" variant="secondary">Admin</UiBadge> : null}
+              <Button size="sm" type="button" variant="outline" onClick={auth.logout}>Sign out</Button>
+            </>
+          ) : (
+            <Button disabled={!auth.authReady} size="sm" type="button" onClick={auth.login}>Sign in</Button>
+          )}
           <DropdownNavigation currentPage={props.page} />
         </div>
       </div>
