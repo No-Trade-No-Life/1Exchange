@@ -119,7 +119,7 @@ async fn main() -> anyhow::Result<()> {
             get(credentials::list_credentials).post(credentials::create_credential),
         )
         .route(
-            "/credentials/:credential_id",
+            "/credentials/{credential_id}",
             delete(credentials::delete_credential),
         )
         .route(
