@@ -2828,7 +2828,7 @@ function CredentialInventory(props: { accountIds: AccountIds; credentials: Crede
     setDeletingId(credential.id);
     setError(null);
     try {
-      const response = await apiFetch(`/api/credentials/${encodeURIComponent(credential.id)}`, { method: 'DELETE' });
+      const response = await apiFetch(`/api/credentials?credential_id=${encodeURIComponent(credential.id)}`, { method: 'DELETE' });
       if (!response.ok) {
         throw new Error(await responseErrorMessage(response));
       }

@@ -1,6 +1,6 @@
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Query, State},
     http::{HeaderMap, StatusCode},
 };
 use serde::{Deserialize, Serialize};
@@ -18,6 +18,11 @@ pub struct CreateCredentialRequest {
     pub exchange: String,
     pub name: String,
     pub payload: Value,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeleteCredentialQuery {
+    pub credential_id: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -102,7 +107,7 @@ pub async fn create_credential(
 pub async fn delete_credential(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(id): Path<String>,
+    Query(query): Query<DeleteCredentialQuery>,
 ) -> Result<StatusCode, AppError> {
     let user = auth::require_initialized_user(&state, &headers).await?;
     sqlx::query(
@@ -111,7 +116,7 @@ pub async fn delete_credential(
         WHERE id = ?1 AND owner_id = ?2
         "#,
     )
-    .bind(id)
+    .bind(query.credential_id)
     .bind(&user.user_id)
     .execute(&state.db)
     .await?;
