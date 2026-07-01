@@ -1,0 +1,61 @@
+name: Release Latest
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux-x86:
+    name: Build Linux x86_64 release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Build Vite app
+        working-directory: web
+        run: npm run build
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Rust server
+        run: cargo build --release
+
+      - name: Package release artifact
+        run: |
+          mkdir -p release/one-exchange-linux-x86_64
+          cp target/release/one-exchange release/one-exchange-linux-x86_64/
+          cp -R web/dist release/one-exchange-linux-x86_64/web-dist
+          tar -C release -czf one-exchange-linux-x86_64.tar.gz one-exchange-linux-x86_64
+          sha256sum one-exchange-linux-x86_64.tar.gz > one-exchange-linux-x86_64.tar.gz.sha256
+
+      - name: Move latest tag
+        run: |
+          git tag --force latest "$GITHUB_SHA"
+          git push origin refs/tags/latest --force
+
+      - name: Upload artifact to latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view latest >/dev/null 2>&1 || gh release create latest --title latest --notes "Automated latest build from main." --target "$GITHUB_SHA"
+          gh release upload latest one-exchange-linux-x86_64.tar.gz one-exchange-linux-x86_64.tar.gz.sha256 --clobber
