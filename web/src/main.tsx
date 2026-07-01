@@ -2537,43 +2537,39 @@ function FundUnitPriceCandlestickChart(props: { candles: FundUnitPriceCandle[] }
       return;
     }
 
-    const styles = getComputedStyle(container);
-    const foreground = styles.getPropertyValue('--foreground').trim();
-    const muted = styles.getPropertyValue('--muted-foreground').trim();
-    const border = styles.getPropertyValue('--border').trim();
-    const background = styles.getPropertyValue('--background').trim();
+    const palette = lightweightChartPalette(container);
     const chart = createChart(container, {
       autoSize: true,
       height: 320,
       layout: {
-        background: { color: background },
-        textColor: muted,
+        background: { color: palette.background },
+        textColor: palette.muted,
       },
       grid: {
-        vertLines: { color: border },
-        horzLines: { color: border },
+        vertLines: { color: palette.border },
+        horzLines: { color: palette.border },
       },
       rightPriceScale: {
-        borderColor: border,
+        borderColor: palette.border,
         scaleMargins: { top: 0.12, bottom: 0.12 },
       },
       timeScale: {
-        borderColor: border,
+        borderColor: palette.border,
         timeVisible: false,
         secondsVisible: false,
       },
       crosshair: {
-        vertLine: { color: muted },
-        horzLine: { color: muted },
+        vertLine: { color: palette.muted },
+        horzLine: { color: palette.muted },
       },
     });
     const series = chart.addSeries(CandlestickSeries, {
-      upColor: foreground,
-      downColor: muted,
-      borderUpColor: foreground,
-      borderDownColor: muted,
-      wickUpColor: foreground,
-      wickDownColor: muted,
+      upColor: palette.foreground,
+      downColor: palette.muted,
+      borderUpColor: palette.foreground,
+      borderDownColor: palette.muted,
+      wickUpColor: palette.foreground,
+      wickDownColor: palette.muted,
       priceFormat: {
         type: 'price',
         precision: 6,
@@ -2606,6 +2602,23 @@ function FundUnitPriceCandlestickChart(props: { candles: FundUnitPriceCandle[] }
       </div>
     </div>
   );
+}
+
+function lightweightChartPalette(container: HTMLElement) {
+  const dark = container.closest('.dark') !== null;
+  return dark
+    ? {
+      background: '#1f1f1f',
+      foreground: '#fafafa',
+      muted: '#b5b5b5',
+      border: 'rgba(255,255,255,0.1)',
+    }
+    : {
+      background: '#ffffff',
+      foreground: '#252525',
+      muted: '#737373',
+      border: '#e5e5e5',
+    };
 }
 
 function FundStatementEventDialog(props: {
