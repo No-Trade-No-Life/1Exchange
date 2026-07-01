@@ -37,6 +37,7 @@ impl ExchangeAdapter for Adapter {
         Ok(spot_tokens
             .into_iter()
             .map(map_spot_product)
+            .chain(std::iter::once(map_perp_asset_product()))
             .chain(perp_universe.into_iter().map(map_perp_product))
             .collect())
     }
@@ -87,9 +88,13 @@ impl ExchangeAdapter for Adapter {
             .unwrap_or_default();
 
         let mut positions: Vec<Position> = perp_rows
-            .into_iter()
+            .iter()
+            .cloned()
             .filter_map(map_perp_position)
             .collect();
+        if let Some(position) = map_perp_asset(&perp, &perp_rows) {
+            positions.push(position);
+        }
         positions.extend(
             spot_rows
                 .into_iter()
@@ -196,6 +201,56 @@ fn map_perp_product(row: Value) -> Product {
     }
 }
 
+fn map_perp_asset_product() -> Product {
+    Product {
+        datasource_id: ID.to_string(),
+        product_id: format!("{ID}/PERP-ASSET/USDC"),
+        name: Some("USDC Perp Collateral".to_string()),
+        quote_currency: Some("USDC".to_string()),
+        base_currency: Some("USDC".to_string()),
+        price_step: Some(0.000001),
+        volume_step: Some(0.000001),
+        value_scale: Some(1.0),
+        margin_rate: Some(1.0),
+        allow_long: Some(true),
+        allow_short: Some(false),
+        market_id: Some(format!("{ID}/PERPETUAL")),
+        no_interest_rate: Some(true),
+        ..Product::default()
+    }
+}
+
+fn map_perp_asset(perp: &Value, perp_rows: &[Value]) -> Option<Position> {
+    let account_value = perp
+        .get("marginSummary")
+        .map(|summary| common::f64_value(summary, "accountValue"))?;
+    let unrealized_pnl = perp_rows
+        .iter()
+        .map(|row| common::f64_value(&row["position"], "unrealizedPnl"))
+        .sum::<f64>();
+    let volume = account_value - unrealized_pnl;
+    if volume == 0.0 {
+        return None;
+    }
+
+    Some(Position {
+        position_id: "USDC/ASSET".to_string(),
+        product_id: format!("{ID}/PERP-ASSET/USDC"),
+        base_currency: Some("USDC".to_string()),
+        quote_currency: Some("USDC".to_string()),
+        direction: None,
+        volume,
+        free_volume: volume,
+        position_price: 0.0,
+        closable_price: 1.0,
+        notional_value: volume,
+        notional_currency: Some("USDC".to_string()),
+        floating_profit: 0.0,
+        comment: Some("Hyperliquid perpetual account USDC collateral".to_string()),
+        ..Position::default()
+    })
+}
+
 fn map_perp_position(row: Value) -> Option<Position> {
     let position = row.get("position")?;
     let coin = common::str_value(position, "coin");
@@ -296,5 +351,28 @@ fn hyperliquid_fill_direction(side: &str) -> Option<PositionDirection> {
         "B" | "buy" => Some(PositionDirection::Long),
         "A" | "sell" => Some(PositionDirection::Short),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_perp_usdc_collateral_without_unrealized_pnl() {
+        let perp = json!({
+            "marginSummary": { "accountValue": "91408.092753" }
+        });
+        let rows = vec![
+            json!({ "position": { "unrealizedPnl": "17.296029" } }),
+            json!({ "position": { "unrealizedPnl": "56894.1617" } }),
+        ];
+
+        let position = map_perp_asset(&perp, &rows).unwrap();
+
+        assert_eq!(position.position_id, "USDC/ASSET");
+        assert_eq!(position.product_id, "HYPERLIQUID/PERP-ASSET/USDC");
+        assert!((position.volume - 34496.635024).abs() < 0.000001);
+        assert_eq!(position.notional_currency.as_deref(), Some("USDC"));
     }
 }
