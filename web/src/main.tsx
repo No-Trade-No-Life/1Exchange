@@ -499,7 +499,7 @@ const emptyCredentials: Credential[] = [];
 const emptyVirtualAccountConfigs: VirtualAccountConfig[] = [];
 const emptyFundConfigs: FundConfig[] = [];
 const authSessionStorageKey = 'one-exchange.auth-mini.session.v1';
-const authReturnStorageKey = 'one-exchange.auth-mini.return-to.v1';
+const authStateStoragePrefix = 'one-exchange.auth-mini.state.v1.';
 let currentAccessToken: string | null = null;
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -829,12 +829,12 @@ function toAuthMiniSdkSession(session: AuthSession) {
 
 function redirectToAuthMini(authMiniBaseUrl: string) {
   const returnTo = window.location.href;
-  window.localStorage.setItem(authReturnStorageKey, returnTo);
+  const state = createAuthState();
+  window.localStorage.setItem(authStateStorageKey(state), returnTo);
   const loginUrl = new URL('/web/', authMiniBaseUrl);
   loginUrl.hash = '/login?' + new URLSearchParams({
-    return_to: returnTo,
     redirect_uri: returnTo,
-    callback_url: returnTo,
+    state,
   }).toString();
   window.location.assign(loginUrl.toString());
 }
@@ -887,10 +887,22 @@ function isAuthSession(value: unknown): value is AuthSession {
 }
 
 function removeAuthCallbackParams() {
-  const returnTo = window.localStorage.getItem(authReturnStorageKey);
-  window.localStorage.removeItem(authReturnStorageKey);
+  const state = currentAuthParams().get('state');
+  const stateStorageKey = state ? authStateStorageKey(state) : null;
+  const returnTo = stateStorageKey ? window.localStorage.getItem(stateStorageKey) : null;
+  if (stateStorageKey) {
+    window.localStorage.removeItem(stateStorageKey);
+  }
   const cleanUrl = returnTo ?? window.location.origin + window.location.pathname + window.location.hash.split('?')[0];
   window.history.replaceState(null, '', cleanUrl);
+}
+
+function createAuthState() {
+  return window.crypto.randomUUID();
+}
+
+function authStateStorageKey(state: string) {
+  return authStateStoragePrefix + state;
 }
 
 async function responseErrorMessage(response: Response) {
