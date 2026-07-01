@@ -144,6 +144,36 @@ pub async fn require_virtual_account(
     Ok(())
 }
 
+pub async fn find_credential_reference(
+    db: &SqlitePool,
+    owner_id: &str,
+    credential_id: &str,
+) -> Result<Option<String>, AppError> {
+    let rows = sqlx::query_as::<_, VirtualAccountRow>(
+        r#"
+        SELECT account_id, owner_id, name, enabled, sources, created_at, updated_at
+        FROM virtual_accounts
+        WHERE owner_id = ?1
+        "#,
+    )
+    .bind(owner_id)
+    .fetch_all(db)
+    .await?;
+
+    for row in rows {
+        let config = VirtualAccountConfig::try_from(row)?;
+        if config
+            .sources
+            .iter()
+            .any(|source| source.credential_id == credential_id)
+        {
+            return Ok(Some(config.account_id));
+        }
+    }
+
+    Ok(None)
+}
+
 async fn find_virtual_account_config(
     db: &SqlitePool,
     owner_id: &str,

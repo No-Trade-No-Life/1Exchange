@@ -11,6 +11,7 @@ use uuid::Uuid;
 use crate::{
     AppError, AppState, auth,
     exchanges::{credential_required_fields, is_supported_exchange},
+    virtual_accounts,
 };
 
 #[derive(Debug, Deserialize)]
@@ -110,6 +111,15 @@ pub async fn delete_credential(
     Query(query): Query<DeleteCredentialQuery>,
 ) -> Result<StatusCode, AppError> {
     let user = auth::require_initialized_user(&state, &headers).await?;
+    if let Some(account_id) =
+        virtual_accounts::find_credential_reference(&state.db, &user.user_id, &query.credential_id)
+            .await?
+    {
+        return Err(AppError::conflict(format!(
+            "credential is used by virtual account: {account_id}"
+        )));
+    }
+
     sqlx::query(
         r#"
         DELETE FROM credentials
