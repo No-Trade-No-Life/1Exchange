@@ -259,6 +259,7 @@ fn map_perp_position(row: Value) -> Option<Position> {
         return None;
     }
     let position_value = common::f64_value(position, "positionValue");
+    let floating_profit = common::f64_value(position, "unrealizedPnl");
     let closable_price = if size == 0.0 {
         0.0
     } else {
@@ -281,7 +282,9 @@ fn map_perp_position(row: Value) -> Option<Position> {
         closable_price,
         notional_value: position_value.abs(),
         notional_currency: Some("USD".to_string()),
-        floating_profit: common::f64_value(position, "unrealizedPnl"),
+        settlement_currency: Some("USDC".to_string()),
+        valuation: floating_profit,
+        floating_profit,
         comment: None,
         ..Position::default()
     })
@@ -374,5 +377,28 @@ mod tests {
         assert_eq!(position.product_id, "HYPERLIQUID/PERP-ASSET/USDC");
         assert!((position.volume - 34496.635024).abs() < 0.000001);
         assert_eq!(position.notional_currency.as_deref(), Some("USDC"));
+    }
+
+    #[test]
+    fn maps_perp_position_equity_as_unrealized_pnl_and_exposure_as_notional() {
+        let row = json!({
+            "position": {
+                "coin": "ASTER",
+                "szi": "-50000.0",
+                "entryPx": "1.764763",
+                "positionValue": "31517.0",
+                "unrealizedPnl": "56721.1617"
+            }
+        });
+
+        let position = map_perp_position(row).unwrap();
+
+        assert_eq!(position.product_id, "HYPERLIQUID/PERPETUAL/ASTER-USD");
+        assert!(matches!(position.direction, Some(PositionDirection::Short)));
+        assert_eq!(position.notional_value, 31517.0);
+        assert_eq!(position.notional_currency.as_deref(), Some("USD"));
+        assert_eq!(position.settlement_currency.as_deref(), Some("USDC"));
+        assert_eq!(position.valuation, 56721.1617);
+        assert_eq!(position.floating_profit, 56721.1617);
     }
 }
