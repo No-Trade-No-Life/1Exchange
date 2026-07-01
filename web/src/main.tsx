@@ -41,6 +41,7 @@ import {
   LineChart,
   Menu,
   PackageSearch,
+  Plus,
   Printer,
   Trash2,
   WalletCards,
@@ -1923,7 +1924,13 @@ function FundListPage(props: {
 }) {
   return (
     <div className="page-stack">
-      <FundCreatePanel virtualAccounts={props.virtualAccounts} />
+      <section className="toolbar-panel">
+        <div>
+          <p className="section-label">Funds</p>
+          <h2>Virtual account NAV polling</h2>
+        </div>
+        <FundCreateDialog virtualAccounts={props.virtualAccounts} />
+      </section>
 
       <section className="metrics-grid compact" aria-label="Fund summary">
         <Metric label="Funds" value={props.configs.length.toString()} />
@@ -2602,8 +2609,9 @@ function FundLink(props: { fund: FundConfig }) {
   );
 }
 
-function FundCreatePanel(props: { virtualAccounts: VirtualAccountConfig[] }) {
+function FundCreateDialog(props: { virtualAccounts: VirtualAccountConfig[] }) {
   const queryClient = useQueryClient();
+  const [open, setOpen] = useState(false);
   const [name, setName] = useState('Local fund');
   const [accountId, setAccountId] = useState(props.virtualAccounts[0]?.account_id ?? '');
   const [targetCurrency, setTargetCurrency] = useState('USD');
@@ -2639,6 +2647,7 @@ function FundCreatePanel(props: { virtualAccounts: VirtualAccountConfig[] }) {
         throw new Error(body?.message ?? String(response.status) + ' ' + response.statusText);
       }
       await queryClient.invalidateQueries({ queryKey: ['json', '/api/funds'] });
+      setOpen(false);
     } catch (caught) {
       setError((caught as Error).message);
     } finally {
@@ -2647,42 +2656,49 @@ function FundCreatePanel(props: { virtualAccounts: VirtualAccountConfig[] }) {
   }
 
   return (
-    <section className="panel credential-create-panel">
-      <div className="panel-heading">
-        <div>
-          <p className="section-label">Create fund</p>
-          <h2>Bind a virtual account</h2>
-        </div>
-        <span className="count-chip">Auto NAV</span>
-      </div>
-      <form className="credential-form" onSubmit={handleSubmit}>
-        <label>
-          Fund name
-          <Input required value={name} onChange={(event) => setName(event.target.value)} />
-        </label>
-        <label>
-          Virtual account
-          <select required value={accountId} onChange={(event) => setAccountId(event.target.value)}>
-            <option value="">Select a virtual account</option>
-            {props.virtualAccounts.map((account) => (
-              <option key={account.account_id} value={account.account_id}>{account.account_id} · {account.name}</option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Target currency
-          <Input required value={targetCurrency} onChange={(event) => setTargetCurrency(event.target.value.toUpperCase())} />
-        </label>
-        <label>
-          Poll interval seconds
-          <Input min={60} inputMode="numeric" type="number" value={intervalSeconds} onChange={(event) => setIntervalSeconds(Number(event.target.value))} />
-        </label>
-        <InlineError message={error} />
-        <Button disabled={saving || !props.virtualAccounts.length} type="submit">
-          {saving ? 'Saving...' : 'Save fund'}
-        </Button>
-      </form>
-    </section>
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger
+        render={
+          <Button type="button" disabled={!props.virtualAccounts.length} />
+        }
+      >
+        <Plus data-icon="inline-start" />
+        Create Fund
+      </DialogTrigger>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Create Fund</DialogTitle>
+          <DialogDescription>Bind a virtual account and start automatic NAV polling.</DialogDescription>
+        </DialogHeader>
+        <form className="credential-form dialog-form" onSubmit={handleSubmit}>
+          <label>
+            Fund name
+            <Input required value={name} onChange={(event) => setName(event.target.value)} />
+          </label>
+          <label>
+            Virtual account
+            <select required value={accountId} onChange={(event) => setAccountId(event.target.value)}>
+              <option value="">Select a virtual account</option>
+              {props.virtualAccounts.map((account) => (
+                <option key={account.account_id} value={account.account_id}>{account.account_id} · {account.name}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Target currency
+            <Input required value={targetCurrency} onChange={(event) => setTargetCurrency(event.target.value.toUpperCase())} />
+          </label>
+          <label>
+            Poll interval seconds
+            <Input min={60} inputMode="numeric" type="number" value={intervalSeconds} onChange={(event) => setIntervalSeconds(Number(event.target.value))} />
+          </label>
+          <InlineError message={error} />
+          <Button disabled={saving || !props.virtualAccounts.length} type="submit">
+            {saving ? 'Saving...' : 'Save fund'}
+          </Button>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
 
