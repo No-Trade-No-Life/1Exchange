@@ -973,6 +973,13 @@ async fn read_account_by_account_id(
         return Ok(account);
     }
 
+    if let Some(account) = exchanges::special_account_by_id(account_id)
+        .await
+        .map_err(AppError::bad_gateway)?
+    {
+        return Ok(account);
+    }
+
     for credential in credentials::list_stored_credentials(db, owner_id).await? {
         let adapter = exchanges::adapter(&credential.exchange).ok_or_else(|| {
             AppError::bad_request(format!("unsupported exchange: {}", credential.exchange))
@@ -1032,6 +1039,13 @@ async fn read_all_accounts(db: &SqlitePool, owner_id: &str) -> Result<Vec<Accoun
     accounts.extend(
         custom_account_sources::discover_accounts(&sources)
             .await?
+            .into_iter()
+            .map(AccountInfo::normalized),
+    );
+    accounts.extend(
+        exchanges::list_special_accounts()
+            .await
+            .map_err(AppError::bad_gateway)?
             .into_iter()
             .map(AccountInfo::normalized),
     );

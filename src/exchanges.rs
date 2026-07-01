@@ -67,6 +67,14 @@ pub fn adapter(exchange: &str) -> Option<Box<dyn ExchangeAdapter>> {
         .find(|adapter| adapter.info().id == exchange)
 }
 
+pub async fn list_special_accounts() -> anyhow::Result<Vec<AccountInfo>> {
+    earnbyai::list_special_accounts().await
+}
+
+pub async fn special_account_by_id(account_id: &str) -> anyhow::Result<Option<AccountInfo>> {
+    earnbyai::special_account_by_id(account_id).await
+}
+
 fn registered_adapters() -> Vec<Box<dyn ExchangeAdapter>> {
     vec![
         Box::new(binance::Adapter),

@@ -21,7 +21,10 @@ const BSC_RPC_URL: &str = "https://bsc-dataseed.binance.org/";
 const SEA_USD_TOKEN: &str = "0xd44c72d47F029e1545D1689A440AAA38cF3db71A";
 const SEA_USD_VAULT: &str = "0x0cedAaA38A5b7789aE5C8aCa1ee7886F83Fd23F3";
 const PRODUCT_ID: &str = "EARNBYAI/BSC/seaUSD-USDC";
+const FUNDING_PRODUCT_ID: &str = "EARNBYAI/BSC/USDC";
 const MARKET_ID: &str = "EARNBYAI/BSC";
+pub const SEA_USD_TOTAL_ACCOUNT_ID: &str = "EARNBYAI/BSC/seaUSD";
+pub const FUNDING_ACCOUNT_ID: &str = "EARNBYAI/BSC/EA-Funding";
 
 pub struct Adapter;
 
@@ -32,27 +35,7 @@ impl ExchangeAdapter for Adapter {
     }
 
     async fn list_products(&self) -> anyhow::Result<Vec<Product>> {
-        Ok(vec![Product {
-            datasource_id: ID.to_string(),
-            product_id: PRODUCT_ID.to_string(),
-            name: Some("seaUSD".to_string()),
-            quote_currency: Some("USDC".to_string()),
-            base_currency: Some("seaUSD".to_string()),
-            price_step: Some(0.000001),
-            volume_step: Some(0.000001),
-            value_scale: Some(1.0),
-            value_scale_unit: None,
-            margin_rate: Some(1.0),
-            value_based_cost: None,
-            volume_based_cost: None,
-            max_position: None,
-            max_volume: None,
-            allow_long: Some(true),
-            allow_short: Some(false),
-            market_id: Some(MARKET_ID.to_string()),
-            no_interest_rate: Some(true),
-            spread: None,
-        }])
+        Ok(vec![sea_usd_product(), funding_product()])
     }
 
     async fn get_account(&self, credential: &Value) -> anyhow::Result<AccountInfo> {
@@ -120,12 +103,154 @@ impl ExchangeAdapter for Adapter {
     }
 }
 
+pub async fn list_special_accounts() -> anyhow::Result<Vec<AccountInfo>> {
+    Ok(vec![
+        sea_usd_total_account().await?,
+        funding_account().await?,
+    ])
+}
+
+pub async fn special_account_by_id(account_id: &str) -> anyhow::Result<Option<AccountInfo>> {
+    match account_id {
+        SEA_USD_TOTAL_ACCOUNT_ID => Ok(Some(sea_usd_total_account().await?)),
+        FUNDING_ACCOUNT_ID => Ok(Some(funding_account().await?)),
+        _ => Ok(None),
+    }
+}
+
+fn sea_usd_product() -> Product {
+    Product {
+        datasource_id: ID.to_string(),
+        product_id: PRODUCT_ID.to_string(),
+        name: Some("seaUSD".to_string()),
+        quote_currency: Some("USDC".to_string()),
+        base_currency: Some("seaUSD".to_string()),
+        price_step: Some(0.000001),
+        volume_step: Some(0.000001),
+        value_scale: Some(1.0),
+        value_scale_unit: None,
+        margin_rate: Some(1.0),
+        value_based_cost: None,
+        volume_based_cost: None,
+        max_position: None,
+        max_volume: None,
+        allow_long: Some(true),
+        allow_short: Some(false),
+        market_id: Some(MARKET_ID.to_string()),
+        no_interest_rate: Some(true),
+        spread: None,
+    }
+}
+
+fn funding_product() -> Product {
+    Product {
+        datasource_id: ID.to_string(),
+        product_id: FUNDING_PRODUCT_ID.to_string(),
+        name: Some("EA Funding USDC".to_string()),
+        quote_currency: Some("USDC".to_string()),
+        base_currency: Some("USDC".to_string()),
+        price_step: Some(0.000001),
+        volume_step: Some(0.000001),
+        value_scale: Some(1.0),
+        margin_rate: Some(1.0),
+        allow_long: Some(true),
+        allow_short: Some(false),
+        market_id: Some(MARKET_ID.to_string()),
+        no_interest_rate: Some(true),
+        ..Product::default()
+    }
+}
+
+async fn sea_usd_total_account() -> anyhow::Result<AccountInfo> {
+    let token = Address::from_str(SEA_USD_TOKEN).context("invalid seaUSD token address")?;
+    let vault = Address::from_str(SEA_USD_VAULT).context("invalid seaUSD vault address")?;
+    let client = common::http_client()?;
+
+    let total_supply_raw = eth_call_u256(&client, token, "totalSupply()", Vec::new()).await?;
+    let decimals = eth_call_u256(&client, token, "decimals()", Vec::new())
+        .await?
+        .as_u32();
+    let nav_per_share_raw =
+        eth_call_u256(&client, vault, "getNetAssetValuePerShare()", Vec::new()).await?;
+    let total_supply = format_u256(total_supply_raw, decimals)?;
+    let nav_per_share = format_u256(nav_per_share_raw, 18)?;
+    let value_raw = sea_usd_value_raw(total_supply_raw, nav_per_share_raw, decimals);
+    let value = format_u256(value_raw, 18)?;
+
+    Ok(account_with_position(
+        SEA_USD_TOTAL_ACCOUNT_ID,
+        Position {
+            position_id: "seaUSD.totalSupply".to_string(),
+            product_id: PRODUCT_ID.to_string(),
+            base_currency: Some("seaUSD".to_string()),
+            quote_currency: Some("USDC".to_string()),
+            volume: total_supply,
+            free_volume: total_supply,
+            closable_price: nav_per_share,
+            notional_value: value,
+            notional_currency: Some("USDC".to_string()),
+            valuation: value,
+            comment: Some("All issued seaUSD valued by current NAV per share".to_string()),
+            ..Position::default()
+        },
+    ))
+}
+
+async fn funding_account() -> anyhow::Result<AccountInfo> {
+    let vault = Address::from_str(SEA_USD_VAULT).context("invalid seaUSD vault address")?;
+    let client = common::http_client()?;
+
+    let asset = eth_call_address(&client, vault, "asset()", Vec::new()).await?;
+    let decimals = eth_call_u256(&client, asset, "decimals()", Vec::new())
+        .await?
+        .as_u32();
+    let funding_raw = eth_call_u256(&client, vault, "getFundingAssets()", Vec::new()).await?;
+    let funding = format_u256(funding_raw, decimals)?;
+
+    Ok(account_with_position(
+        FUNDING_ACCOUNT_ID,
+        Position {
+            position_id: "EA Funding".to_string(),
+            product_id: FUNDING_PRODUCT_ID.to_string(),
+            base_currency: Some("USDC".to_string()),
+            quote_currency: Some("USDC".to_string()),
+            volume: funding,
+            free_volume: funding,
+            closable_price: 1.0,
+            notional_value: funding,
+            notional_currency: Some("USDC".to_string()),
+            valuation: funding,
+            comment: Some("USDC held by the EarnByAI vault funding account".to_string()),
+            ..Position::default()
+        },
+    ))
+}
+
+fn account_with_position(account_id: &str, position: Position) -> AccountInfo {
+    AccountInfo {
+        account_id: account_id.to_string(),
+        positions: vec![position],
+        orders: Vec::new(),
+        timestamp_in_us: common::now_timestamp_in_us(),
+    }
+    .normalized()
+}
+
 async fn eth_call_u256(
     client: &reqwest::Client,
     to: Address,
     signature: &str,
     args: Vec<u8>,
 ) -> anyhow::Result<U256> {
+    parse_u256_hex(&eth_call_hex(client, to, signature, args).await?)
+}
+
+async fn eth_call_hex(
+    client: &reqwest::Client,
+    to: Address,
+    signature: &str,
+    args: Vec<u8>,
+) -> anyhow::Result<String> {
     let data = eth_call_data(signature, args);
     let body = json!({
         "jsonrpc": "2.0",
@@ -155,7 +280,16 @@ async fn eth_call_u256(
         .and_then(Value::as_str)
         .context("BSC eth_call response missing result")?;
 
-    parse_u256_hex(result)
+    Ok(result.to_string())
+}
+
+async fn eth_call_address(
+    client: &reqwest::Client,
+    to: Address,
+    signature: &str,
+    args: Vec<u8>,
+) -> anyhow::Result<Address> {
+    parse_address_hex(&eth_call_hex(client, to, signature, args).await?)
 }
 
 fn eth_call_data(signature: &str, args: Vec<u8>) -> String {
@@ -167,6 +301,16 @@ fn eth_call_data(signature: &str, args: Vec<u8>) -> String {
 fn parse_u256_hex(value: &str) -> anyhow::Result<U256> {
     let hex = value.strip_prefix("0x").unwrap_or(value);
     U256::from_str_radix(hex, 16).context("invalid uint256 hex value")
+}
+
+fn parse_address_hex(value: &str) -> anyhow::Result<Address> {
+    let hex = value.strip_prefix("0x").unwrap_or(value);
+    let bytes = hex::decode(hex).context("invalid address hex value")?;
+    let address = bytes
+        .get(12..32)
+        .context("address ABI response must be 32 bytes")?;
+
+    Ok(Address::from_slice(address))
 }
 
 fn format_u256(value: U256, decimals: u32) -> anyhow::Result<f64> {
@@ -211,5 +355,14 @@ mod tests {
 
         assert!(data.starts_with("0x70a08231"));
         assert_eq!(data.len(), 74);
+    }
+
+    #[test]
+    fn parses_abi_encoded_address() {
+        let address =
+            parse_address_hex("0x000000000000000000000000d44c72d47f029e1545d1689a440aaa38cf3db71a")
+                .unwrap();
+
+        assert_eq!(format!("{address:#x}"), SEA_USD_TOKEN.to_lowercase());
     }
 }
