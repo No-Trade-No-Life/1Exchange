@@ -3831,12 +3831,12 @@ function settlementModelLabel(model: string) {
 
 function settlementConfirmLabel(confirming: boolean, settlement: FundSettlementPreview | null) {
   if (confirming) {
-    return 'Confirming...';
+    return 'Applying taxation...';
   }
   if (!settlement?.basis) {
-    return 'No settlement basis';
+    return 'No taxation basis';
   }
-  return 'Confirm settlement';
+  return 'Apply Taxation';
 }
 
 function settlementReportRows(detail: FundSettlementRunDetail | null) {
