@@ -172,6 +172,7 @@ async fn main() -> anyhow::Result<()> {
                 .put(funds::update_fund_statement_event)
                 .delete(funds::delete_fund_statement_event),
         )
+        .route("/fund-cash-flows", post(funds::create_fund_cash_flow))
         .route("/fund-statements", get(funds::get_fund_statement_summary))
         .route(
             "/fund-unit-price-candles",

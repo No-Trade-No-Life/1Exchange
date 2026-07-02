@@ -43,6 +43,7 @@ import {
   LayoutDashboard,
   LineChart,
   Menu,
+  Minus,
   PackageSearch,
   Pencil,
   Plus,
@@ -277,6 +278,11 @@ type FundStatementEventPage = {
   total: number;
   limit: number;
   offset: number;
+};
+
+type FundCashFlowAction = {
+  direction: 'deposit' | 'withdraw';
+  investorId: string;
 };
 
 type FundUnitPriceCandle = {
@@ -2123,6 +2129,7 @@ function FundDetailPage(props: {
   const [settlementConfirmError, setSettlementConfirmError] = useState<string | null>(null);
   const [settlementConfirming, setSettlementConfirming] = useState(false);
   const [editingEvent, setEditingEvent] = useState<FundStatementEvent | null>(null);
+  const [cashFlowAction, setCashFlowAction] = useState<FundCashFlowAction | null>(null);
   const [eventActionError, setEventActionError] = useState<string | null>(null);
   const [eventActioning, setEventActioning] = useState<number | null>(null);
   const fund = props.configs.find((item) => item.id === props.fundId);
@@ -2193,6 +2200,21 @@ function FundDetailPage(props: {
     } finally {
       setEventActioning(null);
     }
+  }
+
+  function investorCashFlowActions(investorId: string) {
+    return (
+      <div className="flex items-center gap-2">
+        <Button size="sm" type="button" onClick={() => setCashFlowAction({ direction: 'deposit', investorId })}>
+          <Plus data-icon="inline-start" />
+          In
+        </Button>
+        <Button size="sm" variant="outline" type="button" onClick={() => setCashFlowAction({ direction: 'withdraw', investorId })}>
+          <Minus data-icon="inline-start" />
+          Out
+        </Button>
+      </div>
+    );
   }
 
   if (!props.fundId) {
@@ -2657,19 +2679,22 @@ function FundDetailPage(props: {
         <InlineError message={props.statementError} />
         <DataTable
           empty="No folded statement state is available for this fund."
-          headers={['Investor', 'Referrer', 'After-tax assets', 'Share', 'Share %', 'Tax due', 'Taxed', 'Tax threshold', 'Rebate claimed', 'Deposit']}
-          rows={(statement?.event_state.investors ?? []).map((investor) => [
-            investor.name,
-            investor.referrer ?? '-',
-            formatNumber(investor.after_tax_assets),
-            formatNumber(investor.share),
-            formatPercent(investor.share_ratio),
-            formatNumber(investor.tax),
-            formatNumber(investor.taxed),
-            formatNumber(investor.tax_threshold),
-            formatNumber(investor.claimed_referrer_rebate),
-            <Value key="deposit" value={investor.deposit} />,
-          ])}
+          headers={canManageFund ? ['Investor', 'Referrer', 'After-tax assets', 'Share', 'Share %', 'Tax due', 'Taxed', 'Tax threshold', 'Rebate claimed', 'Deposit', 'Action'] : ['Investor', 'Referrer', 'After-tax assets', 'Share', 'Share %', 'Tax due', 'Taxed', 'Tax threshold', 'Rebate claimed', 'Deposit']}
+          rows={(statement?.event_state.investors ?? []).map((investor) => {
+            const row = [
+              investor.name,
+              investor.referrer ?? '-',
+              formatNumber(investor.after_tax_assets),
+              formatNumber(investor.share),
+              formatPercent(investor.share_ratio),
+              formatNumber(investor.tax),
+              formatNumber(investor.taxed),
+              formatNumber(investor.tax_threshold),
+              formatNumber(investor.claimed_referrer_rebate),
+              <Value key="deposit" value={investor.deposit} />,
+            ];
+            return canManageFund ? [...row, investorCashFlowActions(investor.name)] : row;
+          })}
         />
       </section>
 
@@ -2682,18 +2707,21 @@ function FundDetailPage(props: {
         <InlineError message={props.statementError} />
         <DataTable
           empty="No statement cash ledger is available for this fund."
-          headers={['Investor', 'Net cash', 'Effective cash', 'Inflows', 'Outflows', 'Capped cash', 'Units', 'Flows', 'Last flow']}
-          rows={(statement?.investor_ledger ?? []).map((investor) => [
-            investor.investor_name,
-            <Value key="deposit" value={investor.deposit} />,
-            <Value key="effective-deposit" value={investor.effective_deposit} />,
-            formatNumber(investor.inflow_amount),
-            formatNumber(investor.outflow_amount),
-            formatNumber(investor.capped_cash_amount),
-            formatNumber(investor.units),
-            investor.flow_count.toString(),
-            formatDate(investor.last_flow_at),
-          ])}
+          headers={canManageFund ? ['Investor', 'Net cash', 'Effective cash', 'Inflows', 'Outflows', 'Capped cash', 'Units', 'Flows', 'Last flow', 'Action'] : ['Investor', 'Net cash', 'Effective cash', 'Inflows', 'Outflows', 'Capped cash', 'Units', 'Flows', 'Last flow']}
+          rows={(statement?.investor_ledger ?? []).map((investor) => {
+            const row = [
+              investor.investor_name,
+              <Value key="deposit" value={investor.deposit} />,
+              <Value key="effective-deposit" value={investor.effective_deposit} />,
+              formatNumber(investor.inflow_amount),
+              formatNumber(investor.outflow_amount),
+              formatNumber(investor.capped_cash_amount),
+              formatNumber(investor.units),
+              investor.flow_count.toString(),
+              formatDate(investor.last_flow_at),
+            ];
+            return canManageFund ? [...row, investorCashFlowActions(investor.investor_name)] : row;
+          })}
         />
       </section>
 
@@ -2706,15 +2734,18 @@ function FundDetailPage(props: {
         <InlineError message={props.statementError} />
         <DataTable
           empty="No statement investors are available for this fund."
-          headers={['Investor', 'Referrer', 'Tax rate', 'Rebate rate', 'Tax threshold', 'Updated']}
-          rows={(statement?.investors ?? []).map((investor) => [
-            investor.name,
-            investor.referrer ?? '-',
-            formatPercent(investor.tax_rate),
-            formatPercent(investor.referrer_rebate_rate),
-            formatOptionalNumber(investor.tax_threshold),
-            formatDate(investor.updated_at),
-          ])}
+          headers={canManageFund ? ['Investor', 'Referrer', 'Tax rate', 'Rebate rate', 'Tax threshold', 'Updated', 'Action'] : ['Investor', 'Referrer', 'Tax rate', 'Rebate rate', 'Tax threshold', 'Updated']}
+          rows={(statement?.investors ?? []).map((investor) => {
+            const row = [
+              investor.name,
+              investor.referrer ?? '-',
+              formatPercent(investor.tax_rate),
+              formatPercent(investor.referrer_rebate_rate),
+              formatOptionalNumber(investor.tax_threshold),
+              formatDate(investor.updated_at),
+            ];
+            return canManageFund ? [...row, investorCashFlowActions(investor.name)] : row;
+          })}
         />
       </section>
 
@@ -2798,15 +2829,26 @@ function FundDetailPage(props: {
         />
       </section>
       {canManageFund ? (
-        <FundStatementEventDialog
-          event={editingEvent}
-          fundId={props.fundId}
-          onOpenChange={(open) => {
-            if (!open) {
-              setEditingEvent(null);
-            }
-          }}
-        />
+        <>
+          <FundCashFlowDialog
+            action={cashFlowAction}
+            fundId={props.fundId}
+            onOpenChange={(open) => {
+              if (!open) {
+                setCashFlowAction(null);
+              }
+            }}
+          />
+          <FundStatementEventDialog
+            event={editingEvent}
+            fundId={props.fundId}
+            onOpenChange={(open) => {
+              if (!open) {
+                setEditingEvent(null);
+              }
+            }}
+          />
+        </>
       ) : null}
     </div>
   );
@@ -2875,6 +2917,103 @@ function FundUnitPriceCandlestickChart(props: { candles: FundUnitPriceCandle[] }
         <DetailItem label="Close" value={formatNumber(last.close)} />
       </div>
     </div>
+  );
+}
+
+function FundCashFlowDialog(props: {
+  action: FundCashFlowAction | null;
+  fundId: string;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [direction, setDirection] = useState<'deposit' | 'withdraw'>('deposit');
+  const [amount, setAmount] = useState('');
+  const [occurredAt, setOccurredAt] = useState('');
+  const [comment, setComment] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setDirection(props.action?.direction ?? 'deposit');
+    setAmount('');
+    setOccurredAt(new Date().toISOString());
+    setComment('');
+    setError(null);
+  }, [props.action]);
+
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!props.action) {
+      return;
+    }
+
+    const parsedAmount = Number(amount);
+    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+      setError('Amount must be greater than zero.');
+      return;
+    }
+
+    setError(null);
+    setSaving(true);
+    try {
+      const signedAmount = direction === 'withdraw' ? -parsedAmount : parsedAmount;
+      const response = await apiFetch('/api/fund-cash-flows', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          fund_id: props.fundId,
+          investor_id: props.action.investorId,
+          amount: signedAmount,
+          occurred_at: occurredAt,
+          comment: comment || null,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await responseErrorMessage(response));
+      }
+      await queryClient.invalidateQueries({ queryKey: ['json'] });
+      props.onOpenChange(false);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Dialog open={props.action !== null} onOpenChange={props.onOpenChange}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>{direction === 'withdraw' ? 'Record investor outflow' : 'Record investor inflow'}</DialogTitle>
+          <DialogDescription>{props.action?.investorId ?? 'No investor selected'}</DialogDescription>
+        </DialogHeader>
+        <form className="credential-form dialog-form" onSubmit={handleSubmit}>
+          <label>
+            Direction
+            <select value={direction} onChange={(event) => setDirection(event.target.value as 'deposit' | 'withdraw')}>
+              <option value="deposit">Inflow</option>
+              <option value="withdraw">Outflow</option>
+            </select>
+          </label>
+          <label>
+            Amount
+            <Input required min="0" step="any" type="number" value={amount} onChange={(event) => setAmount(event.target.value)} />
+          </label>
+          <label>
+            Occurred at
+            <Input required value={occurredAt} onChange={(event) => setOccurredAt(event.target.value)} />
+          </label>
+          <label>
+            Comment
+            <Input value={comment} onChange={(event) => setComment(event.target.value)} />
+          </label>
+          <InlineError message={error} />
+          <Button disabled={saving || props.action === null} type="submit">
+            {saving ? 'Recording...' : 'Record cash flow'}
+          </Button>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
 

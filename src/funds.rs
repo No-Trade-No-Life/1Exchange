@@ -108,6 +108,15 @@ pub struct UpdateFundStatementEventRequest {
 }
 
 #[derive(Deserialize)]
+pub struct CreateFundCashFlowRequest {
+    fund_id: String,
+    investor_id: String,
+    amount: f64,
+    occurred_at: String,
+    comment: Option<String>,
+}
+
+#[derive(Deserialize)]
 pub struct FundSettlementQuery {
     fund_id: String,
 }
@@ -911,6 +920,32 @@ pub async fn update_fund_statement_event(
     tx.commit().await?;
     Ok(Json(
         get_fund_statement_event(&state.db, &request.fund_id, request.event_index).await?,
+    ))
+}
+
+pub async fn create_fund_cash_flow(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<CreateFundCashFlowRequest>,
+) -> Result<(StatusCode, Json<FundStatementEvent>), AppError> {
+    let user = auth::require_initialized_user(&state, &headers).await?;
+    get_owned_fund_config(&state.db, &user.user_id, &request.fund_id).await?;
+    validate_fund_cash_flow_request(&request)?;
+
+    let event_index = append_fund_event(
+        &state.db,
+        request.fund_id.trim(),
+        FUND_EVENT_CASH_FLOW_RECORDED,
+        request.occurred_at.trim(),
+        Some(request.investor_id.trim()),
+        trimmed_optional_string(request.comment.as_deref()).as_deref(),
+        serde_json::json!({ "amount": request.amount }),
+    )
+    .await?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(get_fund_statement_event(&state.db, request.fund_id.trim(), event_index).await?),
     ))
 }
 
@@ -1883,6 +1918,19 @@ fn validate_fund_statement_event_request(
         request.investor_id.as_deref(),
         &request.payload,
     )?;
+    Ok(())
+}
+
+fn validate_fund_cash_flow_request(request: &CreateFundCashFlowRequest) -> Result<(), AppError> {
+    if request.investor_id.trim().is_empty() {
+        return Err(AppError::bad_request("investor_id is required"));
+    }
+    if request.occurred_at.trim().is_empty() {
+        return Err(AppError::bad_request("occurred_at is required"));
+    }
+    if request.amount == 0.0 {
+        return Err(AppError::bad_request("cash flow amount must be non-zero"));
+    }
     Ok(())
 }
 
