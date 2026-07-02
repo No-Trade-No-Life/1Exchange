@@ -105,6 +105,7 @@ impl ExchangeAdapter for Adapter {
         let account_type = swap_account_type(credential).await?;
         let swap_balance = swap_balance(credential, account_type).await?;
         let swap = swap_positions(credential, account_type).await?;
+        let contract_sizes = swap_contract_sizes().await?;
         let balance_rows = balance
             .get("data")
             .and_then(|row| row.get("list"))
@@ -121,7 +122,11 @@ impl ExchangeAdapter for Adapter {
             .into_iter()
             .filter_map(map_spot_position)
             .chain(swap_balance)
-            .chain(swap_rows.into_iter().filter_map(map_swap_position))
+            .chain(
+                swap_rows
+                    .into_iter()
+                    .filter_map(|row| map_swap_position(row, &contract_sizes)),
+            )
             .collect())
     }
 
@@ -263,6 +268,30 @@ async fn swap_positions(credential: &Value, account_type: f64) -> anyhow::Result
     .await
 }
 
+async fn swap_contract_sizes() -> anyhow::Result<BTreeMap<String, f64>> {
+    let response = common::http_client()?
+        .get(SWAP_CONTRACT_INFO_URL)
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<Value>()
+        .await?;
+    let rows = response
+        .get("data")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    Ok(rows
+        .into_iter()
+        .filter_map(|row| {
+            let code = common::str_value(&row, "contract_code");
+            let contract_size = common::f64_value(&row, "contract_size");
+            (contract_size > 0.0 && !code.is_empty()).then_some((code, contract_size))
+        })
+        .collect())
+}
+
 fn htx_signed_query(
     credential: &Value,
     method: &str,
@@ -396,37 +425,54 @@ fn map_union_swap_asset(row: Value) -> Option<Position> {
     })
 }
 
-fn map_swap_position(row: Value) -> Option<Position> {
+fn map_swap_position(row: Value, contract_sizes: &BTreeMap<String, f64>) -> Option<Position> {
     let contract_code = common::str_value(&row, "contract_code");
     let volume = common::f64_value(&row, "volume");
     if contract_code.is_empty() || volume == 0.0 {
         return None;
     }
+    let contract_size = *contract_sizes.get(&contract_code)?;
     let closable_price =
         common::f64_value(&row, "last_price").max(common::f64_value(&row, "mark_price"));
     let (base_currency, quote_currency) = htx_contract_currencies(&contract_code);
+    let direction = if common::str_value(&row, "direction") == "sell" {
+        PositionDirection::Short
+    } else {
+        PositionDirection::Long
+    };
+    let signed_size = signed_swap_size(volume, contract_size, &direction);
+    let signed_free_size = signed_swap_size(
+        common::f64_value(&row, "available"),
+        contract_size,
+        &direction,
+    );
 
     Some(Position {
         position_id: contract_code.clone(),
         product_id: format!("{ID}/SWAP/{contract_code}"),
         base_currency,
         quote_currency,
-        direction: Some(if common::str_value(&row, "direction") == "sell" {
-            PositionDirection::Short
-        } else {
-            PositionDirection::Long
-        }),
+        direction: Some(direction),
+        size: Some(signed_size.to_string()),
+        free_size: Some(signed_free_size.to_string()),
         volume,
         free_volume: common::f64_value(&row, "available"),
         position_price: common::f64_value(&row, "cost_open")
             .max(common::f64_value(&row, "open_avg_price")),
         closable_price,
-        notional_value: common::notional_value(volume, closable_price),
+        notional_value: common::notional_value(signed_size, closable_price),
         notional_currency: Some("USDT".to_string()),
         floating_profit: common::f64_value(&row, "profit_unreal"),
         comment: None,
         ..Position::default()
     })
+}
+
+fn signed_swap_size(volume: f64, contract_size: f64, direction: &PositionDirection) -> f64 {
+    match direction {
+        PositionDirection::Short => -volume.abs() * contract_size,
+        PositionDirection::Long => volume.abs() * contract_size,
+    }
 }
 
 fn htx_contract_currencies(contract_code: &str) -> (Option<String>, Option<String>) {
@@ -526,5 +572,60 @@ fn map_spot_product(row: Value) -> Product {
         market_id: Some(format!("{ID}/SPOT")),
         no_interest_rate: Some(true),
         spread: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn maps_swap_contract_volume_to_base_size_for_valuation() {
+        let contract_sizes = BTreeMap::from([("TAO-USDT".to_string(), 0.001)]);
+        let position = map_swap_position(
+            json!({
+                "contract_code": "TAO-USDT",
+                "volume": 9352,
+                "available": 9352,
+                "direction": "sell",
+                "last_price": "203.54",
+                "mark_price": "203.5",
+                "cost_open": "208.91099016253207",
+                "profit_unreal": "50.2295"
+            }),
+            &contract_sizes,
+        )
+        .expect("swap position with contract size should be mapped");
+
+        assert_eq!(position.volume, 9352.0);
+        assert_eq!(position.free_volume, 9352.0);
+        assert_eq!(position.size.as_deref(), Some("-9.352"));
+        assert_eq!(position.free_size.as_deref(), Some("-9.352"));
+        assert!(matches!(position.direction, Some(PositionDirection::Short)));
+        assert_eq!(position.closable_price, 203.54);
+        assert_close(position.notional_value, 1903.50608);
+    }
+
+    #[test]
+    fn skips_swap_position_without_contract_size() {
+        let position = map_swap_position(
+            json!({
+                "contract_code": "TAO-USDT",
+                "volume": 9352,
+                "direction": "sell"
+            }),
+            &BTreeMap::new(),
+        );
+
+        assert!(position.is_none());
+    }
+
+    fn assert_close(actual: f64, expected: f64) {
+        assert!(
+            (actual - expected).abs() < 0.0000001,
+            "expected {actual} to be close to {expected}"
+        );
     }
 }
