@@ -15,6 +15,7 @@ const SPOT_TIME_URL: &str = "https://api.binance.com/api/v3/time";
 const USD_M_FUTURES_EXCHANGE_INFO_URL: &str = "https://fapi.binance.com/fapi/v1/exchangeInfo";
 const USD_M_FUTURES_ACCOUNT_URL: &str = "https://fapi.binance.com/fapi/v2/account";
 const USD_M_FUTURES_TIME_URL: &str = "https://fapi.binance.com/fapi/v1/time";
+const PORTFOLIO_MARGIN_BALANCE_URL: &str = "https://papi.binance.com/papi/v1/balance";
 
 pub const ID: &str = "BINANCE";
 pub const REQUIRED_FIELDS: &[&str] = &["access_key", "secret_key"];
@@ -154,6 +155,17 @@ impl ExchangeAdapter for Adapter {
             Err(error) if is_http_auth_error(&error) => {}
             Err(error) => return Err(error),
         }
+        match fetch_portfolio_margin_balances(credential).await {
+            Ok(balances) => {
+                positions.extend(
+                    balances
+                        .into_iter()
+                        .filter_map(map_portfolio_margin_balance),
+                );
+            }
+            Err(error) if is_optional_account_error(&error) => {}
+            Err(error) => return Err(error),
+        }
 
         Ok(positions)
     }
@@ -174,6 +186,10 @@ async fn fetch_futures_account(credential: &Value) -> anyhow::Result<FuturesAcco
         USD_M_FUTURES_TIME_URL,
     )
     .await
+}
+
+async fn fetch_portfolio_margin_balances(credential: &Value) -> anyhow::Result<Vec<Value>> {
+    fetch_signed(credential, PORTFOLIO_MARGIN_BALANCE_URL, SPOT_TIME_URL).await
 }
 
 async fn fetch_signed<T>(credential: &Value, url: &str, time_url: &str) -> anyhow::Result<T>
@@ -217,12 +233,23 @@ fn signed_query(secret_key: &str, timestamp: u128) -> anyhow::Result<String> {
 }
 
 fn is_http_auth_error(error: &anyhow::Error) -> bool {
+    http_error_status(error).is_some_and(|status| {
+        status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN
+    })
+}
+
+fn is_optional_account_error(error: &anyhow::Error) -> bool {
+    http_error_status(error).is_some_and(|status| {
+        status == reqwest::StatusCode::BAD_REQUEST
+            || status == reqwest::StatusCode::UNAUTHORIZED
+            || status == reqwest::StatusCode::FORBIDDEN
+    })
+}
+
+fn http_error_status(error: &anyhow::Error) -> Option<reqwest::StatusCode> {
     error
         .downcast_ref::<reqwest::Error>()
         .and_then(reqwest::Error::status)
-        .is_some_and(|status| {
-            status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN
-        })
 }
 
 fn map_spot_balance(balance: SpotBalance) -> Option<Position> {
@@ -315,6 +342,32 @@ fn map_futures_position(position: FuturesPosition) -> Option<Position> {
     })
 }
 
+fn map_portfolio_margin_balance(balance: Value) -> Option<Position> {
+    let asset = common::text_value(&balance, "asset");
+    let volume = common::f64_value(&balance, "totalWalletBalance");
+    if asset.is_empty() || volume <= 0.0 {
+        return None;
+    }
+    let closable_price = common::stablecoin_unit_price(&asset);
+
+    Some(Position {
+        position_id: format!("UNIFIED-SPOT/{asset}"),
+        product_id: format!("{ID}/UNIFIED-SPOT/{asset}"),
+        base_currency: Some(asset.clone()),
+        quote_currency: Some("USDT".to_string()),
+        direction: None,
+        volume,
+        free_volume: common::f64_value(&balance, "crossMarginFree"),
+        position_price: 0.0,
+        closable_price,
+        notional_value: common::notional_value(volume, closable_price),
+        notional_currency: Some("USDT".to_string()),
+        floating_profit: 0.0,
+        comment: None,
+        ..Position::default()
+    })
+}
+
 fn futures_direction(signed_volume: f64, position_side: &str) -> PositionDirection {
     if position_side == "SHORT" || signed_volume < 0.0 {
         PositionDirection::Short
@@ -382,4 +435,42 @@ fn filter_number(filters: &[BinanceFilter], filter_type: &str, field: &str) -> O
             _ => None,
         })
         .and_then(common::parse_f64)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn maps_portfolio_margin_balance_to_unified_spot_position() {
+        let position = map_portfolio_margin_balance(json!({
+            "asset": "USDT",
+            "totalWalletBalance": "61636.56702006",
+            "crossMarginFree": "61000.12"
+        }))
+        .expect("positive portfolio margin balance should be mapped");
+
+        assert_eq!(position.position_id, "UNIFIED-SPOT/USDT");
+        assert_eq!(position.product_id, "BINANCE/UNIFIED-SPOT/USDT");
+        assert_eq!(position.base_currency.as_deref(), Some("USDT"));
+        assert_eq!(position.quote_currency.as_deref(), Some("USDT"));
+        assert_eq!(position.volume, 61636.56702006);
+        assert_eq!(position.free_volume, 61000.12);
+        assert_eq!(position.closable_price, 1.0);
+        assert_eq!(position.notional_value, 61636.56702006);
+    }
+
+    #[test]
+    fn skips_empty_portfolio_margin_balance() {
+        assert!(
+            map_portfolio_margin_balance(json!({
+                "asset": "BNB",
+                "totalWalletBalance": "0",
+                "crossMarginFree": "0"
+            }))
+            .is_none()
+        );
+    }
 }

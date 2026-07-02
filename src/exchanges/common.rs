@@ -83,7 +83,7 @@ pub fn notional_value(volume: f64, price: f64) -> f64 {
 }
 
 pub fn stablecoin_unit_price(currency: &str) -> f64 {
-    if matches!(currency, "USD" | "USDT" | "USDC" | "USDD") {
+    if matches!(currency, "USD" | "USDT" | "USDC" | "USDD" | "USD1") {
         1.0
     } else {
         0.0
@@ -139,5 +139,10 @@ mod tests {
         assert_eq!(f64_value(&value, "valid"), 2.5);
         assert_eq!(f64_value(&value, "nan"), 0.0);
         assert_eq!(opt_f64_value(&value, "nan"), None);
+    }
+
+    #[test]
+    fn treats_usd1_as_stablecoin() {
+        assert_eq!(stablecoin_unit_price("USD1"), 1.0);
     }
 }
