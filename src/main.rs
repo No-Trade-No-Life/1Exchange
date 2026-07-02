@@ -23,7 +23,7 @@ use axum::{
     routing::{get, post},
 };
 use models::{AccountInfo, Position, Product, TradeFill};
-use serde::{Serialize, ser::SerializeStruct};
+use serde::{Deserialize, Serialize, ser::SerializeStruct};
 use sqlx::{Row, SqlitePool, sqlite::SqliteConnectOptions};
 use tokio::net::TcpListener;
 use tower_http::services::ServeDir;
@@ -39,6 +39,30 @@ pub struct AppState {
 struct HealthResponse {
     status: &'static str,
     database: String,
+}
+
+#[derive(Serialize)]
+struct VersionResponse {
+    backend: BackendVersion,
+    frontend: Option<FrontendVersion>,
+}
+
+#[derive(Serialize)]
+struct BackendVersion {
+    package_version: &'static str,
+    git_sha: &'static str,
+    git_ref: &'static str,
+    build_time: &'static str,
+    github_run_id: &'static str,
+}
+
+#[derive(Deserialize, Serialize)]
+struct FrontendVersion {
+    package_version: String,
+    git_sha: String,
+    git_ref: String,
+    build_time: String,
+    github_run_id: String,
 }
 
 #[derive(Serialize)]
@@ -184,6 +208,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/trades", get(list_trades))
         .route("/rates", get(list_rates))
         .route("/rates/convert", get(convert_rate))
+        .route("/version", get(version))
         .route("/products", get(list_products));
     let app = Router::new().nest("/api", api);
     let app = if vite.is_some() {
@@ -1039,6 +1064,24 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
         status: "ok",
         database: state.db_path.display().to_string(),
     })
+}
+
+async fn version() -> Json<VersionResponse> {
+    Json(VersionResponse {
+        backend: BackendVersion {
+            package_version: env!("CARGO_PKG_VERSION"),
+            git_sha: env!("ONE_EXCHANGE_GIT_SHA"),
+            git_ref: env!("ONE_EXCHANGE_GIT_REF"),
+            build_time: env!("ONE_EXCHANGE_BUILD_TIME"),
+            github_run_id: env!("ONE_EXCHANGE_GITHUB_RUN_ID"),
+        },
+        frontend: frontend_version(),
+    })
+}
+
+fn frontend_version() -> Option<FrontendVersion> {
+    let contents = std::fs::read_to_string("web/dist/build-info.json").ok()?;
+    serde_json::from_str(&contents).ok()
 }
 
 async fn me(

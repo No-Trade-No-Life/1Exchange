@@ -19,6 +19,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Set build metadata
+        run: echo "BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -42,9 +45,9 @@ jobs:
 
       - name: Package release artifact
         run: |
-          mkdir -p release/one-exchange-linux-x86_64
+          mkdir -p release/one-exchange-linux-x86_64/web
           cp target/release/one-exchange release/one-exchange-linux-x86_64/
-          cp -R web/dist release/one-exchange-linux-x86_64/web-dist
+          cp -R web/dist release/one-exchange-linux-x86_64/web/dist
           tar -C release -czf one-exchange-linux-x86_64.tar.gz one-exchange-linux-x86_64
           sha256sum one-exchange-linux-x86_64.tar.gz > one-exchange-linux-x86_64.tar.gz.sha256
 

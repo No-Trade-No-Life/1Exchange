@@ -32,6 +32,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set build metadata
+        run: echo "BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -130,9 +133,31 @@ jobs:
           sudo mv /tmp/one-exchange.service "/etc/systemd/system/$SERVICE_NAME.service"
           sudo systemctl daemon-reload
           sudo pkill -f /opt/1exchange/current/target/release/one-exchange || true
+          sudo pkill -f "$DEPLOY_DIR/current/one-exchange" || true
           sudo systemctl enable "$SERVICE_NAME"
           sudo systemctl restart "$SERVICE_NAME"
           sudo systemctl --no-pager --full status "$SERVICE_NAME"
+
+          current_release="$(readlink -f "$DEPLOY_DIR/current")"
+          test "$current_release" = "$release_dir"
+
+          version_json="$(curl -fsS --retry 12 --retry-delay 1 --retry-connrefused http://127.0.0.1:8787/api/version)"
+          VERSION_JSON="$version_json" EXPECTED_SHA="$GITHUB_SHA" python3 - <<'PY'
+          import json
+          import os
+
+          version = json.loads(os.environ["VERSION_JSON"])
+          expected_sha = os.environ["EXPECTED_SHA"]
+          backend_sha = version["backend"]["git_sha"]
+          frontend_sha = version["frontend"]["git_sha"]
+
+          if backend_sha != expected_sha:
+              raise SystemExit(f"backend git_sha mismatch: {backend_sha} != {expected_sha}")
+          if frontend_sha != expected_sha:
+              raise SystemExit(f"frontend git_sha mismatch: {frontend_sha} != {expected_sha}")
+
+          print(json.dumps(version, indent=2, sort_keys=True))
+          PY
 
           find "$DEPLOY_DIR/releases" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' \
             | sort -rn \
