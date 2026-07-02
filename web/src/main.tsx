@@ -46,6 +46,7 @@ import {
   Pencil,
   Plus,
   Printer,
+  ShieldCheck,
   Trash2,
   WalletCards,
   type LucideIcon,
@@ -221,6 +222,7 @@ type VirtualAccountConfig = {
 
 type FundConfig = {
   id: string;
+  owner_id: string;
   name: string;
   account_id: string;
   enabled: boolean;
@@ -229,6 +231,12 @@ type FundConfig = {
   created_at: string;
   updated_at: string;
   last_sampled_at: string | null;
+};
+
+type FundAccessGrant = {
+  fund_id: string;
+  grantee_user_id: string;
+  created_at: string;
 };
 
 type FundNavSnapshot = {
@@ -1298,10 +1306,14 @@ function FundsRoute() {
 
 function FundDetailRoute() {
   const [params] = useSearchParams();
+  const auth = React.useContext(AuthContext);
   const fundId = params.get('fund_id') ?? '';
   const [eventOffset, setEventOffset] = useState(0);
   const eventLimit = 100;
   const funds = useJson<FundConfig[]>('/api/funds');
+  const fund = funds.data?.find((item) => item.id === fundId);
+  const canManageFund = Boolean(fund && auth.user?.user_id === fund.owner_id);
+  const grants = useJson<FundAccessGrant[]>(canManageFund ? '/api/fund-access-grants?fund_id=' + encodeURIComponent(fundId) : null);
   const nav = useJson<FundNavSnapshot[]>(fundId ? `/api/fund-nav?fund_id=${encodeURIComponent(fundId)}&limit=100` : null);
   const unitPriceCandles = useJson<FundUnitPriceCandle[]>(fundId ? `/api/fund-unit-price-candles?fund_id=${encodeURIComponent(fundId)}` : null);
   const events = useJson<FundStatementEventPage>(fundId ? `/api/fund-statement-events?fund_id=${encodeURIComponent(fundId)}&limit=${eventLimit}&offset=${eventOffset}` : null);
@@ -1313,14 +1325,17 @@ function FundDetailRoute() {
   }, [fundId]);
 
   return (
-    <RefreshScope resources={[funds, nav, unitPriceCandles, events, statements, settlement]}>
+    <RefreshScope resources={[funds, grants, nav, unitPriceCandles, events, statements, settlement]}>
       <FundDetailPage
         configs={funds.data ?? emptyFundConfigs}
+        currentUserId={auth.user?.user_id ?? null}
         eventLimit={eventLimit}
         eventOffset={eventOffset}
         eventPage={events.data ?? null}
         eventsError={events.error}
         fundId={fundId}
+        grants={grants.data ?? []}
+        grantsError={grants.error}
         loading={funds.loading || nav.loading || unitPriceCandles.loading || events.loading || statements.loading || settlement.loading}
         navError={nav.error}
         settlementError={settlement.error}
@@ -2052,11 +2067,14 @@ function FundListPage(props: {
 
 function FundDetailPage(props: {
   configs: FundConfig[];
+  currentUserId: string | null;
   eventLimit: number;
   eventOffset: number;
   eventPage: FundStatementEventPage | null;
   eventsError: string | null;
   fundId: string;
+  grants: FundAccessGrant[];
+  grantsError: string | null;
   loading: boolean;
   navError: string | null;
   settlementError: string | null;
@@ -2084,7 +2102,8 @@ function FundDetailPage(props: {
   const hasNextEvents = props.eventOffset + props.eventLimit < eventTotal;
   const statement = props.statementSummary;
   const settlement = props.settlementPreview;
-  const confirmSettlementDisabled = settlementConfirming || !settlement?.basis;
+  const canManageFund = Boolean(fund && props.currentUserId === fund.owner_id);
+  const confirmSettlementDisabled = !canManageFund || settlementConfirming || !settlement?.basis;
   const confirmSettlementLabel = settlementConfirmLabel(settlementConfirming, settlement);
 
   async function sampleFund() {
@@ -2161,10 +2180,15 @@ function FundDetailPage(props: {
           <h2>{fund.name}</h2>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
-          <Button variant="default" type="button" disabled={confirmSettlementDisabled} onClick={() => void confirmSettlement()}>
-            {confirmSettlementLabel}
-          </Button>
-          <Button variant="outline" type="button" onClick={() => void sampleFund()}>Sample now</Button>
+          {canManageFund ? (
+            <>
+              <FundAccessGrantDialog fundId={fund.id} grants={props.grants} grantsError={props.grantsError} />
+              <Button variant="default" type="button" disabled={confirmSettlementDisabled} onClick={() => void confirmSettlement()}>
+                {confirmSettlementLabel}
+              </Button>
+              <Button variant="outline" type="button" onClick={() => void sampleFund()}>Sample now</Button>
+            </>
+          ) : null}
           <Link className="secondary-link" to="/funds">Back to funds</Link>
         </div>
       </section>
@@ -2341,25 +2365,30 @@ function FundDetailPage(props: {
         <InlineError message={eventActionError ?? props.eventsError} />
         <DataTable
           empty="No raw statement events are available for this fund."
-          headers={['Event', 'Time', 'Type', 'Investor', 'Comment', 'Payload', 'Action']}
-          rows={events.map((item) => [
-            '#' + item.event_index,
-            formatDate(item.occurred_at),
-            item.event_type,
-            item.investor_id ?? '-',
-            item.comment ?? '-',
-            <code className="event-payload-preview" key="payload">{eventPayloadPreview(item.payload)}</code>,
-            <div className="flex items-center gap-2" key="action">
-              <Button size="sm" variant="outline" type="button" onClick={() => setEditingEvent(item)}>
-                <Pencil data-icon="inline-start" />
-                Edit
-              </Button>
-              <Button size="sm" variant="outline" type="button" disabled={eventActioning === item.event_index} onClick={() => void deleteStatementEvent(item.event_index)}>
-                <Trash2 data-icon="inline-start" />
-                Delete
-              </Button>
-            </div>,
-          ])}
+          headers={canManageFund ? ['Event', 'Time', 'Type', 'Investor', 'Comment', 'Payload', 'Action'] : ['Event', 'Time', 'Type', 'Investor', 'Comment', 'Payload']}
+          rows={events.map((item) => {
+            const row = [
+              '#' + item.event_index,
+              formatDate(item.occurred_at),
+              item.event_type,
+              item.investor_id ?? '-',
+              item.comment ?? '-',
+              <code className="event-payload-preview" key="payload">{eventPayloadPreview(item.payload)}</code>,
+            ];
+            return canManageFund ? [
+              ...row,
+              <div className="flex items-center gap-2" key="action">
+                <Button size="sm" variant="outline" type="button" onClick={() => setEditingEvent(item)}>
+                  <Pencil data-icon="inline-start" />
+                  Edit
+                </Button>
+                <Button size="sm" variant="outline" type="button" disabled={eventActioning === item.event_index} onClick={() => void deleteStatementEvent(item.event_index)}>
+                  <Trash2 data-icon="inline-start" />
+                  Delete
+                </Button>
+              </div>,
+            ] : row;
+          })}
         />
       </section>
 
@@ -2512,15 +2541,17 @@ function FundDetailPage(props: {
           ])}
         />
       </section>
-      <FundStatementEventDialog
-        event={editingEvent}
-        fundId={props.fundId}
-        onOpenChange={(open) => {
-          if (!open) {
-            setEditingEvent(null);
-          }
-        }}
-      />
+      {canManageFund ? (
+        <FundStatementEventDialog
+          event={editingEvent}
+          fundId={props.fundId}
+          onOpenChange={(open) => {
+            if (!open) {
+              setEditingEvent(null);
+            }
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -2966,6 +2997,103 @@ function FundLink(props: { fund: FundConfig }) {
     <Link className="account-id-link" to={fundDetailPath(props.fund.id)}>
       {props.fund.name}
     </Link>
+  );
+}
+
+function FundAccessGrantDialog(props: { fundId: string; grants: FundAccessGrant[]; grantsError: string | null }) {
+  const queryClient = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [userId, setUserId] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [deletingUserId, setDeletingUserId] = useState<string | null>(null);
+
+  async function refreshGrants() {
+    await queryClient.invalidateQueries({ queryKey: ['json'] });
+  }
+
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(null);
+    setSaving(true);
+    try {
+      const response = await apiFetch('/api/fund-access-grants', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ fund_id: props.fundId, grantee_user_id: userId }),
+      });
+      if (!response.ok) {
+        throw new Error(await responseErrorMessage(response));
+      }
+      setUserId('');
+      await refreshGrants();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteGrant(granteeUserId: string) {
+    setError(null);
+    setDeletingUserId(granteeUserId);
+    try {
+      const response = await apiFetch('/api/fund-access-grants?fund_id=' + encodeURIComponent(props.fundId) + '&grantee_user_id=' + encodeURIComponent(granteeUserId), {
+        method: 'DELETE',
+      });
+      if (!response.ok) {
+        throw new Error(await responseErrorMessage(response));
+      }
+      await refreshGrants();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setDeletingUserId(null);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger render={<Button variant="outline" type="button" />}>
+        <ShieldCheck data-icon="inline-start" />
+        Access
+      </DialogTrigger>
+      <DialogContent className="sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Fund access</DialogTitle>
+          <DialogDescription>Grant read-only access to this fund by User ID.</DialogDescription>
+        </DialogHeader>
+        <form className="credential-form dialog-form" onSubmit={handleSubmit}>
+          <label>
+            User ID
+            <Input required value={userId} onChange={(event) => setUserId(event.target.value)} />
+          </label>
+          <InlineError message={error ?? props.grantsError} />
+          <Button disabled={saving} type="submit">{saving ? 'Saving...' : 'Grant read access'}</Button>
+        </form>
+        <div className="fund-access-list">
+          <DataTable
+            empty="No users have read access yet."
+            headers={['User ID', 'Granted', 'Action']}
+            rows={props.grants.map((grant) => [
+              <code key="user">{grant.grantee_user_id}</code>,
+              formatDate(grant.created_at),
+              <Button
+                disabled={deletingUserId === grant.grantee_user_id}
+                key="action"
+                size="sm"
+                type="button"
+                variant="outline"
+                onClick={() => void deleteGrant(grant.grantee_user_id)}
+              >
+                <Trash2 data-icon="inline-start" />
+                Remove
+              </Button>,
+            ])}
+          />
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 

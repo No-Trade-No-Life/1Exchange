@@ -134,6 +134,12 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/positions", get(list_positions))
         .route("/funds", get(funds::list_funds).post(funds::create_fund))
+        .route(
+            "/fund-access-grants",
+            get(funds::list_fund_access_grants)
+                .post(funds::create_fund_access_grant)
+                .delete(funds::delete_fund_access_grant),
+        )
         .route("/funds/sample", post(funds::sample_fund_now))
         .route("/fund-nav", get(funds::list_fund_nav))
         .route(
@@ -467,6 +473,27 @@ async fn migrate(db: &SqlitePool) -> anyhow::Result<()> {
         r#"
         CREATE INDEX IF NOT EXISTS idx_funds_owner_created
         ON funds (owner_id, created_at DESC)
+        "#,
+    )
+    .execute(db)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS fund_access_grants (
+            fund_id TEXT NOT NULL,
+            grantee_user_id TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (fund_id, grantee_user_id)
+        )
+        "#,
+    )
+    .execute(db)
+    .await?;
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_fund_access_grants_grantee
+        ON fund_access_grants (grantee_user_id, fund_id)
         "#,
     )
     .execute(db)

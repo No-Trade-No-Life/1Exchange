@@ -33,6 +33,12 @@ pub struct CreateFundRequest {
     pub poll_interval_seconds: Option<i64>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct FundAccessGrantRequest {
+    pub fund_id: String,
+    pub grantee_user_id: String,
+}
+
 #[derive(Clone, Debug, Serialize, FromRow)]
 pub struct FundConfig {
     pub id: String,
@@ -45,6 +51,13 @@ pub struct FundConfig {
     pub created_at: String,
     pub updated_at: String,
     pub last_sampled_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, FromRow)]
+pub struct FundAccessGrant {
+    pub fund_id: String,
+    pub grantee_user_id: String,
+    pub created_at: String,
 }
 
 #[derive(Debug, Serialize, FromRow)]
@@ -681,8 +694,88 @@ pub async fn create_fund(
 
     Ok((
         StatusCode::CREATED,
-        Json(get_fund_config(&state.db, &user.user_id, &id).await?),
+        Json(get_owned_fund_config(&state.db, &user.user_id, &id).await?),
     ))
+}
+
+pub async fn list_fund_access_grants(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<FundStatementQuery>,
+) -> Result<Json<Vec<FundAccessGrant>>, AppError> {
+    let user = auth::require_initialized_user(&state, &headers).await?;
+    get_owned_fund_config(&state.db, &user.user_id, &query.fund_id).await?;
+
+    Ok(Json(
+        sqlx::query_as::<_, FundAccessGrant>(
+            r#"
+            SELECT fund_id, grantee_user_id, created_at
+            FROM fund_access_grants
+            WHERE fund_id = ?1
+            ORDER BY created_at DESC
+            "#,
+        )
+        .bind(query.fund_id)
+        .fetch_all(&state.db)
+        .await?,
+    ))
+}
+
+pub async fn create_fund_access_grant(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<FundAccessGrantRequest>,
+) -> Result<(StatusCode, Json<FundAccessGrant>), AppError> {
+    let user = auth::require_initialized_user(&state, &headers).await?;
+    get_owned_fund_config(&state.db, &user.user_id, &request.fund_id).await?;
+    validate_fund_access_grant_request(&request)?;
+    let grantee_user_id = request.grantee_user_id.trim();
+    if grantee_user_id == user.user_id {
+        return Err(AppError::bad_request(
+            "fund access user id must be another user",
+        ));
+    }
+
+    sqlx::query(
+        r#"
+        INSERT INTO fund_access_grants (fund_id, grantee_user_id)
+        VALUES (?1, ?2)
+        ON CONFLICT(fund_id, grantee_user_id) DO UPDATE SET
+            created_at = fund_access_grants.created_at
+        "#,
+    )
+    .bind(request.fund_id.trim())
+    .bind(grantee_user_id)
+    .execute(&state.db)
+    .await?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(get_fund_access_grant(&state.db, request.fund_id.trim(), grantee_user_id).await?),
+    ))
+}
+
+pub async fn delete_fund_access_grant(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<FundAccessGrantRequest>,
+) -> Result<StatusCode, AppError> {
+    let user = auth::require_initialized_user(&state, &headers).await?;
+    get_owned_fund_config(&state.db, &user.user_id, &query.fund_id).await?;
+    validate_fund_access_grant_request(&query)?;
+
+    sqlx::query(
+        r#"
+        DELETE FROM fund_access_grants
+        WHERE fund_id = ?1 AND grantee_user_id = ?2
+        "#,
+    )
+    .bind(query.fund_id.trim())
+    .bind(query.grantee_user_id.trim())
+    .execute(&state.db)
+    .await?;
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn list_fund_nav(
@@ -693,7 +786,7 @@ pub async fn list_fund_nav(
     let user = auth::require_initialized_user(&state, &headers).await?;
     let limit = query.limit.unwrap_or(200).clamp(1, 1000);
     let rows = if let Some(fund_id) = query.fund_id {
-        get_fund_config(&state.db, &user.user_id, &fund_id).await?;
+        get_readable_fund_config(&state.db, &user.user_id, &fund_id).await?;
         sqlx::query_as::<_, FundNavSnapshot>(
             r#"
             SELECT CAST(e.event_index AS TEXT) AS id,
@@ -728,7 +821,9 @@ pub async fn list_fund_nav(
                    e.occurred_at AS created_at
             FROM fund_events e
             JOIN funds f ON f.id = e.fund_id
-            WHERE f.owner_id = ?1 AND e.event_type = 'fund_equity_set'
+            LEFT JOIN fund_access_grants g ON g.fund_id = f.id AND g.grantee_user_id = ?1
+            WHERE (f.owner_id = ?1 OR g.grantee_user_id = ?1)
+              AND e.event_type = 'fund_equity_set'
             ORDER BY e.event_index DESC
             LIMIT ?2
             "#,
@@ -748,7 +843,7 @@ pub async fn list_fund_statement_events(
     axum::extract::Query(query): axum::extract::Query<FundStatementEventQuery>,
 ) -> Result<Json<FundStatementEventPage>, AppError> {
     let user = auth::require_initialized_user(&state, &headers).await?;
-    get_fund_config(&state.db, &user.user_id, &query.fund_id).await?;
+    get_readable_fund_config(&state.db, &user.user_id, &query.fund_id).await?;
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
     let offset = query.offset.unwrap_or(0).max(0);
 
@@ -785,7 +880,7 @@ pub async fn update_fund_statement_event(
     Json(request): Json<UpdateFundStatementEventRequest>,
 ) -> Result<Json<FundStatementEvent>, AppError> {
     let user = auth::require_initialized_user(&state, &headers).await?;
-    get_fund_config(&state.db, &user.user_id, &request.fund_id).await?;
+    get_owned_fund_config(&state.db, &user.user_id, &request.fund_id).await?;
     validate_fund_statement_event_request(&request)?;
 
     let payload = serde_json::to_string(&request.payload)?;
@@ -828,7 +923,7 @@ pub async fn delete_fund_statement_event(
     let event_index = query
         .event_index
         .ok_or_else(|| AppError::bad_request("event_index is required"))?;
-    get_fund_config(&state.db, &user.user_id, &query.fund_id).await?;
+    get_owned_fund_config(&state.db, &user.user_id, &query.fund_id).await?;
 
     let mut tx = state.db.begin().await?;
     let result = sqlx::query(
@@ -857,7 +952,7 @@ pub async fn get_fund_statement_summary(
     axum::extract::Query(query): axum::extract::Query<FundStatementQuery>,
 ) -> Result<Json<FundStatementSummary>, AppError> {
     let user = auth::require_initialized_user(&state, &headers).await?;
-    get_fund_config(&state.db, &user.user_id, &query.fund_id).await?;
+    get_readable_fund_config(&state.db, &user.user_id, &query.fund_id).await?;
 
     let (events,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM fund_events WHERE fund_id = ?1")
         .bind(&query.fund_id)
@@ -963,7 +1058,7 @@ pub async fn get_fund_unit_price_candles(
     axum::extract::Query(query): axum::extract::Query<FundUnitPriceCandleQuery>,
 ) -> Result<Json<Vec<FundUnitPriceCandle>>, AppError> {
     let user = auth::require_initialized_user(&state, &headers).await?;
-    get_fund_config(&state.db, &user.user_id, &query.fund_id).await?;
+    get_readable_fund_config(&state.db, &user.user_id, &query.fund_id).await?;
     Ok(Json(
         load_fund_unit_price_candles(&state.db, &query.fund_id).await?,
     ))
@@ -975,7 +1070,7 @@ pub async fn get_fund_settlement_preview(
     axum::extract::Query(query): axum::extract::Query<FundSettlementQuery>,
 ) -> Result<Json<FundSettlementPreview>, AppError> {
     let user = auth::require_initialized_user(&state, &headers).await?;
-    get_fund_config(&state.db, &user.user_id, &query.fund_id).await?;
+    get_readable_fund_config(&state.db, &user.user_id, &query.fund_id).await?;
     Ok(Json(
         load_fund_settlement_preview(&state.db, query.fund_id).await?,
     ))
@@ -987,7 +1082,7 @@ pub async fn list_fund_settlement_runs(
     axum::extract::Query(query): axum::extract::Query<FundSettlementQuery>,
 ) -> Result<Json<Vec<FundSettlementRun>>, AppError> {
     let user = auth::require_initialized_user(&state, &headers).await?;
-    get_fund_config(&state.db, &user.user_id, &query.fund_id).await?;
+    get_readable_fund_config(&state.db, &user.user_id, &query.fund_id).await?;
     Ok(Json(Vec::new()))
 }
 
@@ -1021,7 +1116,7 @@ pub async fn create_fund_settlement_run(
     Json(request): Json<CreateFundSettlementRunRequest>,
 ) -> Result<(StatusCode, Json<FundSettlementRunDetail>), AppError> {
     let user = auth::require_initialized_user(&state, &headers).await?;
-    get_fund_config(&state.db, &user.user_id, &request.fund_id).await?;
+    get_owned_fund_config(&state.db, &user.user_id, &request.fund_id).await?;
     Err(AppError::bad_request(
         "settlement drafts are not supported; use settlement preview or confirm settlement",
     ))
@@ -1033,7 +1128,7 @@ pub async fn confirm_fund_settlement(
     Json(request): Json<ConfirmFundSettlementRequest>,
 ) -> Result<Json<FundSettlementPreview>, AppError> {
     let user = auth::require_initialized_user(&state, &headers).await?;
-    get_fund_config(&state.db, &user.user_id, &request.fund_id).await?;
+    get_owned_fund_config(&state.db, &user.user_id, &request.fund_id).await?;
     let preview = load_fund_settlement_preview(&state.db, request.fund_id).await?;
     let basis = preview
         .basis
@@ -1122,7 +1217,7 @@ pub async fn sample_fund_now(
     axum::extract::Query(query): axum::extract::Query<SampleFundQuery>,
 ) -> Result<Json<FundNavSnapshot>, AppError> {
     let user = auth::require_initialized_user(&state, &headers).await?;
-    let config = get_fund_config(&state.db, &user.user_id, &query.fund_id).await?;
+    let config = get_owned_fund_config(&state.db, &user.user_id, &query.fund_id).await?;
     Ok(Json(sample_fund(&state.db, &config).await?))
 }
 
@@ -1139,7 +1234,7 @@ pub fn spawn_fund_polling(state: AppState) {
 
 pub async fn list_fund_configs(
     db: &SqlitePool,
-    owner_id: &str,
+    user_id: &str,
 ) -> Result<Vec<FundConfig>, AppError> {
     Ok(sqlx::query_as::<_, FundConfig>(
         r#"
@@ -1147,12 +1242,13 @@ pub async fn list_fund_configs(
                f.created_at, f.updated_at, MAX(s.occurred_at) AS last_sampled_at
         FROM funds f
         LEFT JOIN fund_events s ON s.fund_id = f.id AND s.event_type = 'fund_equity_set'
-        WHERE f.owner_id = ?1
+        LEFT JOIN fund_access_grants g ON g.fund_id = f.id AND g.grantee_user_id = ?1
+        WHERE f.owner_id = ?1 OR g.grantee_user_id = ?1
         GROUP BY f.id
         ORDER BY f.created_at DESC
         "#,
     )
-    .bind(owner_id)
+    .bind(user_id)
     .fetch_all(db)
     .await?)
 }
@@ -1191,7 +1287,7 @@ async fn due_fund_configs(db: &SqlitePool) -> Result<Vec<FundConfig>, AppError> 
     .await?)
 }
 
-async fn get_fund_config(
+async fn get_owned_fund_config(
     db: &SqlitePool,
     owner_id: &str,
     fund_id: &str,
@@ -1211,6 +1307,48 @@ async fn get_fund_config(
     .fetch_one(db)
     .await
         .map_err(AppError::from)
+}
+
+async fn get_readable_fund_config(
+    db: &SqlitePool,
+    user_id: &str,
+    fund_id: &str,
+) -> Result<FundConfig, AppError> {
+    sqlx::query_as::<_, FundConfig>(
+        r#"
+        SELECT f.id, f.owner_id, f.name, f.account_id, f.enabled, f.target_currency, f.poll_interval_seconds,
+               f.created_at, f.updated_at, MAX(s.occurred_at) AS last_sampled_at
+        FROM funds f
+        LEFT JOIN fund_events s ON s.fund_id = f.id AND s.event_type = 'fund_equity_set'
+        LEFT JOIN fund_access_grants g ON g.fund_id = f.id AND g.grantee_user_id = ?2
+        WHERE f.id = ?1 AND (f.owner_id = ?2 OR g.grantee_user_id = ?2)
+        GROUP BY f.id
+        "#,
+    )
+    .bind(fund_id)
+    .bind(user_id)
+    .fetch_one(db)
+    .await
+    .map_err(AppError::from)
+}
+
+async fn get_fund_access_grant(
+    db: &SqlitePool,
+    fund_id: &str,
+    grantee_user_id: &str,
+) -> Result<FundAccessGrant, AppError> {
+    sqlx::query_as::<_, FundAccessGrant>(
+        r#"
+        SELECT fund_id, grantee_user_id, created_at
+        FROM fund_access_grants
+        WHERE fund_id = ?1 AND grantee_user_id = ?2
+        "#,
+    )
+    .bind(fund_id)
+    .bind(grantee_user_id)
+    .fetch_one(db)
+    .await
+    .map_err(AppError::from)
 }
 
 async fn append_fund_event(
@@ -2367,6 +2505,17 @@ fn validate_fund_request(request: &CreateFundRequest) -> Result<(), AppError> {
         return Err(AppError::bad_request(
             "fund poll interval must be at least 60 seconds",
         ));
+    }
+
+    Ok(())
+}
+
+fn validate_fund_access_grant_request(request: &FundAccessGrantRequest) -> Result<(), AppError> {
+    if request.fund_id.trim().is_empty() {
+        return Err(AppError::bad_request("missing fund id"));
+    }
+    if Uuid::parse_str(request.grantee_user_id.trim()).is_err() {
+        return Err(AppError::bad_request("fund access user id must be a UUID"));
     }
 
     Ok(())

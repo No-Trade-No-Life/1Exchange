@@ -212,6 +212,10 @@
     @apply px-5 py-8 text-sm text-muted-foreground;
   }
 
+  .fund-access-list {
+    @apply pt-2;
+  }
+
   .credential-field-grid,
   .account-detail-grid,
   .schema-grid,
