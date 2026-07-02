@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
+import { createBrowserSdk, type AuthMiniApi, type SessionSnapshot } from 'auth-mini/sdk/browser';
 import { createRoot } from 'react-dom/client';
 import { ErrorBoundary } from 'react-error-boundary';
 import { HashRouter, Link, Navigate, NavLink, Route, Routes, useLocation, useSearchParams } from 'react-router-dom';
@@ -530,7 +531,7 @@ const emptyVirtualAccountConfigs: VirtualAccountConfig[] = [];
 const emptyFundConfigs: FundConfig[] = [];
 const authSessionStorageKey = 'one-exchange.auth-mini.session.v1';
 const authStateStoragePrefix = 'one-exchange.auth-mini.state.v1.';
-let currentAccessToken: string | null = null;
+let currentAuthMiniSdk: AuthMiniApi | null = null;
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -546,6 +547,7 @@ type AuthContextValue = {
   isAdmin: boolean;
   login: () => void;
   logout: () => void;
+  openAuthCredentials: () => void;
   user: AuthUser | null;
 };
 
@@ -555,15 +557,55 @@ const AuthContext = React.createContext<AuthContextValue>({
   isAdmin: false,
   login: () => undefined,
   logout: () => undefined,
+  openAuthCredentials: () => undefined,
   user: null,
 });
 
-function apiFetch(input: string | URL, init: RequestInit = {}) {
+async function apiFetch(input: string | URL, init: RequestInit = {}) {
   const headers = new Headers(init.headers);
-  if (currentAccessToken) {
-    headers.set('Authorization', 'Bearer ' + currentAccessToken);
+  const accessToken = await currentAuthMiniAccessToken();
+  if (accessToken) {
+    headers.set('Authorization', 'Bearer ' + accessToken);
   }
+  const response = await fetch(input, { ...init, headers });
+  if (response.status !== 401 || !currentAuthMiniSdk) {
+    return response;
+  }
+  const refreshed = await currentAuthMiniSdk.session.refresh();
+  if (!refreshed.accessToken) {
+    return response;
+  }
+  headers.set('Authorization', 'Bearer ' + refreshed.accessToken);
   return fetch(input, { ...init, headers });
+}
+
+async function currentAuthMiniAccessToken() {
+  const sdk = currentAuthMiniSdk;
+  if (!sdk) {
+    return null;
+  }
+  const snapshot = sdk.session.getState();
+  if (!snapshot.refreshToken) {
+    return snapshot.accessToken;
+  }
+  if (!snapshot.accessToken || authMiniSessionNeedsRefresh(snapshot)) {
+    return (await sdk.session.refresh()).accessToken;
+  }
+  return snapshot.accessToken;
+}
+
+function authMiniSessionNeedsRefresh(snapshot: SessionSnapshot) {
+  if (!snapshot.expiresAt || !snapshot.receivedAt) {
+    return true;
+  }
+  const expiresAt = Date.parse(snapshot.expiresAt);
+  const receivedAt = Date.parse(snapshot.receivedAt);
+  if (!Number.isFinite(expiresAt) || !Number.isFinite(receivedAt)) {
+    return true;
+  }
+  const lifetimeMs = expiresAt - receivedAt;
+  const thresholdMs = lifetimeMs < 10 * 60_000 ? lifetimeMs / 2 : 5 * 60_000;
+  return Date.now() >= expiresAt - thresholdMs;
 }
 
 function useJson<T>(path: string | null) {
@@ -648,7 +690,6 @@ function useTradeHistory(credentials: Credential[], refreshToken: number) {
 
 function AuthGate(props: { children: React.ReactNode }) {
   const [authConfig, setAuthConfig] = useState<AuthConfig | null>(null);
-  const [session, setSession] = useState<AuthSession | null>(() => readStoredAuthSession());
   const [user, setUser] = useState<AuthUser | null>(null);
   const [setup, setSetup] = useState<SetupState | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -664,19 +705,18 @@ function AuthGate(props: { children: React.ReactNode }) {
       const callbackSession = readAuthCallbackSession();
       if (callbackSession) {
         storeAuthSession(callbackSession, nextAuthConfig.auth_mini_base_url);
-        setSession(callbackSession);
         removeAuthCallbackParams();
-        return;
       }
 
+      migrateStoredAuthSession(nextAuthConfig.auth_mini_base_url);
+      const sdk = createBrowserSdk(nextAuthConfig.auth_mini_base_url);
+      currentAuthMiniSdk = sdk;
       setAuthConfig(nextAuthConfig);
-      if (!session) {
-        currentAccessToken = null;
+      if (!sdk.session.getState().refreshToken) {
         return;
       }
-      currentAccessToken = session.access_token;
       try {
-        const me = await readCurrentUser(session, nextAuthConfig.auth_mini_base_url);
+        const me = await sdk.me.fetch();
         const nextSetup = await readSetupState();
         if (alive) {
           setUser(me);
@@ -686,7 +726,6 @@ function AuthGate(props: { children: React.ReactNode }) {
       } catch {
         clearAuthSession(nextAuthConfig.auth_mini_base_url);
         if (alive) {
-          setSession(null);
           setUser(null);
           setSetup(null);
         }
@@ -700,7 +739,7 @@ function AuthGate(props: { children: React.ReactNode }) {
     return () => {
       alive = false;
     };
-  }, [session]);
+  }, []);
 
   function login() {
     if (authConfig) {
@@ -709,11 +748,17 @@ function AuthGate(props: { children: React.ReactNode }) {
   }
 
   function logout() {
+    void currentAuthMiniSdk?.session.logout();
     clearAuthSession(authConfig?.auth_mini_base_url ?? null);
     queryClient.clear();
-    setSession(null);
     setUser(null);
     setSetup(null);
+  }
+
+  function openAuthCredentials() {
+    if (authConfig) {
+      openAuthMiniCredentials(authConfig.auth_mini_base_url);
+    }
   }
 
   async function initialize() {
@@ -735,7 +780,7 @@ function AuthGate(props: { children: React.ReactNode }) {
 
   if (user && setup?.initialized) {
     return (
-      <AuthContext.Provider value={{ authError: error, authReady: authConfig !== null, isAdmin: setup.is_admin, login, logout, user }}>
+      <AuthContext.Provider value={{ authError: error, authReady: authConfig !== null, isAdmin: setup.is_admin, login, logout, openAuthCredentials, user }}>
         {props.children}
       </AuthContext.Provider>
     );
@@ -769,7 +814,7 @@ function AuthGate(props: { children: React.ReactNode }) {
   }
 
   return (
-    <AuthContext.Provider value={{ authError: error, authReady: authConfig !== null, isAdmin: false, login, logout, user: null }}>
+    <AuthContext.Provider value={{ authError: error, authReady: authConfig !== null, isAdmin: false, login, logout, openAuthCredentials, user: null }}>
       {props.children}
     </AuthContext.Provider>
   );
@@ -783,26 +828,6 @@ async function readAuthConfig(): Promise<AuthConfig> {
   return await response.json() as AuthConfig;
 }
 
-async function readCurrentUser(session: AuthSession, authMiniBaseUrl: string): Promise<AuthUser> {
-  const response = await apiFetch('/api/me', {
-    headers: { Authorization: 'Bearer ' + session.access_token },
-  });
-  if (response.status === 401) {
-    const refreshed = await refreshAuthSession(session, authMiniBaseUrl);
-    storeAuthSession(refreshed, authMiniBaseUrl);
-    currentAccessToken = refreshed.access_token;
-    const retry = await apiFetch('/api/me');
-    if (!retry.ok) {
-      throw new Error(await responseErrorMessage(retry));
-    }
-    return await retry.json() as AuthUser;
-  }
-  if (!response.ok) {
-    throw new Error(await responseErrorMessage(response));
-  }
-  return await response.json() as AuthUser;
-}
-
 async function readSetupState(): Promise<SetupState> {
   const response = await apiFetch('/api/setup/status');
   if (!response.ok) {
@@ -811,21 +836,19 @@ async function readSetupState(): Promise<SetupState> {
   return await response.json() as SetupState;
 }
 
-async function refreshAuthSession(session: AuthSession, authMiniBaseUrl: string): Promise<AuthSession> {
-  const response = await fetch(authMiniUrl(authMiniBaseUrl, '/session/refresh'), {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ session_id: session.session_id, refresh_token: session.refresh_token }),
-  });
-  if (!response.ok) {
-    throw new Error(await responseErrorMessage(response));
-  }
-  return await response.json() as AuthSession;
-}
-
 function readStoredAuthSession() {
   const raw = window.localStorage.getItem(authSessionStorageKey);
   return raw ? JSON.parse(raw) as AuthSession : null;
+}
+
+function migrateStoredAuthSession(authMiniBaseUrl: string) {
+  if (window.localStorage.getItem(authMiniSdkStorageKey(authMiniBaseUrl))) {
+    return;
+  }
+  const session = readStoredAuthSession();
+  if (session) {
+    storeAuthSession(session, authMiniBaseUrl);
+  }
 }
 
 function storeAuthSession(session: AuthSession, authMiniBaseUrl: string) {
@@ -834,15 +857,10 @@ function storeAuthSession(session: AuthSession, authMiniBaseUrl: string) {
 }
 
 function clearAuthSession(authMiniBaseUrl: string | null) {
-  currentAccessToken = null;
   window.localStorage.removeItem(authSessionStorageKey);
   if (authMiniBaseUrl) {
     window.localStorage.removeItem(authMiniSdkStorageKey(authMiniBaseUrl));
   }
-}
-
-function authMiniUrl(authMiniBaseUrl: string, path: string) {
-  return authMiniBaseUrl.replace(/\/$/, '') + path;
 }
 
 function authMiniSdkStorageKey(authMiniBaseUrl: string) {
@@ -875,6 +893,12 @@ function redirectToAuthMini(authMiniBaseUrl: string) {
     state,
   }).toString();
   window.location.assign(loginUrl.toString());
+}
+
+function openAuthMiniCredentials(authMiniBaseUrl: string) {
+  const credentialsUrl = new URL('/web/', authMiniBaseUrl);
+  credentialsUrl.hash = '/credentials';
+  window.open(credentialsUrl.toString(), '_blank', 'noopener,noreferrer');
 }
 
 function readAuthCallbackSession() {
@@ -1007,7 +1031,10 @@ function AppHeader(props: { healthStatus: string; page: PageConfig }) {
           <UiBadge className="hidden sm:inline-flex" variant={props.healthStatus === 'ok' ? 'secondary' : 'outline'}>API {props.healthStatus}</UiBadge>
           {auth.user ? (
             <>
-              <UiBadge className="hidden max-w-64 truncate sm:inline-flex" variant="outline">{auth.user.email}</UiBadge>
+              <Button className="hidden max-w-64 gap-1.5 truncate sm:inline-flex" size="sm" type="button" variant="outline" onClick={auth.openAuthCredentials}>
+                <BadgeCheck />
+                <span className="truncate">{auth.user.email}</span>
+              </Button>
               {auth.isAdmin ? <UiBadge className="hidden sm:inline-flex" variant="secondary">Admin</UiBadge> : null}
               <Button size="sm" type="button" variant="outline" onClick={auth.logout}>Sign out</Button>
             </>
