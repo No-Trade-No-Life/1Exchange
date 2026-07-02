@@ -529,7 +529,6 @@ const primaryPages = pages.filter((item) => item.primary);
 const emptyCredentials: Credential[] = [];
 const emptyVirtualAccountConfigs: VirtualAccountConfig[] = [];
 const emptyFundConfigs: FundConfig[] = [];
-const authSessionStorageKey = 'one-exchange.auth-mini.session.v1';
 const authStateStoragePrefix = 'one-exchange.auth-mini.state.v1.';
 let currentAuthMiniSdk: AuthMiniApi | null = null;
 const queryClient = new QueryClient({
@@ -704,11 +703,10 @@ function AuthGate(props: { children: React.ReactNode }) {
       }
       const callbackSession = readAuthCallbackSession();
       if (callbackSession) {
-        storeAuthSession(callbackSession, nextAuthConfig.auth_mini_base_url);
+        storeAuthMiniSdkSession(callbackSession, nextAuthConfig.auth_mini_base_url);
         removeAuthCallbackParams();
       }
 
-      migrateStoredAuthSession(nextAuthConfig.auth_mini_base_url);
       const sdk = createBrowserSdk(nextAuthConfig.auth_mini_base_url);
       currentAuthMiniSdk = sdk;
       setAuthConfig(nextAuthConfig);
@@ -836,28 +834,11 @@ async function readSetupState(): Promise<SetupState> {
   return await response.json() as SetupState;
 }
 
-function readStoredAuthSession() {
-  const raw = window.localStorage.getItem(authSessionStorageKey);
-  return raw ? JSON.parse(raw) as AuthSession : null;
-}
-
-function migrateStoredAuthSession(authMiniBaseUrl: string) {
-  if (window.localStorage.getItem(authMiniSdkStorageKey(authMiniBaseUrl))) {
-    return;
-  }
-  const session = readStoredAuthSession();
-  if (session) {
-    storeAuthSession(session, authMiniBaseUrl);
-  }
-}
-
-function storeAuthSession(session: AuthSession, authMiniBaseUrl: string) {
-  window.localStorage.setItem(authSessionStorageKey, JSON.stringify(session));
+function storeAuthMiniSdkSession(session: AuthSession, authMiniBaseUrl: string) {
   window.localStorage.setItem(authMiniSdkStorageKey(authMiniBaseUrl), JSON.stringify(toAuthMiniSdkSession(session)));
 }
 
 function clearAuthSession(authMiniBaseUrl: string | null) {
-  window.localStorage.removeItem(authSessionStorageKey);
   if (authMiniBaseUrl) {
     window.localStorage.removeItem(authMiniSdkStorageKey(authMiniBaseUrl));
   }
