@@ -153,10 +153,10 @@ impl Position {
             .as_deref()
             .and_then(parse_finite_f64)
             .unwrap_or(self.closable_price);
-        if let Some(size) = self.size.as_deref().and_then(parse_finite_f64) {
-            if price != 0.0 {
-                return size * price;
-            }
+        if let Some(size) = self.size.as_deref().and_then(parse_finite_f64)
+            && price != 0.0
+        {
+            return size * price;
         }
         if self.notional_value < 0.0 {
             return self.notional_value;

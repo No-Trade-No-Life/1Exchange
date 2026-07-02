@@ -1432,6 +1432,7 @@ fn build_settlement_preview(
     }
 }
 
+#[cfg(test)]
 fn reconcile_fund_equity(
     legacy: &FundStatementEquity,
     nav: &FundNavSnapshot,
@@ -2000,6 +2001,7 @@ fn fund_event_day(occurred_at: &str) -> Result<String, AppError> {
     Ok(parsed.with_timezone(&Utc).date_naive().to_string())
 }
 
+#[cfg(test)]
 fn apply_yuan_fund_event(
     event_state: &mut YuanFundState,
     event: impl Into<FundStatementEventPayloadRow>,
@@ -2101,16 +2103,15 @@ fn apply_yuan_taxation_v2(state: &mut YuanFundState) {
         state.total_taxed += item.tax;
 
         let mut tax_account_share = tax_share;
-        if investor.referrer_rebate_rate > 0.0 {
-            if let Some(referrer) = investor
+        if investor.referrer_rebate_rate > 0.0
+            && let Some(referrer) = investor
                 .referrer
                 .as_ref()
                 .filter(|name| referrers.iter().any(|item| item == *name))
-            {
-                let rebate_share = tax_share * investor.referrer_rebate_rate;
-                tax_account_share -= rebate_share;
-                rebates.push((referrer.clone(), rebate_share, rebate_share * unit_price));
-            }
+        {
+            let rebate_share = tax_share * investor.referrer_rebate_rate;
+            tax_account_share -= rebate_share;
+            rebates.push((referrer.clone(), rebate_share, rebate_share * unit_price));
         }
         total_tax_share += tax_account_share;
     }
@@ -2323,11 +2324,11 @@ fn summarize_referrer_rebates(investors: &[FundInvestorSettlement]) -> Vec<FundR
     let mut rebates = HashMap::<String, f64>::new();
 
     for investor in investors {
-        if let Some(referrer) = &investor.referrer {
-            if investor.referrer_rebate > 0.0 && investor_names.iter().any(|name| *name == referrer)
-            {
-                *rebates.entry(referrer.clone()).or_default() += investor.referrer_rebate;
-            }
+        if let Some(referrer) = &investor.referrer
+            && investor.referrer_rebate > 0.0
+            && investor_names.iter().any(|name| *name == referrer)
+        {
+            *rebates.entry(referrer.clone()).or_default() += investor.referrer_rebate;
         }
     }
 
@@ -2344,6 +2345,7 @@ fn summarize_referrer_rebates(investors: &[FundInvestorSettlement]) -> Vec<FundR
     rows
 }
 
+#[cfg(test)]
 fn csv_cell(value: &str) -> String {
     if value.contains([',', '"', '\n', '\r']) {
         format!("\"{}\"", value.replace('"', "\"\""))
@@ -2359,12 +2361,12 @@ fn validate_fund_request(request: &CreateFundRequest) -> Result<(), AppError> {
     if request.account_id.trim().is_empty() {
         return Err(AppError::bad_request("missing fund virtual account id"));
     }
-    if let Some(value) = request.poll_interval_seconds {
-        if value < 60 {
-            return Err(AppError::bad_request(
-                "fund poll interval must be at least 60 seconds",
-            ));
-        }
+    if let Some(value) = request.poll_interval_seconds
+        && value < 60
+    {
+        return Err(AppError::bad_request(
+            "fund poll interval must be at least 60 seconds",
+        ));
     }
 
     Ok(())
