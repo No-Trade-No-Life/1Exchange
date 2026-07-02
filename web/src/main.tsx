@@ -8,7 +8,7 @@ import { CandlestickSeries, createChart, type CandlestickData } from 'lightweigh
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge as UiBadge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import {
   Dialog,
@@ -39,6 +39,7 @@ import {
   Eye,
   FileText,
   History,
+  Info,
   LayoutDashboard,
   LineChart,
   Menu,
@@ -2038,10 +2039,42 @@ function FundListPage(props: {
       </section>
 
       <section className="metrics-grid compact" aria-label="Fund summary">
-        <Metric label="Funds" value={props.configs.length.toString()} />
-        <Metric label="Enabled" value={props.configs.filter((fund) => fund.enabled).length.toString()} />
-        <Metric label="Virtual accounts" value={props.virtualAccounts.length.toString()} />
-        <Metric label="Status" value={props.loading ? 'Loading' : 'Ready'} />
+        <Metric
+          label="Funds"
+          value={props.configs.length.toString()}
+          help={{
+            what: '当前用户可见的 Fund 配置数量。',
+            meaning: '用于判断本地基金配置规模，以及是否已经有可管理的 Fund。',
+            basis: '来自 /api/funds 返回的配置列表长度，包含自己拥有和被授权访问的 Fund。',
+          }}
+        />
+        <Metric
+          label="Enabled"
+          value={props.configs.filter((fund) => fund.enabled).length.toString()}
+          help={{
+            what: '启用自动 NAV 采样的 Fund 数量。',
+            meaning: '表示有多少 Fund 会按轮询间隔自动记录权益事件。',
+            basis: '统计 /api/funds 中 enabled 为 true 的配置。',
+          }}
+        />
+        <Metric
+          label="Virtual accounts"
+          value={props.virtualAccounts.length.toString()}
+          help={{
+            what: '当前可作为 Fund 底层账户的虚拟账户数量。',
+            meaning: 'Fund 需要绑定虚拟账户才能进行组合估值和 NAV 采样。',
+            basis: '来自虚拟账户配置列表的总数。',
+          }}
+        />
+        <Metric
+          label="Status"
+          value={props.loading ? 'Loading' : 'Ready'}
+          help={{
+            what: 'Fund 列表数据请求状态。',
+            meaning: '用于确认页面展示的是加载中的状态还是已完成的结果。',
+            basis: '由前端 Fund 配置查询的 loading 状态决定。',
+          }}
+        />
       </section>
 
       <section className="panel">
@@ -2194,59 +2227,205 @@ function FundDetailPage(props: {
       </section>
 
       <section className="metrics-grid compact" aria-label="Fund detail summary">
-        <Metric label="Status" value={fund.enabled ? 'Enabled' : 'Disabled'} />
-        <Metric label="Target" value={fund.target_currency} />
-        <Metric label="Snapshots" value={props.snapshots.length.toString()} />
-        <Metric label="Latest equity" value={latestSnapshot ? formatNumber(latestSnapshot.equity) : '-'} />
-        <Metric label="Last sample" value={fund.last_sampled_at ?? '-'} />
+        <Metric
+          label="NAV"
+          value={latestSnapshot ? formatNumber(latestSnapshot.equity) + ' ' + fund.target_currency : '-'}
+          help={{
+            what: '最近一次 NAV 采样得到的基金权益。',
+            meaning: '这是 Fund 当前可见的资产规模，是判断基金整体权益的第一指标。',
+            basis: '取 NAV 快照列表第一条的 equity，并以内联方式展示 Fund 的 target_currency。',
+          }}
+        />
+        <Metric
+          label="Unit Price"
+          value={statement ? formatNumber(statement.event_state.unit_price) : '-'}
+          help={{
+            what: '事件流水折叠后的当前单位净值。',
+            meaning: '用于衡量每一份基金份额对应的资产价值，也是申购、赎回和收益分配的核心参考。',
+            basis: '后端按 fund_events 顺序重放后计算 total_assets / total_share；没有份额时口径为 1。',
+          }}
+        />
+        <Metric
+          label="Last sample"
+          value={fund.last_sampled_at ?? '-'}
+          help={{
+            what: '最近一次写入 NAV 采样事件的时间。',
+            meaning: '用于判断 NAV 是否足够新，避免用过期资产值做判断或结算。',
+            basis: '来自 Fund 配置查询中 fund_equity_set 事件的最大 occurred_at。',
+          }}
+        />
       </section>
 
       <section className="metrics-grid compact" aria-label="Fund statement summary">
-        <Metric label="Statement events" value={statement ? statement.totals.events.toString() : '-'} />
-        <Metric label="Investors" value={statement ? statement.totals.investors.toString() : '-'} />
-        <Metric label="Cash flows" value={statement ? statement.totals.orders.toString() : '-'} />
-        <Metric label="Investor inflows" value={statement ? formatNumber(statement.totals.inflow_amount) : '-'} />
-        <Metric label="Investor outflows" value={statement ? formatNumber(statement.totals.outflow_amount) : '-'} />
-        <Metric label="Net cash flow" value={statement ? formatNumber(statement.totals.order_deposit) : '-'} />
-        <Metric label="Tax threshold" value={statement ? formatNumber(statement.totals.tax_threshold_amount) : '-'} />
+        <Metric
+          label="Statement events"
+          value={statement ? statement.totals.events.toString() : '-'}
+          help={{
+            what: '该 Fund 的原始 statement 事件总数。',
+            meaning: '反映可审计事件流的规模，事件越完整，后续份额、税务和结算推导越有依据。',
+            basis: '统计 fund_events 中当前 fund_id 的全部事件。',
+          }}
+        />
+        <Metric
+          label="Investors"
+          value={statement ? statement.totals.investors.toString() : '-'}
+          help={{
+            what: '有投资人档案事件的投资人数。',
+            meaning: '用于确认税率、推荐人和返佣规则覆盖了多少投资人。',
+            basis: '来自 investor_profile_updated 事件折叠后的投资人档案列表数量。',
+          }}
+        />
+        <Metric
+          label="Cash flows"
+          value={statement ? statement.totals.orders.toString() : '-'}
+          help={{
+            what: '投资人申购和赎回现金流事件数。',
+            meaning: '表示影响份额发行和回收的资金动作数量。',
+            basis: '统计 cash_flow_recorded 事件数量。',
+          }}
+        />
+        <Metric
+          label="Investor inflows"
+          value={statement ? formatNumber(statement.totals.inflow_amount) : '-'}
+          help={{
+            what: '投资人正向现金流金额合计。',
+            meaning: '表示累计申购或追加投入规模。',
+            basis: '汇总 amount 大于 0 的 cash_flow_recorded 事件。',
+          }}
+        />
+        <Metric
+          label="Investor outflows"
+          value={statement ? formatNumber(statement.totals.outflow_amount) : '-'}
+          help={{
+            what: '投资人负向现金流金额合计。',
+            meaning: '表示累计赎回或退出规模。',
+            basis: '汇总 amount 小于 0 的 cash_flow_recorded 事件，并取绝对值展示。',
+          }}
+        />
+        <Metric
+          label="Net cash flow"
+          value={statement ? formatNumber(statement.totals.order_deposit) : '-'}
+          help={{
+            what: '投资人现金流净额。',
+            meaning: '用于判断外部资金对基金规模的净影响。',
+            basis: '所有 cash_flow_recorded 事件 amount 直接求和，流入为正、流出为负。',
+          }}
+        />
+        <Metric
+          label="Tax threshold"
+          value={statement ? formatNumber(statement.totals.tax_threshold_amount) : '-'}
+          help={{
+            what: '税基阈值调整金额合计。',
+            meaning: '用于解释投资人应税利润计算中的额外税基变化。',
+            basis: '汇总 tax_threshold_adjusted 事件中的 amount。',
+          }}
+        />
         <Metric
           label="Overdrawn flows"
           value={statement ? statement.totals.overdrawn_cash_flows.toString() : '-'}
           tone={statement?.totals.overdrawn_cash_flows ? 'warn' : 'neutral'}
+          help={{
+            what: '会导致投资人份额低于零的现金流次数。',
+            meaning: '提示历史申赎流水可能存在超额赎回或导入口径问题。',
+            basis: 'legacy cash-flow ledger 中 investor_units_after 小于 -1e-9 的流水数量。',
+          }}
         />
         <Metric
           label="Overdrawn investors"
           value={statement ? statement.totals.overdrawn_investors.toString() : '-'}
           tone={statement?.totals.overdrawn_investors ? 'warn' : 'neutral'}
+          help={{
+            what: '最终份额为负的投资人数。',
+            meaning: '提示当前 statement 状态中仍存在需要修正的投资人份额异常。',
+            basis: '按 legacy cash-flow ledger 取每个投资人的最终 investor_units_after，小于 -1e-9 计入。',
+          }}
         />
         <Metric
-          label="Capped flows"
-          value={statement ? statement.totals.capped_cash_flows.toString() : '-'}
-          tone={statement?.totals.capped_cash_flows ? 'warn' : 'neutral'}
+          label="Statement equity"
+          value={statement?.latest_equity ? formatNumber(statement.latest_equity.equity) : '-'}
+          help={{
+            what: 'statement 事件流中的最后一条基金权益值。',
+            meaning: '作为事件折叠和结算预览的历史权益依据。',
+            basis: '取 fund_equity_set 事件按事件顺序排列后的最后一个 equity。',
+          }}
         />
-        <Metric label="Capped units" value={statement ? formatNumber(statement.totals.capped_units) : '-'} />
-        <Metric label="Capped cash" value={statement ? formatNumber(statement.totals.capped_cash_amount) : '-'} />
-        <Metric label="Statement equity" value={statement?.latest_equity ? formatNumber(statement.latest_equity.equity) : '-'} />
-        <Metric label="Tax modes" value={statement ? statement.totals.tax_modes.toString() : '-'} />
-        <Metric label="Event unit price" value={statement ? formatNumber(statement.event_state.unit_price) : '-'} />
-        <Metric label="Event taxed" value={statement ? formatNumber(statement.event_state.total_taxed) : '-'} />
-        <Metric label="Event tax due" value={statement ? formatNumber(statement.event_state.total_tax) : '-'} />
+        <Metric
+          label="Tax modes"
+          value={statement ? statement.totals.tax_modes.toString() : '-'}
+          help={{
+            what: '已应用的税务结转事件数量。',
+            meaning: '用于判断历史上执行过多少次税务处理。',
+            basis: '统计 taxation_v1_applied 和 taxation_v2_applied 类事件数量。',
+          }}
+        />
+        <Metric
+          label="Event taxed"
+          value={statement ? formatNumber(statement.event_state.total_taxed) : '-'}
+          help={{
+            what: '已经通过税务事件落账的累计税额。',
+            meaning: '用于区分已处理税额和当前仍待处理的应计税额。',
+            basis: '事件 reducer 在应用 taxation 事件时累计 total_taxed。',
+          }}
+        />
+        <Metric
+          label="Event tax due"
+          value={statement ? formatNumber(statement.event_state.total_tax) : '-'}
+          help={{
+            what: '当前事件状态下的应计税额。',
+            meaning: '用于预估如果现在结税，需要从投资人收益中扣除的税额。',
+            basis: '对每个投资人按 max(pre_tax_assets - tax_threshold, 0) * tax_rate 计算后求和。',
+          }}
+        />
       </section>
 
       <section className="metrics-grid compact" aria-label="Fund equity reconciliation">
-        <Metric label="NAV equity" value={statement?.reconciliation ? formatNumber(statement.reconciliation.nav_equity) : '-'} />
+        <Metric
+          label="NAV equity"
+          value={statement?.reconciliation ? formatNumber(statement.reconciliation.nav_equity) : '-'}
+          help={{
+            what: '用于对账的 NAV 权益值。',
+            meaning: '设计上用于比较实时 NAV 与 statement equity 是否一致。',
+            basis: '来自 statement reconciliation 的 nav_equity；当前后端尚未返回 reconciliation 时显示 -。',
+          }}
+        />
         <Metric
           label="NAV delta"
           value={statement?.reconciliation ? formatNumber(statement.reconciliation.delta) : '-'}
           tone={statement?.reconciliation && Math.abs(statement.reconciliation.delta) > 0.01 ? 'warn' : 'neutral'}
+          help={{
+            what: 'NAV 权益与 statement equity 的差额。',
+            meaning: '用于发现实时资产估值和历史 statement 记录之间的偏差。',
+            basis: 'nav_equity - legacy_equity，绝对值大于 0.01 时以警示色显示。',
+          }}
         />
         <Metric
           label="NAV delta rate"
           value={statement?.reconciliation?.delta_rate == null ? '-' : formatPercent(statement.reconciliation.delta_rate)}
           tone={statement?.reconciliation?.delta_rate && Math.abs(statement.reconciliation.delta_rate) > 0.0001 ? 'warn' : 'neutral'}
+          help={{
+            what: 'NAV 差额相对 statement equity 的比例。',
+            meaning: '用于用百分比尺度判断对账偏差大小。',
+            basis: '(nav_equity - legacy_equity) / legacy_equity；legacy_equity 为 0 时显示 -。',
+          }}
         />
-        <Metric label="Statement time" value={statement?.reconciliation ? formatDate(statement.reconciliation.legacy_updated_at) : '-'} />
-        <Metric label="NAV time" value={statement?.reconciliation ? formatDate(statement.reconciliation.nav_created_at) : '-'} />
+        <Metric
+          label="Statement time"
+          value={statement?.reconciliation ? formatDate(statement.reconciliation.legacy_updated_at) : '-'}
+          help={{
+            what: '参与对账的 statement equity 时间。',
+            meaning: '用于判断对账两侧是否是同一时间附近的数据。',
+            basis: '来自 reconciliation.legacy_updated_at。',
+          }}
+        />
+        <Metric
+          label="NAV time"
+          value={statement?.reconciliation ? formatDate(statement.reconciliation.nav_created_at) : '-'}
+          help={{
+            what: '参与对账的 NAV 快照时间。',
+            meaning: '用于判断实时 NAV 数据的新鲜度。',
+            basis: '来自 reconciliation.nav_created_at。',
+          }}
+        />
       </section>
 
       <section className="panel">
@@ -2260,19 +2439,96 @@ function FundDetailPage(props: {
       </section>
 
       <section className="metrics-grid compact" aria-label="Fund settlement preview">
-        <Metric label="Basis" value={settlement?.basis ? settlementBasisLabel(settlement.basis.source) : '-'} />
-        <Metric label="Basis time" value={settlement?.basis ? formatDate(settlement.basis.updated_at) : '-'} />
-        <Metric label="Issued units" value={settlement ? formatNumber(settlement.total_units) : '-'} />
-        <Metric label="Total deposit" value={settlement ? formatNumber(settlement.total_deposit) : '-'} />
-        <Metric label="Gross equity" value={settlement ? formatNumber(settlement.totals.gross_equity) : '-'} />
-        <Metric label="Post equity" value={settlement ? formatNumber(settlement.totals.net_equity) : '-'} />
-        <Metric label="Estimated tax" value={settlement ? formatNumber(settlement.total_tax) : '-'} />
-        <Metric label="Referrer rebate" value={settlement ? formatNumber(settlement.total_referrer_rebate) : '-'} />
-        <Metric label="Retained tax" value={settlement ? formatNumber(settlement.totals.retained_tax) : '-'} />
+        <Metric
+          label="Basis"
+          value={settlement?.basis ? settlementBasisLabel(settlement.basis.source) : '-'}
+          help={{
+            what: '结算预览使用的权益依据来源。',
+            meaning: '决定投资人权益、税额和返佣按哪个基金资产值分配。',
+            basis: '来自 settlement.basis.source，目前预览接口实际使用 statement history。',
+          }}
+        />
+        <Metric
+          label="Basis time"
+          value={settlement?.basis ? formatDate(settlement.basis.updated_at) : '-'}
+          help={{
+            what: '结算依据对应的时间。',
+            meaning: '用于确认结算预览基于哪一个时间点的权益。',
+            basis: '来自 settlement.basis.updated_at。',
+          }}
+        />
+        <Metric
+          label="Issued units"
+          value={settlement ? formatNumber(settlement.total_units) : '-'}
+          help={{
+            what: '当前事件状态下的总发行份额。',
+            meaning: '用于计算每个投资人的持有比例和权益分配。',
+            basis: '来自 event_state.total_share。',
+          }}
+        />
+        <Metric
+          label="Total deposit"
+          value={settlement ? formatNumber(settlement.total_deposit) : '-'}
+          help={{
+            what: '当前事件状态下的投资人净入金。',
+            meaning: '用于理解资产规模中有多少来自本金投入。',
+            basis: '来自 event_state.total_deposit，按投资人 deposit 求和。',
+          }}
+        />
+        <Metric
+          label="Gross equity"
+          value={settlement ? formatNumber(settlement.totals.gross_equity) : '-'}
+          help={{
+            what: '扣税和返佣前分配给投资人的权益合计。',
+            meaning: '作为结算预览的总权益控制数。',
+            basis: '按结算 basis equity 乘以各投资人 ownership 后求和。',
+          }}
+        />
+        <Metric
+          label="Post equity"
+          value={settlement ? formatNumber(settlement.totals.net_equity) : '-'}
+          help={{
+            what: '扣税、返佣和税户入账后的权益合计。',
+            meaning: '表示结算完成后投资人和税户合计可分配权益。',
+            basis: '对每行 investor settlement 的 net_equity 求和。',
+          }}
+        />
+        <Metric
+          label="Estimated tax"
+          value={settlement ? formatNumber(settlement.total_tax) : '-'}
+          help={{
+            what: '本次结算预览中的预计税额。',
+            meaning: '用于预估投资人收益需要扣除的总税费。',
+            basis: '对 settlement investors 的 tax 求和。',
+          }}
+        />
+        <Metric
+          label="Referrer rebate"
+          value={settlement ? formatNumber(settlement.total_referrer_rebate) : '-'}
+          help={{
+            what: '预计支付给推荐人的返佣合计。',
+            meaning: '用于拆分总税额中返还给推荐人的部分。',
+            basis: '对 settlement investors 的 referrer_rebate 求和。',
+          }}
+        />
+        <Metric
+          label="Retained tax"
+          value={settlement ? formatNumber(settlement.totals.retained_tax) : '-'}
+          help={{
+            what: '税额扣除推荐人返佣后的留存部分。',
+            meaning: '表示最终进入税户或保留为税务收入的金额。',
+            basis: 'settlement total tax - settlement referrer rebate。',
+          }}
+        />
         <Metric
           label="Overdrawn investors"
           value={settlement ? settlement.totals.overdrawn_investors.toString() : '-'}
           tone={settlement?.totals.overdrawn_investors ? 'warn' : 'neutral'}
+          help={{
+            what: '结算预览中份额为负的投资人数。',
+            meaning: '提示当前结算结果存在需要先修正的投资人份额异常。',
+            basis: '统计 settlement investors 中 units 小于 -1e-9 的行数。',
+          }}
         />
       </section>
 
@@ -3445,18 +3701,49 @@ function SectionLabel(props: { children: React.ReactNode }) {
   return <p className="mb-1 text-xs font-semibold uppercase tracking-normal text-muted-foreground">{props.children}</p>;
 }
 
-function Metric(props: { label: string; value: string; tone?: 'neutral' | 'good' | 'warn' }) {
+type MetricHelp = {
+  what: string;
+  meaning: string;
+  basis: string;
+};
+
+function Metric(props: { help?: MetricHelp; label: string; value: string; tone?: 'neutral' | 'good' | 'warn' }) {
   const valueClassName = props.tone === 'warn' ? 'text-destructive' : props.tone === 'good' ? 'text-primary' : 'text-foreground';
 
   return (
-    <Card className="min-w-0" size="sm">
+    <Card className={cn('min-w-0', props.help && 'overflow-visible')} size="sm">
       <CardHeader>
         <CardDescription>{props.label}</CardDescription>
+        {props.help ? (
+          <CardAction>
+            <MetricHelpTooltip help={props.help} label={props.label} />
+          </CardAction>
+        ) : null}
       </CardHeader>
       <CardContent className="min-w-0">
         <strong className={cn('block text-xl font-semibold leading-snug [overflow-wrap:anywhere]', valueClassName)}>{props.value}</strong>
       </CardContent>
     </Card>
+  );
+}
+
+function MetricHelpTooltip(props: { help: MetricHelp; label: string }) {
+  return (
+    <span className="group/help relative inline-flex">
+      <button
+        aria-label={props.label + ' help'}
+        className="inline-grid size-6 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+        type="button"
+      >
+        <Info className="size-3.5" />
+      </button>
+      <span className="pointer-events-none absolute right-0 top-7 z-50 hidden w-72 rounded-lg border bg-popover p-3 text-left text-xs leading-5 text-popover-foreground shadow-lg group-hover/help:block group-focus-within/help:block">
+        <span className="block font-semibold text-foreground">{props.label}</span>
+        <span className="mt-2 block"><span className="font-medium text-foreground">是什么：</span>{props.help.what}</span>
+        <span className="mt-1 block"><span className="font-medium text-foreground">意义：</span>{props.help.meaning}</span>
+        <span className="mt-1 block"><span className="font-medium text-foreground">口径：</span>{props.help.basis}</span>
+      </span>
+    </span>
   );
 }
 
